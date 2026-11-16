@@ -112,7 +112,7 @@ ns-instruction-sim/
 | `arch` | `list` | 列出支持的架构与示例设备 | — | 表 |
 | `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析（文件或内置）/链接脚本/启动文件/外设初始化 C 骨架 | `--file --device --peripheral --register --out --json` | 表/文本/JSON |
 | `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址（可指定会话保留外设/SVD 寄存器） | `--firmware --session --arch --base --max-steps --steps --until --cycle-accurate --save-session --json` | 状态 |
-| `step` | — | 单步一条指令 | `--session --arch --firmware --base --json` | 状态 |
+| `step` | — | 单步一条指令 | `--session --arch --firmware --base --json --source` | 状态 |
 | `step-over` | — | 步过（跳过调用） | 同上 | 状态 |
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
 | `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json` | 状态 |
@@ -220,6 +220,7 @@ done
 - `mem_write_with_arch_creates_session`：`mem write --arch` 直接创建指定架构会话。
 - `disasm_arm_state_override`：`disasm --arm-state a32|thumb` 切换 ARM 解码并校验步进宽度。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
+- `step_source_annotates_lines`：`step --source` 按 DWARF 行表标注 file:line。
 - `periph_svd_load_populates_registers`：`periph svd-load` 从 SVD 载入复位值并支持直读写/持久化。
 - `periph_svd_load_instruction_write_couples`：`run --session` 在 SVD 加载的会话上运行，指令级 `sw` 直写寄存器并读回。
 - `periph_svd_load_by_device_key`：`periph svd-load --device` 从内置 SVD 加载；缺源报错。

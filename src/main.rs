@@ -207,6 +207,9 @@ struct StepArgs {
     /// 输出 JSON。
     #[arg(long)]
     json: bool,
+    /// 追加源代码位置标注（file:line，来自 DWARF 行表）。
+    #[arg(long)]
+    source: bool,
 }
 
 #[derive(Args)]
@@ -1566,7 +1569,15 @@ fn cmd_step(args: StepArgs, kind: StepKind) -> Result<()> {
     if args.json {
         print_json(&output)?;
     } else {
-        println!("PC=0x{:08x} cycles={} halted={} result={}", output.pc, output.cycle_count, output.halted, output.last_result);
+        let src = if args.source {
+            source_annotation(&sim, sim.program_counter())
+        } else {
+            String::new()
+        };
+        println!(
+            "PC=0x{:08x} cycles={} halted={} result={}{src}",
+            output.pc, output.cycle_count, output.halted, output.last_result
+        );
     }
     let _ = base;
     Ok(())
@@ -1894,6 +1905,15 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
     }
 }
 
+/// Format a `; file:line` source annotation for `address`, using the DWARF
+/// line table and source files attached to the simulator (empty when none).
+fn source_annotation(sim: &Simulator, address: u32) -> String {
+    sim.line_for_address(address)
+        .and_then(|(file, line)| sim.source_files.get(file).map(|f| (f, line)))
+        .map(|(f, line)| format!("  ; {f}:{line}"))
+        .unwrap_or_default()
+}
+
 fn cmd_disasm(args: DisasmArgs) -> Result<()> {
     let arch = resolve_arch(args.session.as_deref(), args.arch.as_deref())?;
     let mut pc = match args.addr {
@@ -1931,11 +1951,7 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
     for _ in 0..args.count {
         let text = ns_sim::disassemble_one_state(arch, pc, &read, arm_state);
         if args.source {
-            let src = sim
-                .line_for_address(pc)
-                .and_then(|(file, line)| sim.source_files.get(file).map(|f| (f, line)))
-                .map(|(f, line)| format!("; {f}:{line}"))
-                .unwrap_or_default();
+            let src = source_annotation(&sim, pc);
             println!("0x{pc:08x}: {text}  {src}");
         } else {
             println!("0x{pc:08x}: {text}");

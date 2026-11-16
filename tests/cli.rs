@@ -1424,3 +1424,32 @@ fn disasm_source_annotates_lines() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("<elf>:1"), "missing source annotation: {text}");
 }
+
+#[test]
+fn step_source_annotates_lines() {
+    let dir = tmpdir();
+    let sess = dir.join("ssrc.json");
+    let elf = dir.join("ssrc.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--source"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    // `run --steps 1` leaves PC at the 2nd instruction; `step` advances to the
+    // 3rd (0x80000008), still inside the `main` symbol (source line 1).
+    assert!(text.contains("PC=0x80000008"), "missing PC: {text}");
+    assert!(text.contains("<elf>:1"), "missing source annotation: {text}");
+}
