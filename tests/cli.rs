@@ -1745,3 +1745,39 @@ fn state_fields_and_summary() {
     assert!(text.starts_with("PC=0x"), "missing summary: {text}");
     assert!(text.contains("cycles="), "missing cycles: {text}");
 }
+
+#[test]
+fn bp_set_by_line() {
+    let dir = tmpdir();
+    let sess = dir.join("bpline.json");
+    let elf = dir.join("bpline.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(), "--line", "<elf>:1"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000_0000u64);
+    // A bad line number must fail.
+    let out = Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(), "--line", "<elf>:99"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}

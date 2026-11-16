@@ -452,6 +452,9 @@ enum BpSub {
         /// 按符号名设置断点（与地址互斥）。
         #[arg(long, conflicts_with_all = ["addr", "addr_flag"])]
         symbol: Option<String>,
+        /// 按源码行号设置断点（`file:line`，如 `main.c:10`；与地址/符号互斥）。
+        #[arg(long, conflicts_with_all = ["addr", "addr_flag", "symbol"])]
+        line: Option<String>,
         /// 条件表达式（如 `x1 == 10`）。
         #[arg(long)]
         condition: Option<String>,
@@ -2049,7 +2052,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             }
             Ok(())
         }
-        BpSub::Set { session, addr, addr_flag, symbol, condition, hit_count, once } => {
+        BpSub::Set { session, addr, addr_flag, symbol, line, condition, hit_count, once } => {
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             let addr_num = if let Some(sym) = &symbol {
                 let found = sim
@@ -2058,6 +2061,27 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                     .find(|s| s.name.eq_ignore_ascii_case(sym))
                     .ok_or_else(|| anyhow::anyhow!("符号未找到: {sym}"))?;
                 found.address
+            } else if let Some(line_spec) = &line {
+                let (file_part, line_part) = line_spec
+                    .rsplit_once(':')
+                    .ok_or_else(|| anyhow::anyhow!("行号格式应为 file:line，如 main.c:10"))?;
+                let line_num: u32 = line_part
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("非法行号: {line_part}"))?;
+                let file_idx = sim
+                    .source_files
+                    .iter()
+                    .position(|f| {
+                        f == file_part
+                            || std::path::Path::new(f)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| n == file_part)
+                                .unwrap_or(false)
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("源文件未找到: {file_part}"))?;
+                sim.address_for_line(file_idx, line_num)
+                    .ok_or_else(|| anyhow::anyhow!("行 {line_part} 无对应指令地址"))?
             } else {
                 let addr = addr_flag
                     .or(addr)
