@@ -1718,3 +1718,30 @@ fn mem_read_word_width() {
         .unwrap();
     assert!(!out.status.success());
 }
+
+#[test]
+fn state_fields_and_summary() {
+    let dir = tmpdir();
+    let sess = dir.join("stf.json");
+    bootstrap(&sess);
+    // --fields selects a JSON subset.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(),
+               "--json", "--fields", "pc,cycleCount"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json.get("pc").is_some());
+    assert!(json.get("cycleCount").is_some());
+    assert!(json.get("registers").is_none(), "registers must be filtered out");
+    // --summary prints a one-line summary.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--summary"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("PC=0x"), "missing summary: {text}");
+    assert!(text.contains("cycles="), "missing cycles: {text}");
+}

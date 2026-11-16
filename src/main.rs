@@ -547,6 +547,12 @@ struct StateArgs {
     /// 输出 JSON（默认）。
     #[arg(long)]
     json: bool,
+    /// 逗号分隔的 JSON 字段子集（如 `pc,registers,csr`），仅 `--json` 生效。
+    #[arg(long, value_delimiter = ',')]
+    fields: Vec<String>,
+    /// 单行摘要（PC/周期/停止），忽略字段子集。
+    #[arg(long)]
+    summary: bool,
 }
 
 #[derive(Args)]
@@ -2209,8 +2215,24 @@ fn cmd_state(args: StateArgs) -> Result<()> {
         &args.base,
     )?;
     let output = state_output(&sim, StepResult::Advanced, fw.as_ref());
+    if args.summary {
+        println!(
+            "PC=0x{:08x} cycles={} halted={} result={}",
+            output.pc, output.cycle_count, output.halted, output.last_result
+        );
+        return Ok(());
+    }
     if args.json {
-        print_json(&output)?;
+        if args.fields.is_empty() {
+            print_json(&output)?;
+        } else {
+            let mut value = serde_json::to_value(&output)?;
+            let obj = value
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("状态不是 JSON 对象"))?;
+            obj.retain(|key, _| args.fields.iter().any(|f| f == key));
+            print_json(&value)?;
+        }
     } else {
         println!("架构: {}", sim.arch.label());
         println!("PC:   0x{:08x}", output.pc);

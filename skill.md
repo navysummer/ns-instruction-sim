@@ -123,6 +123,8 @@ ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8 --raw
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8 --source
 ns-instruction-sim reset --session s.json --entry 0x80000000
 ns-instruction-sim state --session s.json --json
+ns-instruction-sim state --session s.json --json --fields pc,cycleCount,registers
+ns-instruction-sim state --session s.json --summary
 # state --json 另含 firmware{path,base,format} 与 pcSymbol{name,address,size}（无则 null）
 ns-instruction-sim periph status --session s.json
 ns-instruction-sim periph gpio --session s.json --pin 0 --value 1

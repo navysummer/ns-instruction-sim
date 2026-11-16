@@ -32,6 +32,7 @@ ns-instruction-sim disasm --session arm.json --addr 0x0 --count 4 --arm-state th
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8 --raw
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8 --source
 ns-instruction-sim state --session s.json --json
+ns-instruction-sim state --session s.json --summary
 ns-instruction-sim periph status --session s.json
 
 # 符号 / 行号 / 周期 / 中断 / 看门狗 / CSR / 外设寄存器
