@@ -1684,3 +1684,37 @@ fn disasm_raw_shows_bytes() {
     assert!(text.contains("0x80000004"), "missing address: {text}");
     assert!(text.contains("raw: 13 81 20 00"), "missing raw bytes: {text}");
 }
+
+#[test]
+fn mem_read_word_width() {
+    let dir = tmpdir();
+    let sess = dir.join("mw.json");
+    bootstrap(&sess);
+    Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--bytes", "0xde", "0xad", "0xbe", "0xef"])
+        .output()
+        .unwrap();
+    // Read as a single little-endian word.
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "1", "--width", "word"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("0xefbeadde"), "word value wrong");
+    // Read as two halfwords.
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "2", "--width", "half"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("0xadde"), "half value wrong");
+    // Invalid width must fail.
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "1", "--width", "qword"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}

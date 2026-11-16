@@ -313,6 +313,9 @@ enum MemSub {
         /// 长度（字节，默认 64）。
         #[arg(long, default_value = "64")]
         len: usize,
+        /// 数据宽度：`byte`/`half`/`word`/`dword`（默认 byte；此时 `--len` 为元素个数）。
+        #[arg(long, default_value = "byte")]
+        width: String,
         /// 输出原始二进制到文件。
         #[arg(long)]
         out: Option<PathBuf>,
@@ -1793,18 +1796,39 @@ fn cmd_reg(sub: RegSub) -> Result<()> {
 
 fn cmd_mem(sub: MemSub) -> Result<()> {
     match sub {
-        MemSub::Read { session, arch, addr, addr_flag, len, out } => {
+        MemSub::Read { session, arch, addr, addr_flag, len, width, out } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let (sim, _fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
-            let mut bytes = Vec::with_capacity(len);
+            let elem_size = match width.as_str() {
+                "byte" => 1usize,
+                "half" => 2usize,
+                "word" => 4usize,
+                "dword" => 8usize,
+                other => bail!("不支持的内存宽度: {other}（支持 byte/half/word/dword）"),
+            };
+            let mut bytes = Vec::with_capacity(len * elem_size);
             for i in 0..len {
-                bytes.push(read_mem_byte(&sim, addr_num.wrapping_add(i as u32)));
+                let a = addr_num.wrapping_add((i * elem_size) as u32);
+                for j in 0..elem_size {
+                    bytes.push(read_mem_byte(&sim, a.wrapping_add(j as u32)));
+                }
             }
             if let Some(out_path) = out {
                 std::fs::write(&out_path, &bytes)
                     .with_context(|| format!("写入 {} 失败", out_path.display()))?;
                 println!("已写入 {} 字节到 {}", bytes.len(), out_path.display());
+            } else if elem_size > 1 {
+                // Print one value per element as a hex integer (little-endian).
+                for i in 0..len {
+                    let mut v: u64 = 0;
+                    for j in 0..elem_size {
+                        v |= (bytes[i * elem_size + j] as u64) << (8 * j);
+                    }
+                    let a = addr_num.wrapping_add((i * elem_size) as u32);
+                    let digits = elem_size * 2;
+                    println!("0x{a:08x}: 0x{v:0digits$x}");
+                }
             } else {
                 print!("{}", hex_dump(addr_num, &bytes));
             }

@@ -99,6 +99,7 @@ ns-instruction-sim reg set --session s.json x5 0x2a
 
 # 内存
 ns-instruction-sim mem read --session s.json --addr 0x20000000 --len 64
+ns-instruction-sim mem read --session s.json --addr 0x20000000 --len 16 --width word
 ns-instruction-sim mem write --session s.json --addr 0x20000000 --bytes 0x01 0x02 0x03
 ns-instruction-sim mem write --session arm.json --arch arm --addr 0x20000000 --bytes 0xaa 0xbb
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 0
