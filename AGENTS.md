@@ -118,7 +118,7 @@ ns-instruction-sim/
 | `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` | 内存读/写/填充/搜索模式/加载固件 | `--addr --len --bytes --file --value --pattern --firmware --base --arch` | hex/JSON |
-| `bp` | `list` / `set` / `clear` / `clear-all` | 断点管理 | `--addr --condition --hit-count --session` | 表/JSON |
+| `bp` | `list` / `set` / `clear` / `clear-all` | 断点管理（条件/命中次数/一次性） | `--addr --condition --hit-count --once --session` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注） | `--arch --addr --count --arm-state --source --session` | 文本 |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry` | 文本 |
 | `state` | — | 完整状态（JSON/文本） | `--session --arch --firmware --base --json` | 状态/JSON |
@@ -169,6 +169,7 @@ ns-instruction-sim/
 | T8 | 条件断点高级属性 | `set_breakpoint_ex` / `update_breakpoint` | `bp set --condition --hit-count` | ✅ 已完成 |
 | T9 | 架构寄存器元数据 | `reg_count_for` / `reg_label_for` | 已用于 `state`/`reg list` | ✅ 已完成 |
 | T10 | 全架构反汇编 | `disassemble_one` / `disassemble_one_state` | 已用于 `disasm` | ✅ 已完成 |
+| T11 | 一次性断点 | `set_breakpoint_ex_once` / `breakpoint_is_once` | `bp set --once`（命中后自动清除） | ✅ 已完成 |
 
 ---
 
@@ -207,6 +208,7 @@ done
 - `watchdog_config_feed_status`：看门狗配置/喂狗/状态。
 - `interrupt_set_pending_and_take`：中断置线/挂起查询/触发跳转（mtvec/mcause）。
 - `bp_list_shows_hits`：断点命中次数持久化并展示。
+- `bp_once_autoclears`：`bp set --once` 命中后自动清除，再次 `continue` 不再停靠。
 - `periph_timer_config_and_uart_write`：定时器配置与 UART 寄存器写输出。
 - `device_svd_parse_and_filter`：SVD 文件解析、外设/寄存器过滤与错误路径。
 - `run_steps_runs_exactly_n_instructions`：`--steps N` 精确运行 N 条指令并停住。

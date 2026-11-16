@@ -550,6 +550,65 @@ fn bp_list_shows_hits() {
 }
 
 #[test]
+fn bp_once_autoclears() {
+    let dir = tmpdir();
+    let elf = dir.join("bp_once.elf");
+    let sess = dir.join("bp_once.json");
+    write_riscv_elf(&elf);
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(), "--save-session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    // Set a one-shot breakpoint.
+    let out = Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(), "--addr", "0x80000004", "--once"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("一次性"));
+    // bp list should mark it as once.
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["once"], true);
+    assert_eq!(json[0]["address"], 0x8000_0004u64);
+    Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x80000000"])
+        .output()
+        .unwrap();
+    // First continue stops at the once breakpoint and auto-clears it.
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess.to_str().unwrap(), "--max-steps", "10", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["lastResult"], "breakpoint");
+    assert_eq!(json["pc"], 0x8000_0004u64);
+    // The one-shot breakpoint must now be gone from the persisted session.
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("无断点"),
+        "once breakpoint not cleared: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // A second continue no longer stops there (runs to the ecall halt).
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess.to_str().unwrap(), "--max-steps", "10", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_ne!(json["lastResult"], "breakpoint");
+    assert_ne!(json["pc"], 0x8000_0004u64);
+}
+
+#[test]
 fn periph_timer_config_and_uart_write() {
     let dir = tmpdir();
     let sess = dir.join("periph.json");

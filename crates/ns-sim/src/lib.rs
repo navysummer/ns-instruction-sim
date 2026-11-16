@@ -452,6 +452,9 @@ pub struct SimBreakpoint {
     pub condition: String,
     /// 1-based hit count; 0 = stop on first hit.
     pub hit_count: u32,
+    /// One-shot breakpoint: automatically removed after the first hit that
+    /// pauses the simulator.
+    pub once: bool,
     /// Number of times the PC has reached this address since set.
     hits: u64,
 }
@@ -462,6 +465,7 @@ impl SimBreakpoint {
             address,
             condition: String::new(),
             hit_count: 0,
+            once: false,
             hits: 0,
         }
     }
@@ -1283,6 +1287,31 @@ impl Simulator {
         }
     }
 
+    /// Set a one-shot breakpoint at `address`: it pauses on the first hit
+    /// (subject to the optional condition / hit count) and is then removed
+    /// automatically, so a subsequent `run`/`continue` will not stop there
+    /// again.
+    pub fn set_breakpoint_ex_once(
+        &mut self,
+        address: u32,
+        condition: impl Into<String>,
+        hit_count: u32,
+    ) -> bool {
+        if let Some(bp) = self.breakpoints.iter_mut().find(|bp| bp.address == address) {
+            bp.condition = condition.into();
+            bp.hit_count = hit_count;
+            bp.once = true;
+            false
+        } else {
+            let mut bp = SimBreakpoint::new(address);
+            bp.condition = condition.into();
+            bp.hit_count = hit_count;
+            bp.once = true;
+            self.breakpoints.push(bp);
+            true
+        }
+    }
+
     /// Update an existing breakpoint's condition / hit count in place.
     pub fn update_breakpoint(
         &mut self,
@@ -1319,6 +1348,23 @@ impl Simulator {
         if let Some(bp) = self.breakpoints.iter_mut().find(|bp| bp.address == address) {
             bp.hits = hits;
         }
+    }
+
+    /// Whether the breakpoint at `address` is one-shot (auto-cleared on hit).
+    pub fn breakpoint_is_once(&self, address: u32) -> bool {
+        self.breakpoints
+            .iter()
+            .find(|bp| bp.address == address)
+            .map(|bp| bp.once)
+            .unwrap_or(false)
+    }
+
+    /// Remove one-shot breakpoints currently sitting at the program counter.
+    /// Called after a `Breakpoint` step result so a one-shot breakpoint is
+    /// consumed exactly once and disappears from the breakpoint set.
+    fn clear_once_breakpoints_at_pc(&mut self) {
+        let pc = self.program_counter();
+        self.breakpoints.retain(|bp| !(bp.once && bp.address == pc));
     }
 
     /// Build the register-name view used by condition evaluation, from the
@@ -1420,7 +1466,19 @@ impl Simulator {
 
 
     /// Execute one instruction. Returns what happened.
+    /// Execute one instruction (or stop at a breakpoint / halt). One-shot
+    /// breakpoints are consumed automatically: once a `Breakpoint` result is
+    /// returned for a one-shot address, the breakpoint is removed so a later
+    /// step will not stop there again.
     pub fn step(&mut self) -> StepResult {
+        let result = self.step_inner();
+        if result == StepResult::Breakpoint {
+            self.clear_once_breakpoints_at_pc();
+        }
+        result
+    }
+
+    fn step_inner(&mut self) -> StepResult {
         let pc_before = self.program_counter();
         let est = self.cycles_for_instruction(pc_before);
         if let Some(core) = self.mcs51.as_mut() {
@@ -4496,6 +4554,28 @@ mod tests {
         assert_eq!(result, StepResult::Breakpoint, "3rd hit pauses");
         assert_eq!(sim.breakpoint_hits(0), 3);
 
+    }
+
+    /// A one-shot breakpoint pauses on the first hit and is then removed
+    /// automatically, so a subsequent step does not stop there again.
+    #[test]
+    fn once_breakpoint_autoclears() {
+        let mut sim = Simulator::new();
+        sim.write_u32(0, 0x00100093); // ADDI x1, x0, 1
+        sim.write_u32(4, 0x00108093); // ADDI x1, x1, 1
+
+        sim.set_breakpoint_ex_once(4, "", 0);
+        sim.pc = 0;
+        assert_eq!(sim.step(), StepResult::Advanced);
+        assert_eq!(sim.step(), StepResult::Breakpoint, "stops at the once bp");
+        assert_eq!(sim.program_counter(), 4);
+        assert!(!sim.breakpoint_is_once(4), "once bp must be removed");
+        assert!(sim.breakpoints.is_empty(), "breakpoint set is now empty");
+
+        // A subsequent step runs past 4 without stopping.
+        sim.pc = 4;
+        assert_eq!(sim.step(), StepResult::Advanced);
+        assert_eq!(sim.program_counter(), 8);
 
     }
 

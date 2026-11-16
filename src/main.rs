@@ -417,6 +417,9 @@ enum BpSub {
         /// 命中次数（第 N 次命中时暂停）。
         #[arg(long, default_value = "0")]
         hit_count: u32,
+        /// 一次性断点：命中后自动清除。
+        #[arg(long)]
+        once: bool,
     },
     /// 清除断点。
     Clear {
@@ -1817,6 +1820,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                             "address": bp.address,
                             "condition": bp.condition,
                             "hitCount": bp.hit_count,
+                            "once": bp.once,
                             "hits": sim.as_ref().map(|sim| sim.breakpoint_hits(bp.address)).unwrap_or(0),
                         })
                     })
@@ -1827,10 +1831,20 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                     println!("(无断点)");
                 }
                 for bp in &s.breakpoints {
-                    let extra = if !bp.condition.is_empty() || bp.hit_count > 0 {
-                        format!("  cond='{}' hit={}", bp.condition, bp.hit_count)
-                    } else {
+                    let mut parts = Vec::new();
+                    if bp.once {
+                        parts.push("once".to_string());
+                    }
+                    if !bp.condition.is_empty() {
+                        parts.push(format!("cond='{}'", bp.condition));
+                    }
+                    if bp.hit_count > 0 {
+                        parts.push(format!("hit={}", bp.hit_count));
+                    }
+                    let extra = if parts.is_empty() {
                         String::new()
+                    } else {
+                        format!("  {}", parts.join(" "))
                     };
                     let hits = sim
                         .as_ref()
@@ -1841,14 +1855,22 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             }
             Ok(())
         }
-        BpSub::Set { session, addr, addr_flag, condition, hit_count } => {
+        BpSub::Set { session, addr, addr_flag, condition, hit_count, once } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
-            sim.set_breakpoint_ex(addr_num, condition.unwrap_or_default(), hit_count);
+            if once {
+                sim.set_breakpoint_ex_once(addr_num, condition.unwrap_or_default(), hit_count);
+            } else {
+                sim.set_breakpoint_ex(addr_num, condition.unwrap_or_default(), hit_count);
+            }
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
-            println!("断点已设置 @ 0x{:08x}", addr_num);
+            if once {
+                println!("一次性断点已设置 @ 0x{:08x}", addr_num);
+            } else {
+                println!("断点已设置 @ 0x{:08x}", addr_num);
+            }
             Ok(())
         }
         BpSub::Clear { session, addr, addr_flag } => {

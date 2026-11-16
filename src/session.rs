@@ -23,6 +23,9 @@ pub struct BpState {
     pub address: u32,
     pub condition: String,
     pub hit_count: u32,
+    /// One-shot breakpoint: auto-cleared after the first hit.
+    #[serde(default)]
+    pub once: bool,
     /// Runtime hit counter (number of times the PC reached this address).
     #[serde(default)]
     pub hits: u64,
@@ -142,6 +145,7 @@ impl Session {
                     address: bp.address,
                     condition: bp.condition.clone(),
                     hit_count: bp.hit_count,
+                    once: bp.once,
                     hits: bp.hits(),
                 })
                 .collect(),
@@ -233,7 +237,11 @@ impl Session {
         }
         sim.peripherals.outputs.extend_from_slice(&self.uart_output);
         for bp in &self.breakpoints {
-            sim.set_breakpoint_ex(bp.address, bp.condition.clone(), bp.hit_count);
+            if bp.once {
+                sim.set_breakpoint_ex_once(bp.address, bp.condition.clone(), bp.hit_count);
+            } else {
+                sim.set_breakpoint_ex(bp.address, bp.condition.clone(), bp.hit_count);
+            }
             sim.set_breakpoint_hits(bp.address, bp.hits);
         }
         // Restore virtual-peripheral state.

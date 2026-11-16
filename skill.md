@@ -104,6 +104,7 @@ ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pa
 # 断点
 ns-instruction-sim bp set --session s.json --addr 0x80000004
 ns-instruction-sim bp set --session s.json --addr 0x80000008 --condition "x1 == 3" --hit-count 2
+ns-instruction-sim bp set --session s.json --addr 0x8000000c --once
 ns-instruction-sim bp list --session s.json
 ns-instruction-sim bp clear --session s.json --addr 0x80000004
 
