@@ -231,6 +231,9 @@ struct ContinueArgs {
     /// 输出 JSON。
     #[arg(long)]
     json: bool,
+    /// 打印每条执行指令的 PC/反汇编/来源（逐步追踪）。
+    #[arg(long)]
+    trace: bool,
 }
 
 #[derive(Args)]
@@ -1663,7 +1666,11 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
     // the session is saved (unless the address was already a breakpoint).
     let until_addr = args.until.as_deref().map(parse_num).transpose()?;
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
-    let result = sim.run(args.max_steps);
+    let result = if args.trace {
+        trace_run(&mut sim, None, args.max_steps)
+    } else {
+        sim.run(args.max_steps)
+    };
     if temp_bp {
         if let Some(addr) = until_addr {
             sim.clear_breakpoint(addr);

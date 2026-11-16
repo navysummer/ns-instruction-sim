@@ -1544,3 +1544,30 @@ fn watchdog_force_reset() {
     assert_eq!(json["resetCount"], 1u64);
     assert_eq!(json["lastResetPc"], 0x8000_0000u64);
 }
+
+#[test]
+fn continue_trace_prints_each_instruction() {
+    let dir = tmpdir();
+    let sess = dir.join("ctrace.json");
+    let elf = dir.join("ctrace.elf");
+    write_riscv_elf(&elf);
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--save-session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x80000000"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess.to_str().unwrap(),
+               "--trace", "--until", "0x80000008"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("[0] 0x80000000"), "missing step 0: {text}");
+    assert!(text.contains("[1] 0x80000004"), "missing step 1: {text}");
+    assert!(text.contains("-> 0x80000008 breakpoint"), "missing stop: {text}");
+}

@@ -89,6 +89,7 @@ ns-instruction-sim step --session s.json --source
 ns-instruction-sim step-over --session s.json
 ns-instruction-sim step-out --session s.json
 ns-instruction-sim continue --session s.json --max-steps 100000
+ns-instruction-sim continue --session s.json --until 0x80000008 --trace
 ns-instruction-sim continue --session s.json --until 0x80000008
 
 # 寄存器

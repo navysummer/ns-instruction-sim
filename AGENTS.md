@@ -115,7 +115,7 @@ ns-instruction-sim/
 | `step` | — | 单步一条指令 | `--session --arch --firmware --base --json --source` | 状态 |
 | `step-over` | — | 步过（跳过调用） | 同上 | 状态 |
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
-| `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json` | 状态 |
+| `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json --trace` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` | 内存读/写/填充/搜索模式/加载固件/导出（C 数组或十六进制） | `--addr --len --bytes --file --value --pattern --firmware --base --arch --name --format --out` | hex/C/JSON |
 | `bp` | `list` / `set` / `clear` / `clear-all` | 断点管理（条件/命中次数/一次性） | `--addr --condition --hit-count --once --session` | 表/JSON |
@@ -215,6 +215,7 @@ done
 - `run_steps_runs_exactly_n_instructions`：`--steps N` 精确运行 N 条指令并停住。
 - `run_until_stops_at_address`：`run --until` 临时断点运行到指定地址且不持久化。
 - `run_trace_prints_each_instruction`：`run --trace` 打印每条执行指令的 PC/反汇编/来源。
+- `continue_trace_prints_each_instruction`：`continue --trace` 打印每条执行指令并停靠临时断点。
 - `mem_dump_c_array`：`mem dump --format c` 生成 C 数组（含非法格式错误路径）。
 - `state_includes_peripherals_and_csr`：`state --json` 含外设与 CSR 完整快照。
 - `version_command_and_flag`：`version` 子命令与 `--version` 均输出版本号。

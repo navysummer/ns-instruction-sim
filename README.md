@@ -16,6 +16,7 @@ ns-instruction-sim version
 ns-instruction-sim step --session s.json
 ns-instruction-sim continue --session s.json --max-steps 100000
 ns-instruction-sim continue --session s.json --until 0x80000008
+ns-instruction-sim continue --session s.json --until 0x80000008 --trace
 ns-instruction-sim reg set --session s.json x5 0x2a
 ns-instruction-sim mem read --session s.json --addr 0x20000000 --len 64
 ns-instruction-sim mem write --session arm.json --arch arm --addr 0x20000000 --bytes 0xaa 0xbb
