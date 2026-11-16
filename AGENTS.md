@@ -122,7 +122,7 @@ ns-instruction-sim/
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态） | `--arch --addr --count --arm-state --session` | 文本 |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry` | 文本 |
 | `state` | — | 完整状态（JSON/文本） | `--session --arch --firmware --base --json` | 状态/JSON |
-| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/SVD 寄存器加载 | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --len --bytes --file --peripheral --force --session --json` | 表/JSON |
+| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/SVD 寄存器加载（文件或内置设备） | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --len --bytes --file --device --peripheral --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `line` / `addr` | ELF 符号与源行号映射 | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` | 周期计数/指令周期估算/外设推进 | `--addr --cycles --session --json` | 值/JSON |
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
@@ -216,6 +216,7 @@ done
 - `disasm_arm_state_override`：`disasm --arm-state a32|thumb` 切换 ARM 解码并校验步进宽度。
 - `periph_svd_load_populates_registers`：`periph svd-load` 从 SVD 载入复位值并支持直读写/持久化。
 - `periph_svd_load_instruction_write_couples`：`run --session` 在 SVD 加载的会话上运行，指令级 `sw` 直写寄存器并读回。
+- `periph_svd_load_by_device_key`：`periph svd-load --device` 从内置 SVD 加载；缺源报错。
 - `device_codegen_linker_and_startup`：`device linker/startup` 生成链接脚本与启动文件（stdout/--out/未知设备错误）。
 
 ### 5.2 反汇编宽度

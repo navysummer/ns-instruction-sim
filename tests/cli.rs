@@ -597,6 +597,32 @@ fn periph_svd_load_populates_registers() {
 }
 
 #[test]
+fn periph_svd_load_by_device_key() {
+    let dir = tmpdir();
+    let sess = dir.join("svd_device_key.json");
+    bootstrap(&sess);
+
+    // Load from the built-in SVD by device key.
+    let out = Command::new(bin())
+        .args(["periph", "svd-load", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["source"], "stm32f103c8");
+    assert!(json["loaded"].as_u64().unwrap() >= 16);
+
+    // Missing source must fail.
+    let out = Command::new(bin())
+        .args(["periph", "svd-load", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--file 或 --device"));
+}
+
+#[test]
 fn periph_svd_load_instruction_write_couples() {
     let dir = tmpdir();
     let sess = dir.join("svd_exec.json");

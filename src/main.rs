@@ -460,13 +460,16 @@ enum PeriphSub {
         #[arg(long)]
         json: bool,
     },
-    /// 从 SVD 文件加载芯片寄存器（地址 -> 复位值）到仿真器。
+    /// 从 SVD 文件或内置设备加载芯片寄存器（地址 -> 复位值）到仿真器。
     SvdLoad {
         #[arg(short, long)]
         session: PathBuf,
-        /// SVD 文件路径。
+        /// SVD 文件路径（与 --device 二选一）。
         #[arg(short, long)]
-        file: PathBuf,
+        file: Option<PathBuf>,
+        /// 内置设备键（如 stm32f103c8；与 --file 二选一）。
+        #[arg(long)]
+        device: Option<String>,
         /// 只加载指定外设（按名称，可选）。
         #[arg(long)]
         peripheral: Option<String>,
@@ -1743,8 +1746,20 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             Ok(())
         }
-        PeriphSub::SvdLoad { session, file, peripheral, force, json } => {
-            let device = ns_device::load_svd_file(&file)?;
+        PeriphSub::SvdLoad { session, file, device, peripheral, force, json } => {
+            let (device, source) = match (file, device) {
+                (Some(f), None) => {
+                    let dev = ns_device::load_svd_file(&f)?;
+                    (dev, f.display().to_string())
+                }
+                (None, Some(d)) => {
+                    let dev = ns_device::device_for_target(&d)
+                        .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {d}"))?;
+                    (dev, d)
+                }
+                (Some(_), Some(_)) => bail!("--file 与 --device 只能二选一"),
+                (None, None) => bail!("请提供 --file 或 --device"),
+            };
             let periphs: Vec<&ns_device::Peripheral> = match peripheral.as_deref() {
                 Some(name) => {
                     let p = device.peripheral(name).ok_or_else(|| {
@@ -1768,7 +1783,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 }
             }
             let out = serde_json::json!({
-                "file": file.display().to_string(),
+                "source": source,
                 "loaded": loaded,
                 "peripherals": periphs.len(),
                 "force": force,
@@ -1779,10 +1794,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 print_json(&out)?;
             } else {
                 println!(
-                    "已从 {} 加载 {} 个寄存器（{} 个外设）",
-                    file.display(),
-                    loaded,
-                    periphs.len()
+                    "已从 {} 加载 {} 个寄存器（{} 个外设）", source, loaded, periphs.len()
                 );
             }
             Ok(())

@@ -145,6 +145,7 @@ ns-instruction-sim periph timer --session s.json --index 1 --enabled true --pres
 # 从 SVD 文件加载芯片寄存器（地址 -> 复位值）到仿真器，支持直读写与持久化
 ns-instruction-sim periph svd-load --session s.json --file crates/ns-device/src/svd/stm32f103c8.svd --json
 ns-instruction-sim periph svd-load --session s.json --file chip.svd --peripheral TIM2 --force
+ns-instruction-sim periph svd-load --session s.json --device stm32f103c8 --json
 ```
 
 ## 5. 新增子命令流程（必须遵循）
