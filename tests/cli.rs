@@ -85,6 +85,41 @@ fn device_list_and_info() {
 }
 
 #[test]
+fn device_codegen_linker_and_startup() {
+    // Linker script on stdout.
+    let out = Command::new(bin()).args(["device", "linker", "stm32f103c8"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Auto-generated linker script"));
+    assert!(text.contains("FLASH"));
+    assert!(text.contains("0x08000000"));
+    assert!(text.contains("0x20000000"));
+
+    // Startup file on stdout.
+    let out = Command::new(bin()).args(["device", "startup", "stm32f103c8"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Auto-generated startup"));
+    assert!(text.contains("Reset_Handler"));
+    assert!(text.contains(".isr_vector"));
+
+    // Write to a file with --out.
+    let dir = tmpdir();
+    let ld = dir.join("chip.ld");
+    let out = Command::new(bin())
+        .args(["device", "linker", "stm32f103c8", "--out", ld.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(std::fs::read_to_string(&ld).unwrap().contains("MEMORY"));
+
+    // Unknown device must fail.
+    let out = Command::new(bin()).args(["device", "linker", "nope"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("未知设备"));
+}
+
+#[test]
 fn run_riscv_elf_and_inspect() {
     let dir = tmpdir();
     let elf = dir.join("test.elf");

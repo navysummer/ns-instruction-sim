@@ -70,6 +70,8 @@ ns-instruction-sim device list
 ns-instruction-sim device info stm32f103c8
 ns-instruction-sim device svd --file chip.svd --json
 ns-instruction-sim device svd --file chip.svd --peripheral USART1 --register DR --json
+ns-instruction-sim device linker stm32f103c8 --out chip.ld
+ns-instruction-sim device startup stm32f103c8 --out startup.s
 
 # 加载并运行固件（ELF 自动识别架构）
 ns-instruction-sim run --firmware app.elf --save-session s.json --json

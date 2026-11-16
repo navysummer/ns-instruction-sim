@@ -104,6 +104,22 @@ enum DeviceSub {
     List,
     /// 显示设备信息（内存映射、核心）。
     Info { device: String },
+    /// 生成 GCC 风格链接脚本（stdout 或 --out）。
+    Linker {
+        /// 目标设备键（如 stm32f103c8）。
+        device: String,
+        /// 写入文件路径（缺省打印到 stdout）。
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// 生成最小启动文件（向量表 + 复位处理器，stdout 或 --out）。
+    Startup {
+        /// 目标设备键（如 stm32f103c8）。
+        device: String,
+        /// 写入文件路径（缺省打印到 stdout）。
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// 解析并显示一个 CMSIS-SVD 设备描述文件。
     Svd {
         /// SVD 文件路径。
@@ -769,6 +785,12 @@ fn real_main() -> Result<()> {
         Command::Arch { sub: ArchSub::List } => cmd_arch_list(),
         Command::Device { sub: DeviceSub::List } => cmd_device_list(),
         Command::Device { sub: DeviceSub::Info { device } } => cmd_device_info(&device),
+        Command::Device { sub: DeviceSub::Linker { device, out } } => {
+            cmd_device_codegen(&device, out.as_deref(), CodegenKind::Linker)
+        }
+        Command::Device { sub: DeviceSub::Startup { device, out } } => {
+            cmd_device_codegen(&device, out.as_deref(), CodegenKind::Startup)
+        }
         Command::Device { sub: DeviceSub::Svd { file, peripheral, register, json } } => {
             cmd_device_svd(&file, peripheral.as_deref(), register.as_deref(), json)
         }
@@ -1123,6 +1145,38 @@ fn device_json(d: &ns_device::Device, peripherals: &[&ns_device::Peripheral]) ->
         })).collect::<Vec<_>>(),
         "peripherals": peripherals.iter().map(|p| peripheral_json(p)).collect::<Vec<_>>(),
     })
+}
+
+/// The device code-generation artifact kind.
+#[derive(Clone, Copy)]
+enum CodegenKind {
+    Linker,
+    Startup,
+}
+
+fn cmd_device_codegen(device: &str, out: Option<&Path>, kind: CodegenKind) -> Result<()> {
+    if ns_device::catalog_entry(device).is_none() {
+        bail!("未知设备: {device}");
+    }
+    let label = match kind {
+        CodegenKind::Linker => "链接脚本",
+        CodegenKind::Startup => "启动文件",
+    };
+    let text = match kind {
+        CodegenKind::Linker => ns_device::linker_script(device),
+        CodegenKind::Startup => ns_device::startup_file(device),
+    }
+    .ok_or_else(|| anyhow::anyhow!("无法生成{label}：设备 {device} 不受支持"))?;
+    match out {
+        Some(path) => {
+            std::fs::write(path, &text).with_context(|| format!("写入 {} 失败", path.display()))?;
+            println!("已生成{label} -> {}", path.display());
+        }
+        None => {
+            print!("{text}");
+        }
+    }
+    Ok(())
 }
 
 fn cmd_device_svd(
