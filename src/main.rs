@@ -319,6 +319,9 @@ enum MemSub {
         /// 输出原始二进制到文件。
         #[arg(long)]
         out: Option<PathBuf>,
+        /// 输出 JSON（地址/宽度/字节数组）。
+        #[arg(long)]
+        json: bool,
     },
     /// 写内存（字节或从文件）。
     Write {
@@ -1805,7 +1808,7 @@ fn cmd_reg(sub: RegSub) -> Result<()> {
 
 fn cmd_mem(sub: MemSub) -> Result<()> {
     match sub {
-        MemSub::Read { session, arch, addr, addr_flag, len, width, out } => {
+        MemSub::Read { session, arch, addr, addr_flag, len, width, out, json } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let (sim, _fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
@@ -1827,6 +1830,13 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                 std::fs::write(&out_path, &bytes)
                     .with_context(|| format!("写入 {} 失败", out_path.display()))?;
                 println!("已写入 {} 字节到 {}", bytes.len(), out_path.display());
+            } else if json {
+                print_json(&serde_json::json!({
+                    "address": addr_num,
+                    "len": len,
+                    "width": width,
+                    "bytes": bytes,
+                }))?;
             } else if elem_size > 1 {
                 // Print one value per element as a hex integer (little-endian).
                 for i in 0..len {

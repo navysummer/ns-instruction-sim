@@ -1781,3 +1781,24 @@ fn bp_set_by_line() {
         .unwrap();
     assert!(!out.status.success());
 }
+
+#[test]
+fn mem_read_json() {
+    let dir = tmpdir();
+    let sess = dir.join("mrj.json");
+    bootstrap(&sess);
+    Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--bytes", "0xde", "0xad", "0xbe", "0xef"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x2000_0000u64);
+    assert_eq!(json["bytes"], serde_json::json!([0xde, 0xad, 0xbe, 0xef]));
+}
