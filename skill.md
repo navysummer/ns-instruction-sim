@@ -109,6 +109,7 @@ ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8
 ns-instruction-sim disasm --session arm.json --addr 0x0 --count 4 --arm-state thumb
 ns-instruction-sim reset --session s.json --entry 0x80000000
 ns-instruction-sim state --session s.json --json
+# state --json 另含 firmware{path,base,format}（无固件时为 null）
 ns-instruction-sim periph status --session s.json
 ns-instruction-sim periph gpio --session s.json --pin 0 --value 1
 ns-instruction-sim periph config --session s.json --uart-base 0x50000000 --gpio-base 0x50002000

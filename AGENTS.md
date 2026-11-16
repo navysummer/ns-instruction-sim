@@ -134,7 +134,8 @@ ns-instruction-sim/
 1. **人类可读**（默认）：表格/文本，适合终端交互。
 2. **机器可读**（`--json`）：稳定字段的 JSON 对象（`arch`、`pc`、`cycleCount`、`halted`、
    `lastResult`、`registers`、`uartText`、`uart`、`peripherals`（UART/GPIO/定时器/看门狗/中断/`externalRegs`）、
-   `csr`（mstatus/mtvec/mepc/mcause/mie/mhartid）、`breakpoints`（地址/条件/命中次数/实际命中）），
+   `csr`（mstatus/mtvec/mepc/mcause/mie/mhartid）、`breakpoints`（地址/条件/命中次数/实际命中）、
+   `firmware`（path/base/format，无则 null）），
    字段名不随版本随意变动。
 3. **错误**：一律写 stderr，格式 `错误: <消息>`，进程退出码 `1`。成功的 `--json` 退出码 `0`。
 4. **会话文件**：JSON，含 `arch`、`pc`、`cycle_count`、`registers`、`memory`、`breakpoints`、
@@ -223,6 +224,7 @@ done
 - `device_codegen_linker_and_startup`：`device linker/startup` 生成链接脚本与启动文件（stdout/--out/未知设备错误）。
 - `device_init_codegen`：`device init` 生成外设初始化 C 骨架（含 --register 覆盖与格式校验）。
 - `mem_search_finds_pattern`：`mem search` 在内存区域定位字节模式（JSON 匹配数/地址、未找到提示）。
+- `state_reports_loaded_firmware`：`state --json` 报告已加载固件（path/base/format）。
 
 ### 5.2 反汇编宽度
 

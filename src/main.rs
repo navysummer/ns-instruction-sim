@@ -1037,6 +1037,8 @@ struct StateOutput {
     csr: serde_json::Value,
     /// Active breakpoints (address, condition, configured hit count, runtime hits).
     breakpoints: Vec<BreakpointOutput>,
+    /// Loaded firmware info (path/base/format), if any.
+    firmware: Option<FirmwareOutput>,
 }
 
 #[derive(serde::Serialize)]
@@ -1046,6 +1048,13 @@ struct BreakpointOutput {
     #[serde(rename = "hitCount")]
     hit_count: u32,
     hits: u64,
+}
+
+#[derive(serde::Serialize)]
+struct FirmwareOutput {
+    path: String,
+    base: u32,
+    format: String,
 }
 
 fn peripherals_json(sim: &Simulator) -> serde_json::Value {
@@ -1109,7 +1118,7 @@ fn csr_json(sim: &Simulator) -> serde_json::Value {
     })
 }
 
-fn state_output(sim: &Simulator, result: StepResult) -> StateOutput {
+fn state_output(sim: &Simulator, result: StepResult, firmware: Option<&FirmwareState>) -> StateOutput {
     let mut registers = BTreeMap::new();
     let count = ns_sim::reg_count_for(sim.arch);
     for i in 0..count {
@@ -1136,6 +1145,11 @@ fn state_output(sim: &Simulator, result: StepResult) -> StateOutput {
                 hits: bp.hits(),
             })
             .collect(),
+        firmware: firmware.map(|f| FirmwareOutput {
+            path: f.path.clone(),
+            base: f.base,
+            format: f.format.clone(),
+        }),
     }
 }
 
@@ -1449,7 +1463,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         Some(n) => sim.run(n),
         None => sim.run(args.max_steps),
     };
-    let output = state_output(&sim, result);
+    let output = state_output(&sim, result, fw_state.as_ref());
 
     if let Some(session_path) = args.save_session.as_ref().or_else(|| args.session.as_ref()) {
         let session = Session::capture(&sim, fw_state);
@@ -1493,7 +1507,7 @@ fn cmd_step(args: StepArgs, kind: StepKind) -> Result<()> {
         StepKind::StepOver => sim.step_over(args.max_steps),
         StepKind::StepOut => sim.step_out(args.max_steps),
     };
-    let output = state_output(&sim, result);
+    let output = state_output(&sim, result, fw.as_ref());
     if let Some(sp) = &session_path {
         let session = Session::capture(&sim, fw);
         session.save(sp)?;
@@ -1510,7 +1524,7 @@ fn cmd_step(args: StepArgs, kind: StepKind) -> Result<()> {
 fn cmd_continue(args: ContinueArgs) -> Result<()> {
     let (mut sim, fw, _) = load_or_create(Some(&args.session), None, None, "0")?;
     let result = sim.run(args.max_steps);
-    let output = state_output(&sim, result);
+    let output = state_output(&sim, result, fw.as_ref());
     if args.save {
         let session = Session::capture(&sim, fw);
         session.save(&args.session)?;
@@ -1858,13 +1872,13 @@ fn cmd_reset(args: ResetArgs) -> Result<()> {
 }
 
 fn cmd_state(args: StateArgs) -> Result<()> {
-    let (sim, _, _) = load_or_create(
+    let (sim, fw, _) = load_or_create(
         args.session.as_deref(),
         args.arch.as_deref(),
         args.firmware.as_deref(),
         &args.base,
     )?;
-    let output = state_output(&sim, StepResult::Advanced);
+    let output = state_output(&sim, StepResult::Advanced, fw.as_ref());
     if args.json {
         print_json(&output)?;
     } else {

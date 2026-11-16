@@ -955,6 +955,28 @@ fn state_includes_peripherals_and_csr() {
 }
 
 #[test]
+fn state_reports_loaded_firmware() {
+    let dir = tmpdir();
+    let sess = dir.join("state_fw.json");
+    let elf = dir.join("state_fw.elf");
+    write_riscv_elf(&elf);
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["firmware"]["format"], "elf");
+    assert!(json["firmware"]["path"].as_str().unwrap().contains("state_fw.elf"));
+    assert_eq!(json["firmware"]["base"], 0u64);
+}
+
+#[test]
 fn version_command_and_flag() {
     let out = Command::new(bin()).arg("version").output().unwrap();
     assert!(out.status.success());
