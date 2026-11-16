@@ -755,6 +755,69 @@ fn periph_reg_name_access() {
 }
 
 #[test]
+fn periph_field_access() {
+    let dir = tmpdir();
+    let sess = dir.join("field.json");
+    bootstrap(&sess);
+    Command::new(bin())
+        .args(["periph", "svd-load", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8"])
+        .output()
+        .unwrap();
+
+    // Read a field by name (RCC.CR.HSION, bit 0 width 1).
+    let out = Command::new(bin())
+        .args(["periph", "field-get", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--peripheral", "RCC",
+               "--register", "CR", "--field", "HSION", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["value"], 0u64);
+    assert_eq!(json["bitWidth"], 1u64);
+
+    // Set the field and read it back (preserves other bits).
+    let out = Command::new(bin())
+        .args(["periph", "field-set", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--peripheral", "RCC",
+               "--register", "CR", "--field", "HSION", "--value", "1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["register"], 1u64);
+    let out = Command::new(bin())
+        .args(["periph", "field-get", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--peripheral", "RCC",
+               "--register", "CR", "--field", "HSION", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["value"], 1u64);
+
+    // Multi-bit field reset value (GPIOA.CRL.MODE0 = 0x4 from 0x44444444).
+    let out = Command::new(bin())
+        .args(["periph", "field-get", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--peripheral", "GPIOA",
+               "--register", "CRL", "--field", "MODE0", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["value"], 4u64);
+
+    // Unknown field must fail.
+    let out = Command::new(bin())
+        .args(["periph", "field-get", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--peripheral", "RCC",
+               "--register", "CR", "--field", "NOPE"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("无位域"));
+}
+
+#[test]
 fn periph_svd_load_instruction_write_couples() {
     let dir = tmpdir();
     let sess = dir.join("svd_exec.json");

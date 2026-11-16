@@ -585,6 +585,47 @@ enum PeriphSub {
         #[arg(long)]
         json: bool,
     },
+    /// 读取外设寄存器的命名位域（SVD field）。
+    FieldGet {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 内置设备键（如 stm32f103c8）。
+        #[arg(long)]
+        device: String,
+        /// 外设名（如 TIM2）。
+        #[arg(long)]
+        peripheral: String,
+        /// 寄存器名（如 CR1）。
+        #[arg(long)]
+        register: String,
+        /// 位域名（如 CEN）。
+        #[arg(long)]
+        field: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 写外设寄存器的命名位域（SVD field），保留其他位。
+    FieldSet {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 内置设备键（如 stm32f103c8）。
+        #[arg(long)]
+        device: String,
+        /// 外设名（如 TIM2）。
+        #[arg(long)]
+        peripheral: String,
+        /// 寄存器名（如 CR1）。
+        #[arg(long)]
+        register: String,
+        /// 位域名（如 CEN）。
+        #[arg(long)]
+        field: String,
+        /// 字段值（十进制/十六进制）。
+        #[arg(long)]
+        value: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -1800,6 +1841,31 @@ fn resolve_reg_address(
     }
 }
 
+/// Resolve a named SVD field to its register address, bit offset and width.
+fn resolve_reg_field(
+    device: &str,
+    peripheral: &str,
+    register: &str,
+    field: &str,
+) -> Result<(u32, u32, u32)> {
+    let dev = ns_device::device_for_target(device)
+        .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {device}"))?;
+    let p = dev
+        .peripheral(peripheral)
+        .ok_or_else(|| anyhow::anyhow!("设备 {device} 无外设: {peripheral}"))?;
+    let r = p
+        .registers
+        .iter()
+        .find(|r| r.name == register)
+        .ok_or_else(|| anyhow::anyhow!("外设 {peripheral} 无寄存器: {register}"))?;
+    let f = r
+        .fields
+        .iter()
+        .find(|f| f.name == field)
+        .ok_or_else(|| anyhow::anyhow!("寄存器 {register} 无位域: {field}"))?;
+    Ok((r.address as u32, f.bit_offset, f.bit_width))
+}
+
 fn cmd_periph(sub: PeriphSub) -> Result<()> {
     match sub {
         PeriphSub::Status { session, json } => {
@@ -2096,6 +2162,67 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 print_json(&serde_json::json!({ "address": addr_num, "written": data.len() }))?;
             } else {
                 println!("已写入 {} 字节 @ 0x{:08x}", data.len(), addr_num);
+            }
+            Ok(())
+        }
+        PeriphSub::FieldGet { session, device, peripheral, register, field, json } => {
+            let (addr, bit_offset, bit_width) =
+                resolve_reg_field(&device, &peripheral, &register, &field)?;
+            let (sim, _, _) = load_or_create(Some(&session), None, None, "0")?;
+            let mask = if bit_width >= 32 { u32::MAX } else { (1u32 << bit_width) - 1 };
+            let reg_value = sim.peripheral_read_reg(addr).unwrap_or_else(|| sim.read_u32(addr));
+            let field_value = (reg_value >> bit_offset) & mask;
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr,
+                    "field": format!("{}.{}.{}", peripheral, register, field),
+                    "bitOffset": bit_offset,
+                    "bitWidth": bit_width,
+                    "value": field_value,
+                    "register": reg_value,
+                }))?;
+            } else {
+                println!(
+                    "{}.{}.{} = 0x{:x} (bit {}:{} reg=0x{:08x})",
+                    peripheral, register, field, field_value, bit_offset,
+                    bit_offset + bit_width.saturating_sub(1), reg_value
+                );
+            }
+            Ok(())
+        }
+        PeriphSub::FieldSet { session, device, peripheral, register, field, value, json } => {
+            let (addr, bit_offset, bit_width) =
+                resolve_reg_field(&device, &peripheral, &register, &field)?;
+            let new_bits = parse_num(&value)?;
+            let mask = if bit_width >= 32 { u32::MAX } else { (1u32 << bit_width) - 1 };
+            if new_bits > mask {
+                bail!("字段值超出 {} 位: {}", bit_width, value);
+            }
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let cur = sim.peripheral_read_reg(addr).unwrap_or_else(|| sim.read_u32(addr));
+            let new_reg =
+                (cur & !(mask << bit_offset)) | ((new_bits << bit_offset) & (mask << bit_offset));
+            let bytes = new_reg.to_le_bytes();
+            sim.write_bytes(addr, &bytes);
+            for (i, b) in bytes.iter().enumerate() {
+                sim.peripheral_write_reg(addr.wrapping_add(i as u32), *b);
+            }
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr,
+                    "field": format!("{}.{}.{}", peripheral, register, field),
+                    "bitOffset": bit_offset,
+                    "bitWidth": bit_width,
+                    "value": new_bits,
+                    "register": new_reg,
+                }))?;
+            } else {
+                println!(
+                    "{}.{}.{} = 0x{:x} (reg=0x{:08x})",
+                    peripheral, register, field, new_bits, new_reg
+                );
             }
             Ok(())
         }

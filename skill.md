@@ -143,6 +143,8 @@ ns-instruction-sim periph reg-read --session s.json --addr 0x40002000 --len 4
 ns-instruction-sim periph reg-write --session s.json --addr 0x40000000 --bytes 0x48 0x69
 ns-instruction-sim periph reg-read --session s.json --name TIM2.CR1 --device stm32f103c8
 ns-instruction-sim periph reg-write --session s.json --name TIM2.CR1 --device stm32f103c8 --bytes 0x01 0x00 0x00 0x00
+ns-instruction-sim periph field-get --session s.json --device stm32f103c8 --peripheral RCC --register CR --field HSION
+ns-instruction-sim periph field-set --session s.json --device stm32f103c8 --peripheral RCC --register CR --field HSION --value 1
 ns-instruction-sim periph timer --session s.json --index 1 --enabled true --prescaler 8 --auto-reload 1000
 
 # 从 SVD 文件加载芯片寄存器（地址 -> 复位值）到仿真器，支持直读写与持久化

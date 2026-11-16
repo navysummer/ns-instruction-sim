@@ -122,7 +122,7 @@ ns-instruction-sim/
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态） | `--arch --addr --count --arm-state --session` | 文本 |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry` | 文本 |
 | `state` | — | 完整状态（JSON/文本） | `--session --arch --firmware --base --json` | 状态/JSON |
-| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写（地址或名称）/列出已加载寄存器/SVD 加载 | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --file --device --peripheral --force --session --json` | 表/JSON |
+| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载 | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --file --device --peripheral --register --field --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `line` / `addr` | ELF 符号与源行号映射 | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` | 周期计数/指令周期估算/外设推进 | `--addr --cycles --session --json` | 值/JSON |
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
@@ -219,6 +219,7 @@ done
 - `periph_svd_load_by_device_key`：`periph svd-load --device` 从内置 SVD 加载；缺源报错。
 - `periph_reg_list_shows_loaded_registers`：`periph reg-list` 列出已加载寄存器（--device 注释名/JSON/空会话）。
 - `periph_reg_name_access`：`periph reg-read/reg-write --name PERIPH.REG` 按名读写（未知寄存器/缺源报错）。
+- `periph_field_access`：`periph field-get/field-set` 按 SVD 位域读写并保留其他位。
 - `device_codegen_linker_and_startup`：`device linker/startup` 生成链接脚本与启动文件（stdout/--out/未知设备错误）。
 - `device_init_codegen`：`device init` 生成外设初始化 C 骨架（含 --register 覆盖与格式校验）。
 
