@@ -173,6 +173,9 @@ struct RunArgs {
     /// 只运行 N 条指令（优先级高于 --max-steps；到断点/停机则提前停止）。
     #[arg(long)]
     steps: Option<u64>,
+    /// 运行到指定地址（临时断点，不持久化）。
+    #[arg(long)]
+    until: Option<String>,
     /// 保存会话到指定文件（JSON）。
     #[arg(long)]
     save_session: Option<PathBuf>,
@@ -1476,12 +1479,20 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     load_firmware_into(&mut sim, &args.firmware, base)?;
     sim.cycle_accurate = args.cycle_accurate;
 
+    // `--until ADDR` installs a temporary breakpoint removed before saving.
+    let until_addr = args.until.as_deref().map(parse_num).transpose()?;
+    let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
     // `--steps N` is a bounded "run exactly N instructions" mode; otherwise
     // run to completion with the `--max-steps` upper bound.
     let result = match args.steps {
         Some(n) => sim.run(n),
         None => sim.run(args.max_steps),
     };
+    if temp_bp {
+        if let Some(addr) = until_addr {
+            sim.clear_breakpoint(addr);
+        }
+    }
     let output = state_output(&sim, result, fw_state.as_ref());
 
     if let Some(session_path) = args.save_session.as_ref().or_else(|| args.session.as_ref()) {

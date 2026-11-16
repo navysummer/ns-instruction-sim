@@ -975,6 +975,31 @@ fn run_steps_runs_exactly_n_instructions() {
 }
 
 #[test]
+fn run_until_stops_at_address() {
+    let dir = tmpdir();
+    let elf = dir.join("run_until.elf");
+    let sess = dir.join("run_until.json");
+    write_riscv_elf(&elf);
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(),
+               "--until", "0x80000008", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8000_0008u64);
+    assert_eq!(json["lastResult"], "breakpoint");
+    assert_eq!(json["registers"]["ra"], 1u64);
+    // The temporary breakpoint is not persisted.
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("无断点"));
+}
+
+#[test]
 fn state_includes_peripherals_and_csr() {
     let dir = tmpdir();
     let sess = dir.join("state_full.json");

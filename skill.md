@@ -80,6 +80,7 @@ ns-instruction-sim run --firmware app.elf --save-session s.json --json
 ns-instruction-sim run --firmware app.bin --arch riscv --base 0x80000000 --max-steps 1000
 ns-instruction-sim run --firmware app.elf --steps 1000 --json
 ns-instruction-sim run --firmware app.elf --session s.json --json
+ns-instruction-sim run --firmware app.elf --until 0x80000008 --json
 
 # 单步 / 步过 / 步出 / 连续运行
 ns-instruction-sim step --session s.json

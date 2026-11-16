@@ -8,6 +8,7 @@
 ns-instruction-sim run --firmware app.elf --save-session s.json --json
 ns-instruction-sim run --firmware app.elf --steps 1000 --json
 ns-instruction-sim run --firmware app.elf --session s.json --json
+ns-instruction-sim run --firmware app.elf --until 0x80000008 --json
 ns-instruction-sim version
 
 # 单步 / 连续运行 / 寄存器 / 内存 / 断点 / 反汇编 / 状态 / 外设
