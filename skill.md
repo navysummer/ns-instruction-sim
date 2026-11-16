@@ -141,6 +141,8 @@ ns-instruction-sim csr set --session s.json mtvec 0x80000010
 # 外设寄存器直读写（UART/GPIO/TIMER/WATCHDOG 内存映射）
 ns-instruction-sim periph reg-read --session s.json --addr 0x40002000 --len 4
 ns-instruction-sim periph reg-write --session s.json --addr 0x40000000 --bytes 0x48 0x69
+ns-instruction-sim periph reg-read --session s.json --name TIM2.CR1 --device stm32f103c8
+ns-instruction-sim periph reg-write --session s.json --name TIM2.CR1 --device stm32f103c8 --bytes 0x01 0x00 0x00 0x00
 ns-instruction-sim periph timer --session s.json --index 1 --enabled true --prescaler 8 --auto-reload 1000
 
 # 从 SVD 文件加载芯片寄存器（地址 -> 复位值）到仿真器，支持直读写与持久化

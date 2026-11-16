@@ -541,9 +541,15 @@ enum PeriphSub {
     RegRead {
         #[arg(short, long)]
         session: PathBuf,
-        /// 外设寄存器地址。
+        /// 外设寄存器地址（与 --name 二选一）。
         #[arg(long = "addr")]
-        addr: String,
+        addr: Option<String>,
+        /// 内置设备键（配合 --name，如 stm32f103c8）。
+        #[arg(long)]
+        device: Option<String>,
+        /// 寄存器名 PERIPH.REG（如 TIM2.CR1，与 --addr 二选一）。
+        #[arg(long)]
+        name: Option<String>,
         /// 读取字节数（默认 4）。
         #[arg(long, default_value = "4")]
         len: usize,
@@ -564,9 +570,15 @@ enum PeriphSub {
     RegWrite {
         #[arg(short, long)]
         session: PathBuf,
-        /// 外设寄存器地址。
+        /// 外设寄存器地址（与 --name 二选一）。
         #[arg(long = "addr")]
-        addr: String,
+        addr: Option<String>,
+        /// 内置设备键（配合 --name，如 stm32f103c8）。
+        #[arg(long)]
+        device: Option<String>,
+        /// 寄存器名 PERIPH.REG（如 TIM2.CR1，与 --addr 二选一）。
+        #[arg(long)]
+        name: Option<String>,
         /// 要写入的字节（空格分隔，支持 0xNN）。
         #[arg(long, value_delimiter = ' ', num_args = 1..)]
         bytes: Vec<String>,
@@ -1756,6 +1768,38 @@ fn cmd_state(args: StateArgs) -> Result<()> {
     Ok(())
 }
 
+/// Resolve a peripheral-register address from either `--addr` or
+/// `--name PERIPH.REG` (with `--device` selecting the built-in SVD).
+fn resolve_reg_address(
+    addr: Option<&str>,
+    name: Option<&str>,
+    device: Option<&str>,
+) -> Result<u32> {
+    match (addr, name) {
+        (Some(a), None) => parse_num(a),
+        (None, Some(n)) => {
+            let dev_key =
+                device.ok_or_else(|| anyhow::anyhow!("--name 需要配合 --device"))?;
+            let (periph, reg) = n
+                .split_once('.')
+                .ok_or_else(|| anyhow::anyhow!("--name 格式应为 PERIPH.REG: {n}"))?;
+            let dev = ns_device::device_for_target(dev_key)
+                .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {dev_key}"))?;
+            let p = dev
+                .peripheral(periph)
+                .ok_or_else(|| anyhow::anyhow!("设备 {dev_key} 无外设: {periph}"))?;
+            let r = p
+                .registers
+                .iter()
+                .find(|r| r.name == reg)
+                .ok_or_else(|| anyhow::anyhow!("外设 {periph} 无寄存器: {reg}"))?;
+            Ok(r.address as u32)
+        }
+        (Some(_), Some(_)) => bail!("--addr 与 --name 只能二选一"),
+        (None, None) => bail!("请提供 --addr 或 --name"),
+    }
+}
+
 fn cmd_periph(sub: PeriphSub) -> Result<()> {
     match sub {
         PeriphSub::Status { session, json } => {
@@ -1961,8 +2005,8 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             Ok(())
         }
-        PeriphSub::RegRead { session, addr, len, json } => {
-            let addr_num = parse_num(&addr)?;
+        PeriphSub::RegRead { session, addr, device, name, len, json } => {
+            let addr_num = resolve_reg_address(addr.as_deref(), name.as_deref(), device.as_deref())?;
             let (sim, _, _) = load_or_create(Some(&session), None, None, "0")?;
             let mut bytes = Vec::with_capacity(len);
             // If the address maps to a peripheral register, report the 32-bit
@@ -2028,8 +2072,8 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             Ok(())
         }
-        PeriphSub::RegWrite { session, addr, bytes, json } => {
-            let addr_num = parse_num(&addr)?;
+        PeriphSub::RegWrite { session, addr, device, name, bytes, json } => {
+            let addr_num = resolve_reg_address(addr.as_deref(), name.as_deref(), device.as_deref())?;
             let mut data = Vec::new();
             for b in &bytes {
                 let v = parse_num(b)?;

@@ -699,6 +699,62 @@ fn periph_reg_list_shows_loaded_registers() {
 }
 
 #[test]
+fn periph_reg_name_access() {
+    let dir = tmpdir();
+    let sess = dir.join("reg_name.json");
+    bootstrap(&sess);
+    Command::new(bin())
+        .args(["periph", "svd-load", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8"])
+        .output()
+        .unwrap();
+
+    // Read TIM2.CR1 by name (reset value 0).
+    let out = Command::new(bin())
+        .args(["periph", "reg-read", "--session", sess.to_str().unwrap(),
+               "--name", "TIM2.CR1", "--device", "stm32f103c8", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x4000_0000u64);
+    assert_eq!(json["bytes"][0], 0u64);
+
+    // Write and read back by name.
+    let out = Command::new(bin())
+        .args(["periph", "reg-write", "--session", sess.to_str().unwrap(),
+               "--name", "TIM2.CR1", "--device", "stm32f103c8",
+               "--bytes", "0x01", "0x00", "0x00", "0x00", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["periph", "reg-read", "--session", sess.to_str().unwrap(),
+               "--name", "TIM2.CR1", "--device", "stm32f103c8", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"][0], 1u64);
+
+    // Unknown register must fail.
+    let out = Command::new(bin())
+        .args(["periph", "reg-read", "--session", sess.to_str().unwrap(),
+               "--name", "TIM2.NOPE", "--device", "stm32f103c8"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("无寄存器"));
+
+    // Neither --addr nor --name must fail.
+    let out = Command::new(bin())
+        .args(["periph", "reg-read", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--addr 或 --name"));
+}
+
+#[test]
 fn periph_svd_load_instruction_write_couples() {
     let dir = tmpdir();
     let sess = dir.join("svd_exec.json");
