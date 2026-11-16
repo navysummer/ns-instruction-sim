@@ -482,6 +482,8 @@ enum BpSub {
         /// 一次性断点：命中后自动清除。
         #[arg(long)]
         once: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// 清除断点。
     Clear {
@@ -493,11 +495,15 @@ enum BpSub {
         /// 地址（--addr 形式）。
         #[arg(long = "addr", conflicts_with = "addr")]
         addr_flag: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// 清除全部断点。
     ClearAll {
         #[arg(short, long)]
         session: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
     /// 启用断点。
     Enable {
@@ -509,6 +515,8 @@ enum BpSub {
         /// 地址（--addr 形式）。
         #[arg(long = "addr", conflicts_with = "addr")]
         addr_flag: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// 禁用断点（保留在列表中但不再暂停）。
     Disable {
@@ -520,6 +528,8 @@ enum BpSub {
         /// 地址（--addr 形式）。
         #[arg(long = "addr", conflicts_with = "addr")]
         addr_flag: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -2114,7 +2124,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             }
             Ok(())
         }
-        BpSub::Set { session, addr, addr_flag, symbol, line, condition, hit_count, once } => {
+        BpSub::Set { session, addr, addr_flag, symbol, line, condition, hit_count, once, json } => {
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             let addr_num = if let Some(sym) = &symbol {
                 let found = sim
@@ -2150,39 +2160,61 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
                 parse_num(&addr)?
             };
+            let cond = condition.unwrap_or_default();
             if once {
-                sim.set_breakpoint_ex_once(addr_num, condition.unwrap_or_default(), hit_count);
+                sim.set_breakpoint_ex_once(addr_num, cond.clone(), hit_count);
             } else {
-                sim.set_breakpoint_ex(addr_num, condition.unwrap_or_default(), hit_count);
+                sim.set_breakpoint_ex(addr_num, cond.clone(), hit_count);
             }
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
-            if once {
+            let once = once;
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr_num,
+                    "condition": cond,
+                    "hitCount": hit_count,
+                    "once": once,
+                    "enabled": true,
+                }))?;
+            } else if once {
                 println!("一次性断点已设置 @ 0x{:08x}", addr_num);
             } else {
                 println!("断点已设置 @ 0x{:08x}", addr_num);
             }
             Ok(())
         }
-        BpSub::Clear { session, addr, addr_flag } => {
+        BpSub::Clear { session, addr, addr_flag, json } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             let removed = sim.clear_breakpoint(addr_num);
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
-            println!("断点{}已清除 @ 0x{:08x}", if removed { "" } else { " 未找到，" }, addr_num);
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr_num,
+                    "removed": removed,
+                }))?;
+            } else {
+                println!("断点{}已清除 @ 0x{:08x}", if removed { "" } else { " 未找到，" }, addr_num);
+            }
             Ok(())
         }
-        BpSub::ClearAll { session } => {
+        BpSub::ClearAll { session, json } => {
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let count = sim.breakpoints.len();
             sim.breakpoints.clear();
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
-            println!("已清除全部断点");
+            if json {
+                print_json(&serde_json::json!({ "cleared": count }))?;
+            } else {
+                println!("已清除全部断点");
+            }
             Ok(())
         }
-        BpSub::Enable { session, addr, addr_flag } => {
+        BpSub::Enable { session, addr, addr_flag, json } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
@@ -2192,10 +2224,14 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             }
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
-            println!("已启用断点 @ 0x{:08x}", addr_num);
+            if json {
+                print_json(&serde_json::json!({ "address": addr_num, "enabled": true }))?;
+            } else {
+                println!("已启用断点 @ 0x{:08x}", addr_num);
+            }
             Ok(())
         }
-        BpSub::Disable { session, addr, addr_flag } => {
+        BpSub::Disable { session, addr, addr_flag, json } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
@@ -2205,7 +2241,11 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             }
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
-            println!("已禁用断点 @ 0x{:08x}", addr_num);
+            if json {
+                print_json(&serde_json::json!({ "address": addr_num, "enabled": false }))?;
+            } else {
+                println!("已禁用断点 @ 0x{:08x}", addr_num);
+            }
             Ok(())
         }
     }

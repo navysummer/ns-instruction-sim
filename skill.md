@@ -116,6 +116,7 @@ ns-instruction-sim bp set --session s.json --addr 0x80000008 --condition "x1 == 
 ns-instruction-sim bp set --session s.json --addr 0x8000000c --once
 ns-instruction-sim bp set --session s.json --symbol main
 ns-instruction-sim bp set --session s.json --line main.c:10
+ns-instruction-sim bp set --session s.json --addr 0x80000004 --json
 ns-instruction-sim bp list --session s.json
 ns-instruction-sim bp clear --session s.json --addr 0x80000004
 ns-instruction-sim bp disable --session s.json --addr 0x80000004

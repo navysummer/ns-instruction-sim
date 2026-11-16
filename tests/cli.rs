@@ -1925,3 +1925,45 @@ fn continue_source_annotates_stop() {
     assert!(text.contains("PC=0x80000008"), "missing PC: {text}");
     assert!(text.contains("<elf>:1"), "missing source: {text}");
 }
+
+#[test]
+fn bp_management_json() {
+    let dir = tmpdir();
+    let sess = dir.join("bpj.json");
+    bootstrap(&sess);
+    // set
+    let out = Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(), "--addr", "0x80000004", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x8000_0004u64);
+    assert_eq!(json["enabled"], true);
+    // disable / enable
+    let out = Command::new(bin())
+        .args(["bp", "disable", "--session", sess.to_str().unwrap(), "--addr", "0x80000004", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["enabled"], false);
+    let out = Command::new(bin())
+        .args(["bp", "enable", "--session", sess.to_str().unwrap(), "--addr", "0x80000004", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["enabled"], true);
+    // clear / clear-all
+    let out = Command::new(bin())
+        .args(["bp", "clear", "--session", sess.to_str().unwrap(), "--addr", "0x80000004", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["removed"], true);
+    let out = Command::new(bin())
+        .args(["bp", "clear-all", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["cleared"], 0u64);
+}

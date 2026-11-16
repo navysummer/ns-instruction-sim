@@ -118,7 +118,7 @@ ns-instruction-sim/
 | `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json --trace --source` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` | 内存读/写/填充/搜索模式/加载固件/导出（C 数组或十六进制） | `--addr --len --bytes --values --file --value --pattern --firmware --base --arch --name --format --width --out --json` | hex/C/JSON |
-| `bp` | `list` / `set` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置） | `--addr --symbol --line --condition --hit-count --once --session` | 表/JSON |
+| `bp` | `list` / `set` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置） | `--addr --symbol --line --condition --hit-count --once --session --json` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/原始字节/JSON） | `--arch --addr --count --arm-state --source --raw --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要） | `--session --arch --firmware --base --json --fields --summary` | 状态/JSON/摘要 |
@@ -213,6 +213,7 @@ done
 - `bp_enable_disable_roundtrip`：`bp disable` 不再暂停，`bp enable` 恢复暂停。
 - `bp_set_by_symbol`：`bp set --symbol` 按符号名解析地址设置断点（含未找到错误路径）。
 - `bp_set_by_line`：`bp set --line file:line` 按源码行号设置断点（含非法行号错误路径）。
+- `bp_management_json`：`bp set/clear/clear-all/enable/disable --json` 机器可读确认。
 - `periph_timer_config_and_uart_write`：定时器配置与 UART 寄存器写输出。
 - `device_svd_parse_and_filter`：SVD 文件解析、外设/寄存器过滤与错误路径。
 - `run_steps_runs_exactly_n_instructions`：`--steps N` 精确运行 N 条指令并停住。
