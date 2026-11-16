@@ -111,7 +111,7 @@ ns-instruction-sim/
 | `version` | — | 显示版本号 | — | 文本 |
 | `arch` | `list` | 列出支持的架构与示例设备 | — | 表 |
 | `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析（文件或内置）/链接脚本/启动文件/外设初始化 C 骨架 | `--file --device --peripheral --register --out --json` | 表/文本/JSON |
-| `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址（可指定会话保留外设/SVD 寄存器） | `--firmware --session --arch --base --max-steps --steps --until --cycle-accurate --save-session --json` | 状态 |
+| `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址（可指定会话保留外设/SVD 寄存器） | `--firmware --session --arch --base --max-steps --steps --until --cycle-accurate --save-session --json --trace` | 状态 |
 | `step` | — | 单步一条指令 | `--session --arch --firmware --base --json --source` | 状态 |
 | `step-over` | — | 步过（跳过调用） | 同上 | 状态 |
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
@@ -213,6 +213,7 @@ done
 - `device_svd_parse_and_filter`：SVD 文件解析、外设/寄存器过滤与错误路径。
 - `run_steps_runs_exactly_n_instructions`：`--steps N` 精确运行 N 条指令并停住。
 - `run_until_stops_at_address`：`run --until` 临时断点运行到指定地址且不持久化。
+- `run_trace_prints_each_instruction`：`run --trace` 打印每条执行指令的 PC/反汇编/来源。
 - `state_includes_peripherals_and_csr`：`state --json` 含外设与 CSR 完整快照。
 - `version_command_and_flag`：`version` 子命令与 `--version` 均输出版本号。
 - `mem_write_read_arm_roundtrip`：非 RISC-V（ARM）内存写跨会话持久化。

@@ -1453,3 +1453,30 @@ fn step_source_annotates_lines() {
     assert!(text.contains("PC=0x80000008"), "missing PC: {text}");
     assert!(text.contains("<elf>:1"), "missing source annotation: {text}");
 }
+
+#[test]
+fn run_trace_prints_each_instruction() {
+    let dir = tmpdir();
+    let sess = dir.join("trace.json");
+    let elf = dir.join("trace.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(),
+               "--trace", "--steps", "3"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("[0] 0x80000000"), "missing step 0: {text}");
+    assert!(text.contains("[1] 0x80000004"), "missing step 1: {text}");
+    assert!(text.contains("[2] 0x80000008"), "missing step 2: {text}");
+    assert!(text.contains("<elf>:1"), "missing source: {text}");
+    assert!(text.contains("-> 0x8000000c"), "missing result PC: {text}");
+}

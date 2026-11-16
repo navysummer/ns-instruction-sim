@@ -185,6 +185,9 @@ struct RunArgs {
     /// 输出 JSON 状态（默认文本）。
     #[arg(long)]
     json: bool,
+    /// 打印每条执行指令的 PC/反汇编/来源（逐步追踪）。
+    #[arg(long)]
+    trace: bool,
 }
 
 #[derive(Args)]
@@ -1508,9 +1511,13 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
     // `--steps N` is a bounded "run exactly N instructions" mode; otherwise
     // run to completion with the `--max-steps` upper bound.
-    let result = match args.steps {
-        Some(n) => sim.run(n),
-        None => sim.run(args.max_steps),
+    let result = if args.trace {
+        trace_run(&mut sim, args.steps, args.max_steps)
+    } else {
+        match args.steps {
+            Some(n) => sim.run(n),
+            None => sim.run(args.max_steps),
+        }
     };
     if temp_bp {
         if let Some(addr) = until_addr {
@@ -1540,6 +1547,37 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Run with per-instruction tracing: print each executed instruction's
+/// address, disassembly and source line, then the resulting PC/state. Stops
+/// at a breakpoint or halt (or after the step/halt bound).
+fn trace_run(sim: &mut Simulator, steps: Option<u64>, max_steps: u64) -> StepResult {
+    let limit = steps.unwrap_or(max_steps);
+    let mut count = 0u64;
+    loop {
+        if count >= limit {
+            return StepResult::Advanced;
+        }
+        let pc_before = sim.program_counter();
+        let result = sim.step();
+        let insn = ns_sim::disassemble_one_state(
+            sim.arch,
+            pc_before,
+            &|addr| sim.read_u8(addr),
+            sim.arm_state(),
+        );
+        let src = source_annotation(sim, pc_before);
+        println!(
+            "[{count}] 0x{pc_before:08x}: {insn}{src}  -> 0x{:08x} {}",
+            sim.program_counter(),
+            fmt_step_result(result)
+        );
+        count += 1;
+        if result != StepResult::Advanced {
+            return result;
+        }
+    }
 }
 
 enum StepKind {
