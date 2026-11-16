@@ -529,6 +529,9 @@ struct DisasmArgs {
     /// 同时显示每条指令的原始字节（十六进制）。
     #[arg(long)]
     raw: bool,
+    /// 输出 JSON 数组（地址/反汇编/原始字节/来源）。
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -2202,6 +2205,7 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
         _ => sim.arm_state(),
     };
     let read = |addr: u32| -> u8 { sim.read_u8(addr) };
+    let mut items = Vec::new();
     for _ in 0..args.count {
         let width = ns_sim::instruction_size(arch, pc, &read, arm_state);
         let text = ns_sim::disassemble_one_state(arch, pc, &read, arm_state);
@@ -2217,13 +2221,26 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
         } else {
             String::new()
         };
-        if args.source {
+        if args.json {
+            items.push(serde_json::json!({
+                "address": pc,
+                "text": text,
+                "bytes": (0..width)
+                    .map(|i| sim.read_u8(pc.wrapping_add(i as u32)))
+                    .collect::<Vec<_>>(),
+                "source": source_annotation(&sim, pc).trim().to_string(),
+                "armState": arm_state,
+            }));
+        } else if args.source {
             let src = source_annotation(&sim, pc);
             println!("0x{pc:08x}: {text}{raw}  {src}");
         } else {
             println!("0x{pc:08x}: {text}{raw}");
         }
         pc = pc.wrapping_add(width);
+    }
+    if args.json {
+        print_json(&items)?;
     }
     Ok(())
 }

@@ -1802,3 +1802,25 @@ fn mem_read_json() {
     assert_eq!(json["address"], 0x2000_0000u64);
     assert_eq!(json["bytes"], serde_json::json!([0xde, 0xad, 0xbe, 0xef]));
 }
+
+#[test]
+fn disasm_json() {
+    let dir = tmpdir();
+    let sess = dir.join("dj.json");
+    let elf = dir.join("dj.elf");
+    write_riscv_elf(&elf);
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--count", "1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000_0004u64);
+    assert_eq!(json[0]["bytes"], serde_json::json!([0x13, 0x81, 0x20, 0x00]));
+    assert!(json[0]["text"].as_str().unwrap().contains("addi"));
+}
