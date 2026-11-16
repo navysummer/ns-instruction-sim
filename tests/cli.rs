@@ -1338,3 +1338,30 @@ fn disasm_arm_state_override() {
         .unwrap();
     assert!(!out.status.success());
 }
+
+#[test]
+fn disasm_source_annotates_lines() {
+    let dir = tmpdir();
+    let sess = dir.join("dsrc.json");
+    let elf = dir.join("dsrc.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--count", "2", "--source"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("<elf>:1"), "missing source annotation: {text}");
+}

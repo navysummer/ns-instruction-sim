@@ -451,6 +451,9 @@ struct DisasmArgs {
     /// ARM 状态：`a32` 或 `thumb`（仅 ARM；默认取内核当前状态）。
     #[arg(long, value_parser = ["a32", "thumb"])]
     arm_state: Option<String>,
+    /// 标注每行来源（file:line，来自 ELF 行表/符号回退）。
+    #[arg(long)]
+    source: bool,
 }
 
 #[derive(Args)]
@@ -1905,7 +1908,16 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
     let read = |addr: u32| -> u8 { sim.read_u8(addr) };
     for _ in 0..args.count {
         let text = ns_sim::disassemble_one_state(arch, pc, &read, arm_state);
-        println!("0x{pc:08x}: {text}");
+        if args.source {
+            let src = sim
+                .line_for_address(pc)
+                .and_then(|(file, line)| sim.source_files.get(file).map(|f| (f, line)))
+                .map(|(f, line)| format!("; {f}:{line}"))
+                .unwrap_or_default();
+            println!("0x{pc:08x}: {text}  {src}");
+        } else {
+            println!("0x{pc:08x}: {text}");
+        }
         let width = ns_sim::instruction_size(arch, pc, &read, arm_state);
         pc = pc.wrapping_add(width);
     }

@@ -22,6 +22,7 @@ ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pa
 ns-instruction-sim bp set --session s.json --addr 0x80000004
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8
 ns-instruction-sim disasm --session arm.json --addr 0x0 --count 4 --arm-state thumb
+ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8 --source
 ns-instruction-sim state --session s.json --json
 ns-instruction-sim periph status --session s.json
 
