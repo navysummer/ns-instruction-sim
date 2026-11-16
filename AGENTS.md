@@ -117,7 +117,7 @@ ns-instruction-sim/
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
 | `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json --trace` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
-| `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` | 内存读/写/填充/搜索模式/加载固件/导出（C 数组或十六进制） | `--addr --len --bytes --file --value --pattern --firmware --base --arch --name --format --width --out --json` | hex/C/JSON |
+| `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` | 内存读/写/填充/搜索模式/加载固件/导出（C 数组或十六进制） | `--addr --len --bytes --values --file --value --pattern --firmware --base --arch --name --format --width --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置） | `--addr --symbol --line --condition --hit-count --once --session` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/原始字节/JSON） | `--arch --addr --count --arm-state --source --raw --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
@@ -222,6 +222,7 @@ done
 - `mem_dump_c_array`：`mem dump --format c` 生成 C 数组（含非法格式错误路径）。
 - `mem_read_word_width`：`mem read --width` 按字节/半字/字/双字读取（含非法宽度错误路径）。
 - `mem_read_json`：`mem read --json` 输出地址/宽度/字节数组。
+- `mem_write_word_width`：`mem write --width --values` 按字/半字小端写入（含越界错误路径）。
 - `state_fields_and_summary`：`state --fields` JSON 字段子集、`state --summary` 单行摘要。
 - `reg_list_filter`：`reg list --filter` 按名称子串筛选寄存器。
 - `reset_json`：`reset --json` 输出 PC/周期/停止 JSON。

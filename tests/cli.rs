@@ -1862,3 +1862,31 @@ fn reset_json() {
     assert_eq!(json["pc"], 0x8000_0000u64);
     assert_eq!(json["cycleCount"], 0u64);
 }
+
+#[test]
+fn mem_write_word_width() {
+    let dir = tmpdir();
+    let sess = dir.join("mww.json");
+    bootstrap(&sess);
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--width", "word", "--values", "0xefbeadde"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Read back as bytes: little-endian 0xefbeadde -> de ad be ef.
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"], serde_json::json!([0xde, 0xad, 0xbe, 0xef]));
+    // A value too large for the width must fail.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--width", "half", "--values", "0x1_0000"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}

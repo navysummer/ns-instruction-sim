@@ -342,6 +342,12 @@ enum MemSub {
         /// 要写的字节（空格分隔，支持 0xNN）。
         #[arg(long, value_delimiter = ' ', num_args = 1..)]
         bytes: Vec<String>,
+        /// 数据宽度：`byte`/`half`/`word`（默认 byte；配合 `--values` 写入小端值）。
+        #[arg(long, default_value = "byte")]
+        width: String,
+        /// 要写的值（配合 `--width`；空格分隔，十进制/十六进制）。
+        #[arg(long, value_delimiter = ' ', num_args = 1..)]
+        values: Vec<String>,
         /// 从二进制文件读取字节写入。
         #[arg(long)]
         file: Option<PathBuf>,
@@ -1866,12 +1872,29 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Write { session, arch, addr, addr_flag, bytes, file } => {
+        MemSub::Write { session, arch, addr, addr_flag, bytes, width, values, file } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let mut data = Vec::new();
-            if let Some(f) = file {
+            let elem_size = match width.as_str() {
+                "byte" => 1usize,
+                "half" => 2usize,
+                "word" => 4usize,
+                other => bail!("不支持的内存宽度: {other}（支持 byte/half/word）"),
+            };
+            if let Some(f) = &file {
                 data = std::fs::read(&f).with_context(|| format!("读取 {} 失败", f.display()))?;
+            } else if elem_size > 1 {
+                for v in &values {
+                    let n = parse_num(v)? as u64;
+                    let max = (1u64 << (elem_size * 8)) - 1;
+                    if n > max {
+                        bail!("值超出 {} 位: {v}", elem_size * 8);
+                    }
+                    for j in 0..elem_size {
+                        data.push(((n >> (8 * j)) & 0xff) as u8);
+                    }
+                }
             } else {
                 for b in &bytes {
                     let v = parse_num(b)?;
