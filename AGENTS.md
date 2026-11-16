@@ -117,7 +117,7 @@ ns-instruction-sim/
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
 | `continue` | — | 连续运行至断点/停止/上限 | `--session --max-steps --save --json` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --session --json` | 表/值/JSON |
-| `mem` | `read` / `write` / `fill` / `load` | 内存读/写/填充/加载固件（无会话时可指定架构创建） | `--addr --len --bytes --file --value --firmware --base --arch` | hex/JSON |
+| `mem` | `read` / `write` / `fill` / `search` / `load` | 内存读/写/填充/搜索模式/加载固件 | `--addr --len --bytes --file --value --pattern --firmware --base --arch` | hex/JSON |
 | `bp` | `list` / `set` / `clear` / `clear-all` | 断点管理 | `--addr --condition --hit-count --session` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态） | `--arch --addr --count --arm-state --session` | 文本 |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry` | 文本 |
@@ -222,6 +222,7 @@ done
 - `periph_field_access`：`periph field-get/field-set` 按 SVD 位域读写并保留其他位。
 - `device_codegen_linker_and_startup`：`device linker/startup` 生成链接脚本与启动文件（stdout/--out/未知设备错误）。
 - `device_init_codegen`：`device init` 生成外设初始化 C 骨架（含 --register 覆盖与格式校验）。
+- `mem_search_finds_pattern`：`mem search` 在内存区域定位字节模式（JSON 匹配数/地址、未找到提示）。
 
 ### 5.2 反汇编宽度
 

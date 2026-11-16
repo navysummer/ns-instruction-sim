@@ -493,6 +493,41 @@ fn mem_fill_hex_value() {
 }
 
 #[test]
+fn mem_search_finds_pattern() {
+    let dir = tmpdir();
+    let sess = dir.join("memsearch.json");
+    bootstrap(&sess);
+    Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000",
+               "--bytes", "0xde", "0xad", "0xbe", "0xef", "0x00", "0xde", "0xad"])
+        .output()
+        .unwrap();
+
+    // Both occurrences are found.
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "16",
+               "--pattern", "0xde", "0xad", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["count"], 2u64);
+    assert_eq!(json["matches"][0], 0x2000_0000u64);
+    assert_eq!(json["matches"][1], 0x2000_0005u64);
+
+    // A pattern not present reports zero matches.
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "16", "--pattern", "0xff"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("未找到"));
+}
+
+#[test]
 fn device_svd_parse_and_filter() {
     let dir = tmpdir();
     let svd = dir.join("testchip.svd");

@@ -16,6 +16,7 @@ ns-instruction-sim continue --session s.json --max-steps 100000
 ns-instruction-sim reg set --session s.json x5 0x2a
 ns-instruction-sim mem read --session s.json --addr 0x20000000 --len 64
 ns-instruction-sim mem write --session arm.json --arch arm --addr 0x20000000 --bytes 0xaa 0xbb
+ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad 0xbe 0xef
 ns-instruction-sim bp set --session s.json --addr 0x80000004
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8
 ns-instruction-sim disasm --session arm.json --addr 0x0 --count 4 --arm-state thumb

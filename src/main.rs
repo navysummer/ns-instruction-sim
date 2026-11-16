@@ -342,6 +342,28 @@ enum MemSub {
         #[arg(long = "value", conflicts_with = "value")]
         value_flag: Option<String>,
     },
+    /// 在内存区域搜索字节模式（找到所有偏移）。
+    Search {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 目标架构（无会话时使用，默认 riscv）。
+        #[arg(short, long)]
+        arch: Option<String>,
+        /// 起始地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 起始地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 搜索长度（字节，默认 256）。
+        #[arg(long, default_value = "256")]
+        len: usize,
+        /// 搜索模式字节（空格分隔，支持 0xNN）。
+        #[arg(long, value_delimiter = ' ', num_args = 1..)]
+        pattern: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// 加载固件到内存（等价于 run 的加载步骤，不执行）。
     Load {
         #[arg(short, long)]
@@ -1639,6 +1661,58 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             s.memory_overlay.extend(overlay);
             s.save(&session)?;
             println!("填充 {} 字节 @ 0x{:08x} = 0x{value_byte:02x}", len, addr_num);
+            Ok(())
+        }
+        MemSub::Search { session, arch, addr, addr_flag, len, pattern, json } => {
+            let addr_str = addr_flag
+                .as_deref()
+                .or(addr.as_deref())
+                .ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let addr_num = parse_num(addr_str)?;
+            if pattern.is_empty() {
+                bail!("--pattern 至少需要一个字节");
+            }
+            let mut pat = Vec::new();
+            for p in &pattern {
+                let v = parse_num(p)?;
+                if v > 0xff {
+                    bail!("模式字节超出 0..=255: {}", p);
+                }
+                pat.push(v as u8);
+            }
+            let (sim, _, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
+            let mut matches: Vec<u32> = Vec::new();
+            if pat.is_empty() || len < pat.len() {
+                // Nothing to search.
+            } else {
+                let window = pat.len();
+                for i in 0..=(len - window) {
+                    let mut ok = true;
+                    for (j, b) in pat.iter().enumerate() {
+                        if sim.read_u8(addr_num.wrapping_add((i + j) as u32)) != *b {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if ok {
+                        matches.push(addr_num.wrapping_add(i as u32));
+                    }
+                }
+            }
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr_num,
+                    "count": matches.len(),
+                    "matches": matches,
+                }))?;
+            } else {
+                if matches.is_empty() {
+                    println!("(未找到模式)");
+                }
+                for m in &matches {
+                    println!("0x{m:08x}");
+                }
+            }
             Ok(())
         }
         MemSub::Load { session, firmware, arch, base } => {
