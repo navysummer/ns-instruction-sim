@@ -120,7 +120,7 @@ ns-instruction-sim/
 | `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` | 内存读/写/填充/搜索模式/加载固件/导出（C 数组或十六进制） | `--addr --len --bytes --file --value --pattern --firmware --base --arch --name --format --width --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置） | `--addr --symbol --line --condition --hit-count --once --session` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/原始字节/JSON） | `--arch --addr --count --arm-state --source --raw --json --session` | 文本/JSON |
-| `reset` | — | 复位仿真器（PC 回入口） | `--session --entry` | 文本 |
+| `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要） | `--session --arch --firmware --base --json --fields --summary` | 状态/JSON/摘要 |
 | `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载 | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --file --device --peripheral --register --field --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `line` / `addr` | ELF 符号与源行号映射 | `--filter --addr --file --line --session --json` | 表/JSON |
@@ -224,6 +224,7 @@ done
 - `mem_read_json`：`mem read --json` 输出地址/宽度/字节数组。
 - `state_fields_and_summary`：`state --fields` JSON 字段子集、`state --summary` 单行摘要。
 - `reg_list_filter`：`reg list --filter` 按名称子串筛选寄存器。
+- `reset_json`：`reset --json` 输出 PC/周期/停止 JSON。
 - `state_includes_peripherals_and_csr`：`state --json` 含外设与 CSR 完整快照。
 - `version_command_and_flag`：`version` 子命令与 `--version` 均输出版本号。
 - `mem_write_read_arm_roundtrip`：非 RISC-V（ARM）内存写跨会话持久化。

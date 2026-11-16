@@ -1847,3 +1847,18 @@ fn reg_list_filter() {
     assert!(json.get("sp").is_some());
     assert!(json.get("ra").is_none());
 }
+
+#[test]
+fn reset_json() {
+    let dir = tmpdir();
+    let sess = dir.join("rj.json");
+    bootstrap(&sess);
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x80000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8000_0000u64);
+    assert_eq!(json["cycleCount"], 0u64);
+}

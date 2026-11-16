@@ -544,6 +544,9 @@ struct ResetArgs {
     /// 重置 PC 到入口/基址。
     #[arg(long)]
     entry: Option<String>,
+    /// 输出 JSON。
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -2261,7 +2264,15 @@ fn cmd_reset(args: ResetArgs) -> Result<()> {
     sim.reset(entry);
     let s = Session::capture(&sim, fw);
     s.save(&args.session)?;
-    println!("已重置 @ 0x{:08x}", sim.program_counter());
+    if args.json {
+        print_json(&serde_json::json!({
+            "pc": sim.program_counter(),
+            "cycleCount": sim.cycle_count,
+            "halted": sim.halted,
+        }))?;
+    } else {
+        println!("已重置 @ 0x{:08x}", sim.program_counter());
+    }
     Ok(())
 }
 
