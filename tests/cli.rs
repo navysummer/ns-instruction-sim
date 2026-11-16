@@ -1991,3 +1991,38 @@ fn mem_write_fill_json() {
     assert_eq!(json["len"], 4u64);
     assert_eq!(json["value"], 255u64);
 }
+
+#[test]
+fn arch_device_periph_json() {
+    // arch list --json
+    let out = Command::new(bin()).args(["arch", "list", "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json.as_array().unwrap().len() >= 12);
+    assert_eq!(json[0]["name"], "riscv");
+    // device list --json
+    let out = Command::new(bin()).args(["device", "list", "--json"]).output().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json.as_array().unwrap().len() >= 1);
+    assert!(json[0]["key"].as_str().is_some());
+    // device info --json
+    let out = Command::new(bin()).args(["device", "info", "stm32f103c8", "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["key"], "stm32f103c8");
+    assert!(json["memoryMap"].as_array().unwrap().len() >= 2);
+    // periph uart --json (empty buffer)
+    let dir = tmpdir();
+    let sess = dir.join("puj.json");
+    bootstrap(&sess);
+    let out = Command::new(bin()).args(["periph", "uart", "--session", sess.to_str().unwrap(), "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["len"], 0u64);
+    // periph gpio --json
+    let out = Command::new(bin()).args(["periph", "gpio", "--session", sess.to_str().unwrap(), "--pin", "3", "--value", "1", "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pin"], 3u64);
+    assert_eq!(json["value"], 1u64);
+}

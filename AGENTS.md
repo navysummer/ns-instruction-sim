@@ -109,7 +109,7 @@ ns-instruction-sim/
 | 命令 | 子命令 | 功能 | 关键参数 | 输出 |
 |---|---|---|---|---|
 | `version` | — | 显示版本号 | — | 文本 |
-| `arch` | `list` | 列出支持的架构与示例设备 | — | 表 |
+| `arch` | `list` | 列出支持的架构与示例设备 | `--json` | 表/JSON |
 | `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析（文件或内置）/链接脚本/启动文件/外设初始化 C 骨架 | `--file --device --peripheral --register --out --json` | 表/文本/JSON |
 | `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址（可指定会话保留外设/SVD 寄存器） | `--firmware --session --arch --base --max-steps --steps --until --cycle-accurate --save-session --json --trace --source` | 状态 |
 | `step` | — | 单步一条指令 | `--session --arch --firmware --base --json --source` | 状态 |
@@ -226,6 +226,7 @@ done
 - `mem_read_json`：`mem read --json` 输出地址/宽度/字节数组。
 - `mem_write_word_width`：`mem write --width --values` 按字/半字小端写入（含越界错误路径）。
 - `mem_write_fill_json`：`mem write/fill --json` 机器可读确认。
+- `arch_device_periph_json`：`arch/device/periph uart/gpio --json` 机器可读输出。
 - `state_fields_and_summary`：`state --fields` JSON 字段子集、`state --summary` 单行摘要。
 - `reg_list_filter`：`reg list --filter` 按名称子串筛选寄存器。
 - `reset_json`：`reset --json` 输出 PC/周期/停止 JSON。

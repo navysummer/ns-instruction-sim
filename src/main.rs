@@ -95,15 +95,25 @@ enum Command {
 #[derive(Subcommand)]
 enum ArchSub {
     /// 列出所有支持的架构与设备映射。
-    List,
+    List {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
 enum DeviceSub {
     /// 列出内置设备目录。
-    List,
+    List {
+        #[arg(long)]
+        json: bool,
+    },
     /// 显示设备信息（内存映射、核心）。
-    Info { device: String },
+    Info {
+        device: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// 生成 GCC 风格链接脚本（stdout 或 --out）。
     Linker {
         /// 目标设备键（如 stm32f103c8）。
@@ -652,6 +662,8 @@ enum PeriphSub {
         /// 清空输出缓冲。
         #[arg(long)]
         clear: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// 设置 GPIO 输入引脚值。
     Gpio {
@@ -669,6 +681,8 @@ enum PeriphSub {
         /// 引脚值（--value 形式）。
         #[arg(long = "value", conflicts_with = "value")]
         value_flag: Option<u32>,
+        #[arg(long)]
+        json: bool,
     },
     /// 查询/配置虚拟定时器。
     Timer {
@@ -1024,9 +1038,9 @@ fn real_main() -> Result<()> {
             println!("ns-instruction-sim {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Command::Arch { sub: ArchSub::List } => cmd_arch_list(),
-        Command::Device { sub: DeviceSub::List } => cmd_device_list(),
-        Command::Device { sub: DeviceSub::Info { device } } => cmd_device_info(&device),
+        Command::Arch { sub: ArchSub::List { json } } => cmd_arch_list(json),
+        Command::Device { sub: DeviceSub::List { json } } => cmd_device_list(json),
+        Command::Device { sub: DeviceSub::Info { device, json } } => cmd_device_info(&device, json),
         Command::Device { sub: DeviceSub::Linker { device, out } } => {
             cmd_device_codegen(&device, out.as_deref(), CodegenKind::Linker)
         }
@@ -1322,7 +1336,7 @@ fn state_output(sim: &Simulator, result: StepResult, firmware: Option<&FirmwareS
 // Commands
 // ---------------------------------------------------------------------------
 
-fn cmd_arch_list() -> Result<()> {
+fn cmd_arch_list(json: bool) -> Result<()> {
     let archs = [
         ("riscv", "RISC-V (RV32I)", "esp32c3"),
         ("arm", "ARM Cortex-M", "stm32f103c8"),
@@ -1337,6 +1351,18 @@ fn cmd_arch_list() -> Result<()> {
         ("rx", "Renesas RX (32-bit)", "rx62n"),
         ("rl78", "Renesas RL78 (16-bit)", "rl78g14"),
     ];
+    if json {
+        let items: Vec<_> = archs
+            .iter()
+            .map(|(name, label, device)| serde_json::json!({
+                "name": name,
+                "label": label,
+                "exampleDevice": device,
+            }))
+            .collect();
+        print_json(&items)?;
+        return Ok(());
+    }
     println!("{:<10} {:<34} {}", "ARCH", "LABEL", "EXAMPLE_DEVICE");
     for (name, label, device) in archs {
         println!("{name:<10} {label:<34} {device}");
@@ -1344,7 +1370,21 @@ fn cmd_arch_list() -> Result<()> {
     Ok(())
 }
 
-fn cmd_device_list() -> Result<()> {
+fn cmd_device_list(json: bool) -> Result<()> {
+    if json {
+        let items: Vec<_> = ns_device::CATALOG
+            .iter()
+            .map(|e| serde_json::json!({
+                "key": e.key,
+                "label": e.label,
+                "core": e.core,
+                "flashSize": e.flash_size,
+                "ramSize": e.ram_size,
+            }))
+            .collect();
+        print_json(&items)?;
+        return Ok(());
+    }
     println!("{:<20} {:<34} {:<16} {:>10} {:>10}", "KEY", "LABEL", "CORE", "FLASH", "RAM");
     for entry in ns_device::CATALOG {
         println!(
@@ -1355,9 +1395,40 @@ fn cmd_device_list() -> Result<()> {
     Ok(())
 }
 
-fn cmd_device_info(device: &str) -> Result<()> {
+fn cmd_device_info(device: &str, json: bool) -> Result<()> {
     let entry = ns_device::catalog_entry(device)
         .ok_or_else(|| anyhow::anyhow!("未知设备: {device}"))?;
+    if json {
+        let regions: Vec<_> = ns_device::memory_map(device)
+            .iter()
+            .map(|r| serde_json::json!({ "name": r.name, "start": r.start, "size": r.size }))
+            .collect();
+        let peripherals = ns_device::device_for_target(device)
+            .map(|dev| {
+                dev.sorted_peripherals()
+                    .iter()
+                    .map(|p| serde_json::json!({
+                        "name": p.name,
+                        "baseAddress": p.base_address,
+                        "description": p.description,
+                        "registers": p.registers.iter().map(register_json).collect::<Vec<_>>(),
+                    }))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        print_json(&serde_json::json!({
+            "key": entry.key,
+            "label": entry.label,
+            "core": entry.core,
+            "flashStart": entry.flash_start,
+            "flashSize": entry.flash_size,
+            "ramStart": entry.ram_start,
+            "ramSize": entry.ram_size,
+            "memoryMap": regions,
+            "peripherals": peripherals,
+        }))?;
+        return Ok(());
+    }
     println!("设备: {}", entry.label);
     println!("  键: {}", entry.key);
     println!("  核心: {}", entry.core);
@@ -2623,7 +2694,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             Ok(())
         }
-        PeriphSub::Uart { session, clear } => {
+        PeriphSub::Uart { session, clear, json } => {
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             let text = String::from_utf8_lossy(&sim.peripherals.outputs).into_owned();
             let len = sim.peripherals.outputs.len();
@@ -2632,10 +2703,18 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 let s = Session::capture(&sim, fw);
                 s.save(&session)?;
             }
-            println!("UART 输出 ({len} 字节): {text}");
+            if json {
+                print_json(&serde_json::json!({
+                    "len": len,
+                    "text": text,
+                    "cleared": clear,
+                }))?;
+            } else {
+                println!("UART 输出 ({len} 字节): {text}");
+            }
             Ok(())
         }
-        PeriphSub::Gpio { session, pin, pin_flag, value, value_flag } => {
+        PeriphSub::Gpio { session, pin, pin_flag, value, value_flag, json } => {
             let pin = pin_flag.or(pin).ok_or_else(|| anyhow::anyhow!("缺少引脚号"))?;
             let value = value_flag.or(value).ok_or_else(|| anyhow::anyhow!("缺少引脚值"))?;
             if pin > 31 {
@@ -2652,7 +2731,15 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
-            println!("GPIO IN 引脚 {pin} = {value}");
+            if json {
+                print_json(&serde_json::json!({
+                    "pin": pin,
+                    "value": value,
+                    "gpioIn": sim.peripherals.gpio_in,
+                }))?;
+            } else {
+                println!("GPIO IN 引脚 {pin} = {value}");
+            }
             Ok(())
         }
         PeriphSub::Timer { session, index, enabled, prescaler, auto_reload, json } => {

@@ -6,6 +6,7 @@
 ```bash
 # 加载并运行固件
 ns-instruction-sim run --firmware app.elf --save-session s.json --json
+ns-instruction-sim arch list --json
 ns-instruction-sim run --firmware app.elf --steps 1000 --json
 ns-instruction-sim run --firmware app.elf --session s.json --json
 ns-instruction-sim run --firmware app.elf --until 0x80000008 --json
