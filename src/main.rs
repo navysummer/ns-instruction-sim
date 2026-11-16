@@ -1054,6 +1054,9 @@ struct StateOutput {
     breakpoints: Vec<BreakpointOutput>,
     /// Loaded firmware info (path/base/format), if any.
     firmware: Option<FirmwareOutput>,
+    /// Nearest ELF symbol at PC (name/address/size), if any.
+    #[serde(rename = "pcSymbol")]
+    pc_symbol: Option<PcSymbolOutput>,
 }
 
 #[derive(serde::Serialize)]
@@ -1070,6 +1073,13 @@ struct FirmwareOutput {
     path: String,
     base: u32,
     format: String,
+}
+
+#[derive(serde::Serialize)]
+struct PcSymbolOutput {
+    name: String,
+    address: u32,
+    size: u32,
 }
 
 fn peripherals_json(sim: &Simulator) -> serde_json::Value {
@@ -1164,6 +1174,11 @@ fn state_output(sim: &Simulator, result: StepResult, firmware: Option<&FirmwareS
             path: f.path.clone(),
             base: f.base,
             format: f.format.clone(),
+        }),
+        pc_symbol: sim.symbol_at(sim.program_counter()).map(|s| PcSymbolOutput {
+            name: s.name.clone(),
+            address: s.address,
+            size: s.size,
         }),
     }
 }

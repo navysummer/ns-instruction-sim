@@ -135,7 +135,7 @@ ns-instruction-sim/
 2. **机器可读**（`--json`）：稳定字段的 JSON 对象（`arch`、`pc`、`cycleCount`、`halted`、
    `lastResult`、`registers`、`uartText`、`uart`、`peripherals`（UART/GPIO/定时器/看门狗/中断/`externalRegs`）、
    `csr`（mstatus/mtvec/mepc/mcause/mie/mhartid）、`breakpoints`（地址/条件/命中次数/实际命中）、
-   `firmware`（path/base/format，无则 null）），
+   `firmware`（path/base/format，无则 null）、`pcSymbol`（最近 ELF 符号 name/address/size，无则 null）），
    字段名不随版本随意变动。
 3. **错误**：一律写 stderr，格式 `错误: <消息>`，进程退出码 `1`。成功的 `--json` 退出码 `0`。
 4. **会话文件**：JSON，含 `arch`、`pc`、`cycle_count`、`registers`、`memory`、`breakpoints`、
@@ -227,6 +227,8 @@ done
 - `device_init_codegen`：`device init` 生成外设初始化 C 骨架（含 --register 覆盖与格式校验）。
 - `mem_search_finds_pattern`：`mem search` 在内存区域定位字节模式（JSON 匹配数/地址、未找到提示）。
 - `state_reports_loaded_firmware`：`state --json` 报告已加载固件（path/base/format）。
+- `state_reports_pc_symbol`：`state --json` 报告 PC 处最近符号（pcSymbol）。
+- `symbol_list_shows_symbols`：`symbol list --json` 列出 ELF 符号（名称/地址）。
 - `device_svd_by_device_key`：`device svd --device` 从内置 SVD 解析；缺源报错。
 
 ### 5.2 反汇编宽度

@@ -50,6 +50,100 @@ fn write_riscv_elf_code(path: &std::path::Path, code: &[u8]) {
     std::fs::write(path, elf).unwrap();
 }
 
+/// Write a minimal RISC-V ELF with a `.symtab`/`.strtab` so symbol lookups and
+/// `state --json` `pcSymbol` can be exercised end-to-end.
+fn write_riscv_elf_with_symbol(path: &std::path::Path, code: &[u8], symbol: &str) {
+    let mut elf = vec![0u8; 0x100];
+    elf[0..4].copy_from_slice(b"\x7fELF");
+    elf[4] = 1;
+    elf[5] = 1;
+    elf[6] = 1;
+    elf[18..20].copy_from_slice(&243u16.to_le_bytes()); // EM_RISCV
+    elf[24..28].copy_from_slice(&0x8000_0000u32.to_le_bytes()); // entry
+    elf[28..32].copy_from_slice(&52u32.to_le_bytes()); // phoff
+    elf[42..44].copy_from_slice(&52u16.to_le_bytes()); // phentsize
+    elf[44..46].copy_from_slice(&1u16.to_le_bytes()); // phnum
+    let ph = 52usize;
+    elf[ph..ph + 4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+    elf[ph + 4..ph + 8].copy_from_slice(&0x100u32.to_le_bytes()); // p_offset
+    elf[ph + 8..ph + 12].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+    elf[ph + 12..ph + 16].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+    elf[ph + 16..ph + 20].copy_from_slice(&(code.len() as u32).to_le_bytes());
+    elf[ph + 20..ph + 24].copy_from_slice(&(code.len() as u32).to_le_bytes());
+    elf[ph + 24..ph + 28].copy_from_slice(&5u32.to_le_bytes());
+    elf[ph + 28..ph + 32].copy_from_slice(&0x1000u32.to_le_bytes());
+
+    let code_off = 0x100usize;
+    elf.extend_from_slice(code);
+    while elf.len() % 4 != 0 {
+        elf.push(0);
+    }
+    let mut strtab = vec![0u8];
+    strtab.extend_from_slice(symbol.as_bytes());
+    strtab.push(0);
+    let strtab_off = elf.len();
+    elf.extend_from_slice(&strtab);
+    while elf.len() % 4 != 0 {
+        elf.push(0);
+    }
+    let symtab_off = elf.len();
+    let mut symtab = vec![0u8; 16]; // null symbol
+    let mut main_sym = vec![0u8; 16];
+    main_sym[0..4].copy_from_slice(&1u32.to_le_bytes()); // st_name
+    main_sym[4..8].copy_from_slice(&0x8000_0000u32.to_le_bytes()); // st_value
+    main_sym[8..12].copy_from_slice(&(code.len() as u32).to_le_bytes()); // st_size
+    main_sym[12] = 0x12; // STB_GLOBAL | STT_FUNC
+    main_sym[14..16].copy_from_slice(&1u16.to_le_bytes()); // st_shndx = .text
+    symtab.extend_from_slice(&main_sym);
+    elf.extend_from_slice(&symtab);
+    let shstrtab = b"\0.text\0.symtab\0.strtab\0.shstrtab\0".to_vec();
+    let shstrtab_off = elf.len();
+    elf.extend_from_slice(&shstrtab);
+    while elf.len() % 4 != 0 {
+        elf.push(0);
+    }
+    let shoff = elf.len();
+    elf.extend_from_slice(&[0u8; 40]); // sh[0] null
+    let mut s = vec![0u8; 40]; // sh[1] .text
+    s[0..4].copy_from_slice(&1u32.to_le_bytes());
+    s[4..8].copy_from_slice(&1u32.to_le_bytes()); // SHT_PROGBITS
+    s[8..12].copy_from_slice(&6u32.to_le_bytes()); // ALLOC|EXEC
+    s[12..16].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+    s[16..20].copy_from_slice(&(code_off as u32).to_le_bytes());
+    s[20..24].copy_from_slice(&(code.len() as u32).to_le_bytes());
+    s[32..36].copy_from_slice(&4u32.to_le_bytes());
+    elf.extend_from_slice(&s);
+    let mut s = vec![0u8; 40]; // sh[2] .symtab
+    s[0..4].copy_from_slice(&7u32.to_le_bytes());
+    s[4..8].copy_from_slice(&2u32.to_le_bytes()); // SHT_SYMTAB
+    s[16..20].copy_from_slice(&(symtab_off as u32).to_le_bytes());
+    s[20..24].copy_from_slice(&(symtab.len() as u32).to_le_bytes());
+    s[24..28].copy_from_slice(&3u32.to_le_bytes()); // sh_link = .strtab
+    s[28..32].copy_from_slice(&1u32.to_le_bytes());
+    s[32..36].copy_from_slice(&4u32.to_le_bytes());
+    s[36..40].copy_from_slice(&16u32.to_le_bytes());
+    elf.extend_from_slice(&s);
+    let mut s = vec![0u8; 40]; // sh[3] .strtab
+    s[0..4].copy_from_slice(&15u32.to_le_bytes());
+    s[4..8].copy_from_slice(&3u32.to_le_bytes()); // SHT_STRTAB
+    s[16..20].copy_from_slice(&(strtab_off as u32).to_le_bytes());
+    s[20..24].copy_from_slice(&(strtab.len() as u32).to_le_bytes());
+    s[32..36].copy_from_slice(&1u32.to_le_bytes());
+    elf.extend_from_slice(&s);
+    let mut s = vec![0u8; 40]; // sh[4] .shstrtab
+    s[0..4].copy_from_slice(&23u32.to_le_bytes());
+    s[4..8].copy_from_slice(&3u32.to_le_bytes());
+    s[16..20].copy_from_slice(&(shstrtab_off as u32).to_le_bytes());
+    s[20..24].copy_from_slice(&(shstrtab.len() as u32).to_le_bytes());
+    s[32..36].copy_from_slice(&1u32.to_le_bytes());
+    elf.extend_from_slice(&s);
+    elf[32..36].copy_from_slice(&(shoff as u32).to_le_bytes()); // e_shoff
+    elf[46..48].copy_from_slice(&40u16.to_le_bytes()); // e_shentsize
+    elf[48..50].copy_from_slice(&5u16.to_le_bytes()); // e_shnum
+    elf[50..52].copy_from_slice(&4u16.to_le_bytes()); // e_shstrndx
+    std::fs::write(path, elf).unwrap();
+}
+
 /// Create a fresh RISC-V session (the `cycle tick` command persists it).
 fn bootstrap(sess: &std::path::Path) {
     let out = Command::new(bin())
@@ -1048,6 +1142,61 @@ fn state_reports_loaded_firmware() {
     assert_eq!(json["firmware"]["format"], "elf");
     assert!(json["firmware"]["path"].as_str().unwrap().contains("state_fw.elf"));
     assert_eq!(json["firmware"]["base"], 0u64);
+}
+
+#[test]
+fn state_reports_pc_symbol() {
+    let dir = tmpdir();
+    let sess = dir.join("state_sym.json");
+    let elf = dir.join("state_sym.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1", "--json"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pcSymbol"]["name"], "main");
+    assert_eq!(json["pcSymbol"]["address"], 0x8000_0000u64);
+    assert!(json["pcSymbol"]["size"].as_u64().unwrap() >= 16);
+}
+
+#[test]
+fn symbol_list_shows_symbols() {
+    let dir = tmpdir();
+    let sess = dir.join("sym_list.json");
+    let elf = dir.join("sym_list.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["symbol", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["name"], "main");
+    assert_eq!(json[0]["address"], 0x8000_0000u64);
 }
 
 #[test]
