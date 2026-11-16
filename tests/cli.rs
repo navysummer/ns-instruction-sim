@@ -1510,3 +1510,37 @@ fn mem_dump_c_array() {
         .unwrap();
     assert!(!out.status.success());
 }
+
+#[test]
+fn watchdog_force_reset() {
+    let dir = tmpdir();
+    let sess = dir.join("wdreset.json");
+    bootstrap(&sess);
+    // Enable the watchdog with a base and a timeout.
+    Command::new(bin())
+        .args(["watchdog", "config", "--session", sess.to_str().unwrap(),
+               "--enabled", "true", "--timeout", "100", "--base", "0x40002000"])
+        .output()
+        .unwrap();
+    // Force a reset at an explicit entry.
+    let out = Command::new(bin())
+        .args(["watchdog", "reset", "--session", sess.to_str().unwrap(),
+               "--entry", "0x80000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["resetCount"], 1u64);
+    // The fresh RISC-V session starts at the default entry 0x80000000.
+    assert_eq!(json["lastResetPc"], 0x8000_0000u64);
+    assert_eq!(json["pc"], 0x8000_0000u64);
+    // The reset event must persist in the session.
+    let out = Command::new(bin())
+        .args(["watchdog", "status", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["resetCount"], 1u64);
+    assert_eq!(json["lastResetPc"], 0x8000_0000u64);
+}

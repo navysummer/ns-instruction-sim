@@ -34,6 +34,7 @@ ns-instruction-sim symbol list --session s.json
 ns-instruction-sim cycle get --session s.json
 ns-instruction-sim interrupt pending --session s.json
 ns-instruction-sim watchdog config --session s.json --enabled true --timeout 1000
+ns-instruction-sim watchdog reset --session s.json --entry 0x80000000
 ns-instruction-sim csr set --session s.json mtvec 0x80000010
 ns-instruction-sim periph reg-write --session s.json --addr 0x40000000 --bytes 0x48 0x69
 ns-instruction-sim periph reg-read --session s.json --name TIM2.CR1 --device stm32f103c8

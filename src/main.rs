@@ -871,6 +871,16 @@ enum WatchdogSub {
         #[arg(long)]
         json: bool,
     },
+    /// 强制触发看门狗复位（记录复位事件并复位核心）。
+    Reset {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 复位后 PC（默认当前 PC）。
+        #[arg(long)]
+        entry: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -2798,6 +2808,50 @@ fn cmd_watchdog(sub: WatchdogSub) -> Result<()> {
                 println!(
                     "看门狗配置: base=0x{:08x} enabled={} timeout={}",
                     base_out, enabled_out, timeout_out
+                );
+            }
+            Ok(())
+        }
+        WatchdogSub::Reset { session, entry, json } => {
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let base = sim
+                .peripherals
+                .watchdog
+                .as_ref()
+                .map(|w| w.base)
+                .unwrap_or(0x4000_0000);
+            if sim.peripherals.watchdog.is_none() {
+                sim.peripherals.watchdog = Some(ns_sim::Watchdog::new(base));
+            }
+            let reset_pc = sim.program_counter();
+            // Record the watchdog-triggered reset event.
+            {
+                let w = sim.peripherals.watchdog.as_mut().unwrap();
+                w.reset_count = w.reset_count.saturating_add(1);
+                w.last_reset_pc = reset_pc;
+                w.elapsed = 0;
+            }
+            let entry_num = entry
+                .as_deref()
+                .map(parse_num)
+                .transpose()?
+                .unwrap_or(reset_pc);
+            sim.reset(entry_num);
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            let w = sim.peripherals.watchdog.as_ref().unwrap();
+            if json {
+                print_json(&serde_json::json!({
+                    "resetCount": w.reset_count,
+                    "lastResetPc": w.last_reset_pc,
+                    "pc": sim.program_counter(),
+                }))?;
+            } else {
+                println!(
+                    "看门狗复位 @ 0x{:08x}（来自 0x{:08x}，累计 {} 次）",
+                    sim.program_counter(),
+                    reset_pc,
+                    w.reset_count
                 );
             }
             Ok(())

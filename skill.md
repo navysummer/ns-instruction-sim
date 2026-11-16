@@ -142,6 +142,7 @@ ns-instruction-sim interrupt take --session s.json
 ns-instruction-sim watchdog status --session s.json
 ns-instruction-sim watchdog config --session s.json --enabled true --timeout 1000
 ns-instruction-sim watchdog feed --session s.json
+ns-instruction-sim watchdog reset --session s.json --entry 0x80000000
 
 # CSR（RISC-V machine-mode 寄存器）
 ns-instruction-sim csr list --session s.json

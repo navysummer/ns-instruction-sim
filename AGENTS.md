@@ -126,7 +126,7 @@ ns-instruction-sim/
 | `symbol` | `list` / `at` / `line` / `addr` | ELF 符号与源行号映射 | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` | 周期计数/指令周期估算/外设推进 | `--addr --cycles --session --json` | 值/JSON |
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
-| `watchdog` | `status` / `feed` / `config` | 看门狗查询/喂狗/配置 | `--enabled --timeout --base --session --json` | 表/JSON |
+| `watchdog` | `status` / `feed` / `config` / `reset` | 看门狗查询/喂狗/配置/强制复位 | `--enabled --timeout --base --entry --session --json` | 表/JSON |
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
 
 ### 3.2 输出格式约定
@@ -163,7 +163,7 @@ ns-instruction-sim/
 | T2 | 指令周期估算 | `cycles_for_instruction` | `cycle get/estimate/tick` | ✅ 已完成 |
 | T3 | 中断触发/查询 | `take_interrupt` / `any_pending` | `interrupt take/pending/set` | ✅ 已完成 |
 | T4 | 外设寄存器直读写 | `peripheral_read` / `peripheral_write` | `periph reg-read/reg-write` | ✅ 已完成 |
-| T5 | 看门狗控制 | `Watchdog` / `tick_peripherals_for` | `watchdog status/feed/config` | ✅ 已完成 |
+| T5 | 看门狗控制 | `Watchdog` / `tick_peripherals_for` / `reset` | `watchdog status/feed/config/reset` | ✅ 已完成 |
 | T6 | CSR 读写 | `Csr` + CSRRW/CSRRS/CSRRC | `csr list/get/set` | ✅ 已完成 |
 | T7 | 断点命中次数 | `breakpoint_hits` | `bp list` 含 `hits` | ✅ 已完成 |
 | T8 | 条件断点高级属性 | `set_breakpoint_ex` / `update_breakpoint` | `bp set --condition --hit-count` | ✅ 已完成 |
@@ -206,6 +206,7 @@ done
 - `cycle_get_and_tick`：周期计数读取/推进/指令周期估算。
 - `csr_set_get_roundtrip`：CSR 写读往返与会话持久化。
 - `watchdog_config_feed_status`：看门狗配置/喂狗/状态。
+- `watchdog_force_reset`：`watchdog reset` 记录复位事件并复位核心（持久化）。
 - `interrupt_set_pending_and_take`：中断置线/挂起查询/触发跳转（mtvec/mcause）。
 - `bp_list_shows_hits`：断点命中次数持久化并展示。
 - `bp_once_autoclears`：`bp set --once` 命中后自动清除，再次 `continue` 不再停靠。
