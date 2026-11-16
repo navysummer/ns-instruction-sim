@@ -472,6 +472,28 @@ enum BpSub {
         #[arg(short, long)]
         session: PathBuf,
     },
+    /// 启用断点。
+    Enable {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+    },
+    /// 禁用断点（保留在列表中但不再暂停）。
+    Disable {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+    },
 }
 
 #[derive(Args)]
@@ -1116,6 +1138,8 @@ struct BreakpointOutput {
     condition: String,
     #[serde(rename = "hitCount")]
     hit_count: u32,
+    once: bool,
+    enabled: bool,
     hits: u64,
 }
 
@@ -1218,6 +1242,8 @@ fn state_output(sim: &Simulator, result: StepResult, firmware: Option<&FirmwareS
                 address: bp.address,
                 condition: bp.condition.clone(),
                 hit_count: bp.hit_count,
+                once: bp.once,
+                enabled: bp.enabled,
                 hits: bp.hits(),
             })
             .collect(),
@@ -1949,6 +1975,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                             "condition": bp.condition,
                             "hitCount": bp.hit_count,
                             "once": bp.once,
+                            "enabled": bp.enabled,
                             "hits": sim.as_ref().map(|sim| sim.breakpoint_hits(bp.address)).unwrap_or(0),
                         })
                     })
@@ -1968,6 +1995,9 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                     }
                     if bp.hit_count > 0 {
                         parts.push(format!("hit={}", bp.hit_count));
+                    }
+                    if !bp.enabled {
+                        parts.push("disabled".to_string());
                     }
                     let extra = if parts.is_empty() {
                         String::new()
@@ -2017,6 +2047,32 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
             println!("已清除全部断点");
+            Ok(())
+        }
+        BpSub::Enable { session, addr, addr_flag } => {
+            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let addr_num = parse_num(&addr)?;
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let found = sim.set_breakpoint_enabled(addr_num, true);
+            if !found {
+                bail!("断点不存在 @ 0x{:08x}", addr_num);
+            }
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            println!("已启用断点 @ 0x{:08x}", addr_num);
+            Ok(())
+        }
+        BpSub::Disable { session, addr, addr_flag } => {
+            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let addr_num = parse_num(&addr)?;
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let found = sim.set_breakpoint_enabled(addr_num, false);
+            if !found {
+                bail!("断点不存在 @ 0x{:08x}", addr_num);
+            }
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            println!("已禁用断点 @ 0x{:08x}", addr_num);
             Ok(())
         }
     }

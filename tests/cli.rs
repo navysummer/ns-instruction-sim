@@ -1571,3 +1571,57 @@ fn continue_trace_prints_each_instruction() {
     assert!(text.contains("[1] 0x80000004"), "missing step 1: {text}");
     assert!(text.contains("-> 0x80000008 breakpoint"), "missing stop: {text}");
 }
+
+#[test]
+fn bp_enable_disable_roundtrip() {
+    let dir = tmpdir();
+    let elf = dir.join("bped.elf");
+    let sess = dir.join("bped.json");
+    write_riscv_elf(&elf);
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(), "--save-session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(), "--addr", "0x80000004"])
+        .output()
+        .unwrap();
+    Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x80000000"])
+        .output()
+        .unwrap();
+    // Disable the breakpoint; continue must NOT stop there (runs to halt).
+    Command::new(bin())
+        .args(["bp", "disable", "--session", sess.to_str().unwrap(), "--addr", "0x80000004"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess.to_str().unwrap(), "--max-steps", "10", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["lastResult"], "halted");
+    // bp list marks it disabled.
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["enabled"], false);
+    // Re-enable; reset and continue must stop again.
+    Command::new(bin())
+        .args(["bp", "enable", "--session", sess.to_str().unwrap(), "--addr", "0x80000004"])
+        .output()
+        .unwrap();
+    Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x80000000"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess.to_str().unwrap(), "--max-steps", "10", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["lastResult"], "breakpoint");
+    assert_eq!(json["pc"], 0x8000_0004u64);
+}

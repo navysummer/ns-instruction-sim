@@ -26,9 +26,16 @@ pub struct BpState {
     /// One-shot breakpoint: auto-cleared after the first hit.
     #[serde(default)]
     pub once: bool,
+    /// Whether the breakpoint is active (disabled ones are kept but inert).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     /// Runtime hit counter (number of times the PC reached this address).
     #[serde(default)]
     pub hits: u64,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Firmware source recorded so the simulator can be rebuilt on resume.
@@ -146,6 +153,7 @@ impl Session {
                     condition: bp.condition.clone(),
                     hit_count: bp.hit_count,
                     once: bp.once,
+                    enabled: bp.enabled,
                     hits: bp.hits(),
                 })
                 .collect(),
@@ -241,6 +249,9 @@ impl Session {
                 sim.set_breakpoint_ex_once(bp.address, bp.condition.clone(), bp.hit_count);
             } else {
                 sim.set_breakpoint_ex(bp.address, bp.condition.clone(), bp.hit_count);
+            }
+            if !bp.enabled {
+                sim.set_breakpoint_enabled(bp.address, false);
             }
             sim.set_breakpoint_hits(bp.address, bp.hits);
         }

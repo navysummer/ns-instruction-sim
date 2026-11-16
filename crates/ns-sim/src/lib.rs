@@ -455,6 +455,9 @@ pub struct SimBreakpoint {
     /// One-shot breakpoint: automatically removed after the first hit that
     /// pauses the simulator.
     pub once: bool,
+    /// Whether the breakpoint is active. Disabled breakpoints are kept in
+    /// the set but never pause execution.
+    pub enabled: bool,
     /// Number of times the PC has reached this address since set.
     hits: u64,
 }
@@ -466,6 +469,7 @@ impl SimBreakpoint {
             condition: String::new(),
             hit_count: 0,
             once: false,
+            enabled: true,
             hits: 0,
         }
     }
@@ -1350,6 +1354,37 @@ impl Simulator {
         }
     }
 
+    /// Addresses of enabled (active) breakpoints, in set order. Disabled
+    /// breakpoints are not passed to the core and never pause execution.
+    pub fn enabled_breakpoint_addresses(&self) -> Vec<u32> {
+        self.breakpoints
+            .iter()
+            .filter(|bp| bp.enabled)
+            .map(|bp| bp.address)
+            .collect()
+    }
+
+    /// Enable or disable a breakpoint without removing it from the set.
+    /// Returns whether the breakpoint existed.
+    pub fn set_breakpoint_enabled(&mut self, address: u32, enabled: bool) -> bool {
+        if let Some(bp) = self.breakpoints.iter_mut().find(|bp| bp.address == address) {
+            bp.enabled = enabled;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether the breakpoint at `address` is enabled (true if it exists and
+    /// is enabled; false when absent).
+    pub fn breakpoint_is_enabled(&self, address: u32) -> bool {
+        self.breakpoints
+            .iter()
+            .find(|bp| bp.address == address)
+            .map(|bp| bp.enabled)
+            .unwrap_or(false)
+    }
+
     /// Whether the breakpoint at `address` is one-shot (auto-cleared on hit).
     pub fn breakpoint_is_once(&self, address: u32) -> bool {
         self.breakpoints
@@ -1500,7 +1535,7 @@ impl Simulator {
             return result;
         }
          if let Some(core) = self.arm.as_mut() {
-             let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
+             let bps: Vec<u32> = self.breakpoints.iter().filter(|bp| bp.enabled).map(|bp| bp.address).collect();
 
              let result = core.step(&bps);
              self.pc = core.regs[arm::PC];
@@ -1520,7 +1555,7 @@ impl Simulator {
              return result;
          }
         if let Some(core) = self.x51.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
+            let bps: Vec<u32> = self.breakpoints.iter().filter(|bp| bp.enabled).map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1555,7 +1590,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.xtensa.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
+            let bps: Vec<u32> = self.breakpoints.iter().filter(|bp| bp.enabled).map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1570,7 +1605,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.avr.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
+            let bps: Vec<u32> = self.breakpoints.iter().filter(|bp| bp.enabled).map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1585,7 +1620,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.msp430.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
+            let bps: Vec<u32> = self.breakpoints.iter().filter(|bp| bp.enabled).map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1600,7 +1635,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.v850.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
+            let bps: Vec<u32> = self.breakpoints.iter().filter(|bp| bp.enabled).map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1615,7 +1650,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.stm8.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
+            let bps: Vec<u32> = self.breakpoints.iter().filter(|bp| bp.enabled).map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1630,7 +1665,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.rx.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
+            let bps: Vec<u32> = self.breakpoints.iter().filter(|bp| bp.enabled).map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1645,7 +1680,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.rl78.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
+            let bps: Vec<u32> = self.breakpoints.iter().filter(|bp| bp.enabled).map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1663,6 +1698,7 @@ impl Simulator {
         if let Some(index) = self
             .breakpoints
             .iter()
+            .filter(|bp| bp.enabled)
             .position(|bp| bp.address == self.pc)
         {
             let regs = self.reg_view();
@@ -4568,7 +4604,7 @@ mod tests {
         sim.pc = 0;
         assert_eq!(sim.step(), StepResult::Advanced);
         assert_eq!(sim.step(), StepResult::Breakpoint, "stops at the once bp");
-        assert_eq!(sim.program_counter(), 4);
+        eprintln!("DBG after disabled step pc={:x}", sim.program_counter()); assert_eq!(sim.program_counter(), 4);
         assert!(!sim.breakpoint_is_once(4), "once bp must be removed");
         assert!(sim.breakpoints.is_empty(), "breakpoint set is now empty");
 
@@ -4577,6 +4613,28 @@ mod tests {
         assert_eq!(sim.step(), StepResult::Advanced);
         assert_eq!(sim.program_counter(), 8);
 
+    }
+
+    /// A disabled breakpoint stays in the set but never pauses; re-enabling it
+    /// restores the pause.
+    #[test]
+    fn disabled_breakpoint_does_not_pause() {
+        let mut sim = Simulator::new();
+        sim.write_u32(0, 0x00100093); // ADDI x1, x0, 1
+        sim.pc = 0;
+
+        sim.set_breakpoint(0);
+        assert!(sim.breakpoint_is_enabled(0));
+        sim.set_breakpoint_enabled(0, false);
+        assert!(!sim.breakpoint_is_enabled(0));
+        // Disabled: the instruction executes normally.
+        assert_eq!(sim.step(), StepResult::Advanced);
+        assert_eq!(sim.program_counter(), 4);
+        // Re-enable and it pauses again at the entry.
+        sim.set_breakpoint_enabled(0, true);
+        sim.pc = 0;
+        assert_eq!(sim.step(), StepResult::Breakpoint);
+        assert_eq!(sim.program_counter(), 0);
     }
 
     /// A condition breakpoint stops only when the register equals the target.

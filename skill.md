@@ -111,6 +111,8 @@ ns-instruction-sim bp set --session s.json --addr 0x80000008 --condition "x1 == 
 ns-instruction-sim bp set --session s.json --addr 0x8000000c --once
 ns-instruction-sim bp list --session s.json
 ns-instruction-sim bp clear --session s.json --addr 0x80000004
+ns-instruction-sim bp disable --session s.json --addr 0x80000004
+ns-instruction-sim bp enable --session s.json --addr 0x80000004
 
 # 反汇编 / 复位 / 状态 / 外设
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8
