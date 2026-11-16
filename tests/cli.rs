@@ -1890,3 +1890,38 @@ fn mem_write_word_width() {
         .unwrap();
     assert!(!out.status.success());
 }
+
+#[test]
+fn continue_source_annotates_stop() {
+    let dir = tmpdir();
+    let sess = dir.join("csrc.json");
+    let elf = dir.join("csrc.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--save-session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(), "--addr", "0x80000008"])
+        .output()
+        .unwrap();
+    Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x80000000"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess.to_str().unwrap(), "--source", "--max-steps", "10"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("PC=0x80000008"), "missing PC: {text}");
+    assert!(text.contains("<elf>:1"), "missing source: {text}");
+}

@@ -188,6 +188,9 @@ struct RunArgs {
     /// 打印每条执行指令的 PC/反汇编/来源（逐步追踪）。
     #[arg(long)]
     trace: bool,
+    /// 在停止点追加 file:line 来源标注。
+    #[arg(long)]
+    source: bool,
 }
 
 #[derive(Args)]
@@ -234,6 +237,9 @@ struct ContinueArgs {
     /// 打印每条执行指令的 PC/反汇编/来源（逐步追踪）。
     #[arg(long)]
     trace: bool,
+    /// 在停止点追加 file:line 来源标注。
+    #[arg(long)]
+    source: bool,
 }
 
 #[derive(Args)]
@@ -1638,7 +1644,12 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         println!("架构: {}", sim.arch.label());
         println!("PC:   0x{:08x}", output.pc);
         println!("周期: {}", output.cycle_count);
-        println!("停止: {}", output.last_result);
+        let src = if args.source {
+            source_annotation(&sim, sim.program_counter())
+        } else {
+            String::new()
+        };
+        println!("停止: {}{src}", output.last_result);
         if !output.uart.is_empty() {
             println!("UART: {:?}", output.uart_text);
         }
@@ -1746,7 +1757,12 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
     if args.json {
         print_json(&output)?;
     } else {
-        println!("PC=0x{:08x} cycles={} halted={} result={}", output.pc, output.cycle_count, output.halted, output.last_result);
+        let src = if args.source {
+            source_annotation(&sim, sim.program_counter())
+        } else {
+            String::new()
+        };
+        println!("PC=0x{:08x} cycles={} halted={} result={}{src}", output.pc, output.cycle_count, output.halted, output.last_result);
     }
     Ok(())
 }

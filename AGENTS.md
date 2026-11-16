@@ -111,11 +111,11 @@ ns-instruction-sim/
 | `version` | — | 显示版本号 | — | 文本 |
 | `arch` | `list` | 列出支持的架构与示例设备 | — | 表 |
 | `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析（文件或内置）/链接脚本/启动文件/外设初始化 C 骨架 | `--file --device --peripheral --register --out --json` | 表/文本/JSON |
-| `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址（可指定会话保留外设/SVD 寄存器） | `--firmware --session --arch --base --max-steps --steps --until --cycle-accurate --save-session --json --trace` | 状态 |
+| `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址（可指定会话保留外设/SVD 寄存器） | `--firmware --session --arch --base --max-steps --steps --until --cycle-accurate --save-session --json --trace --source` | 状态 |
 | `step` | — | 单步一条指令 | `--session --arch --firmware --base --json --source` | 状态 |
 | `step-over` | — | 步过（跳过调用） | 同上 | 状态 |
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
-| `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json --trace` | 状态 |
+| `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json --trace --source` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` | 内存读/写/填充/搜索模式/加载固件/导出（C 数组或十六进制） | `--addr --len --bytes --values --file --value --pattern --firmware --base --arch --name --format --width --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置） | `--addr --symbol --line --condition --hit-count --once --session` | 表/JSON |
@@ -219,6 +219,7 @@ done
 - `run_until_stops_at_address`：`run --until` 临时断点运行到指定地址且不持久化。
 - `run_trace_prints_each_instruction`：`run --trace` 打印每条执行指令的 PC/反汇编/来源。
 - `continue_trace_prints_each_instruction`：`continue --trace` 打印每条执行指令并停靠临时断点。
+- `continue_source_annotates_stop`：`continue --source` 在停止点标注 file:line。
 - `mem_dump_c_array`：`mem dump --format c` 生成 C 数组（含非法格式错误路径）。
 - `mem_read_word_width`：`mem read --width` 按字节/半字/字/双字读取（含非法宽度错误路径）。
 - `mem_read_json`：`mem read --json` 输出地址/宽度/字节数组。
