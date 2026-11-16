@@ -900,6 +900,23 @@ fn periph_svd_load_instruction_write_couples() {
 }
 
 #[test]
+fn device_svd_by_device_key() {
+    let out = Command::new(bin())
+        .args(["device", "svd", "--device", "stm32f103c8", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["name"], "STM32F103C8");
+    assert!(json["peripherals"].as_array().unwrap().len() >= 4);
+
+    // Missing source must fail.
+    let out = Command::new(bin()).args(["device", "svd"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--file 或 --device"));
+}
+
+#[test]
 fn run_steps_runs_exactly_n_instructions() {
     let dir = tmpdir();
     let elf = dir.join("steps.elf");

@@ -110,7 +110,7 @@ ns-instruction-sim/
 |---|---|---|---|---|
 | `version` | — | 显示版本号 | — | 文本 |
 | `arch` | `list` | 列出支持的架构与示例设备 | — | 表 |
-| `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析/链接脚本/启动文件/外设初始化 C 骨架 | `--file --peripheral --register --out --json` | 表/文本/JSON |
+| `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析（文件或内置）/链接脚本/启动文件/外设初始化 C 骨架 | `--file --device --peripheral --register --out --json` | 表/文本/JSON |
 | `run` | — | 加载固件并运行到结束/步数上限/指定步数（可指定会话保留外设/SVD 寄存器） | `--firmware --session --arch --base --max-steps --steps --cycle-accurate --save-session --json` | 状态 |
 | `step` | — | 单步一条指令 | `--session --arch --firmware --base --json` | 状态 |
 | `step-over` | — | 步过（跳过调用） | 同上 | 状态 |
@@ -225,6 +225,7 @@ done
 - `device_init_codegen`：`device init` 生成外设初始化 C 骨架（含 --register 覆盖与格式校验）。
 - `mem_search_finds_pattern`：`mem search` 在内存区域定位字节模式（JSON 匹配数/地址、未找到提示）。
 - `state_reports_loaded_firmware`：`state --json` 报告已加载固件（path/base/format）。
+- `device_svd_by_device_key`：`device svd --device` 从内置 SVD 解析；缺源报错。
 
 ### 5.2 反汇编宽度
 

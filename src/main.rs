@@ -136,9 +136,12 @@ enum DeviceSub {
     },
     /// 解析并显示一个 CMSIS-SVD 设备描述文件。
     Svd {
-        /// SVD 文件路径。
+        /// SVD 文件路径（与 --device 二选一）。
         #[arg(short, long)]
-        file: PathBuf,
+        file: Option<PathBuf>,
+        /// 内置设备键（如 stm32f103c8；与 --file 二选一）。
+        #[arg(long)]
+        device: Option<String>,
         /// 只看指定外设（按名称，可选）。
         #[arg(long)]
         peripheral: Option<String>,
@@ -896,8 +899,14 @@ fn real_main() -> Result<()> {
         Command::Device { sub: DeviceSub::Init { device, peripheral, register, out } } => {
             cmd_device_init(&device, &peripheral, &register, out.as_deref())
         }
-        Command::Device { sub: DeviceSub::Svd { file, peripheral, register, json } } => {
-            cmd_device_svd(&file, peripheral.as_deref(), register.as_deref(), json)
+        Command::Device { sub: DeviceSub::Svd { file, device, peripheral, register, json } } => {
+            cmd_device_svd(
+                file.as_deref(),
+                device.as_deref(),
+                peripheral.as_deref(),
+                register.as_deref(),
+                json,
+            )
         }
         Command::Run(args) => cmd_run(args),
         Command::Step(args) => cmd_step(args, StepKind::Step),
@@ -1356,12 +1365,19 @@ fn cmd_device_init(
 }
 
 fn cmd_device_svd(
-    file: &Path,
+    file: Option<&Path>,
+    device_key: Option<&str>,
     peripheral: Option<&str>,
     register: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let device = ns_device::load_svd_file(file)?;
+    let device = match (file, device_key) {
+        (Some(f), None) => ns_device::load_svd_file(f)?,
+        (None, Some(k)) => ns_device::device_for_target(k)
+            .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {k}"))?,
+        (Some(_), Some(_)) => bail!("--file 与 --device 只能二选一"),
+        (None, None) => bail!("请提供 --file 或 --device"),
+    };
     let peripherals: Vec<&ns_device::Peripheral> = match peripheral {
         Some(name) => {
             let p = device
