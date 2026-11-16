@@ -1661,3 +1661,26 @@ fn bp_set_by_symbol() {
         .unwrap();
     assert!(!out.status.success());
 }
+
+#[test]
+fn disasm_raw_shows_bytes() {
+    let dir = tmpdir();
+    let sess = dir.join("drawn.json");
+    let elf = dir.join("drawn.elf");
+    write_riscv_elf(&elf);
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--count", "1", "--raw"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    // After `run --steps 1`, PC is at the 2nd instruction (0x80000004).
+    assert!(text.contains("0x80000004"), "missing address: {text}");
+    assert!(text.contains("raw: 13 81 20 00"), "missing raw bytes: {text}");
+}

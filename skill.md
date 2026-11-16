@@ -118,6 +118,7 @@ ns-instruction-sim bp enable --session s.json --addr 0x80000004
 # 反汇编 / 复位 / 状态 / 外设
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8
 ns-instruction-sim disasm --session arm.json --addr 0x0 --count 4 --arm-state thumb
+ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8 --raw
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8 --source
 ns-instruction-sim reset --session s.json --entry 0x80000000
 ns-instruction-sim state --session s.json --json

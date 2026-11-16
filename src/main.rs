@@ -517,6 +517,9 @@ struct DisasmArgs {
     /// 标注每行来源（file:line，来自 ELF 行表/符号回退）。
     #[arg(long)]
     source: bool,
+    /// 同时显示每条指令的原始字节（十六进制）。
+    #[arg(long)]
+    raw: bool,
 }
 
 #[derive(Args)]
@@ -2136,14 +2139,26 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
     };
     let read = |addr: u32| -> u8 { sim.read_u8(addr) };
     for _ in 0..args.count {
+        let width = ns_sim::instruction_size(arch, pc, &read, arm_state);
         let text = ns_sim::disassemble_one_state(arch, pc, &read, arm_state);
+        let raw = if args.raw {
+            let mut s = String::new();
+            for i in 0..width {
+                if i > 0 {
+                    s.push(' ');
+                }
+                s.push_str(&format!("{:02x}", sim.read_u8(pc.wrapping_add(i as u32))));
+            }
+            format!("  ; raw: {s}")
+        } else {
+            String::new()
+        };
         if args.source {
             let src = source_annotation(&sim, pc);
-            println!("0x{pc:08x}: {text}  {src}");
+            println!("0x{pc:08x}: {text}{raw}  {src}");
         } else {
-            println!("0x{pc:08x}: {text}");
+            println!("0x{pc:08x}: {text}{raw}");
         }
-        let width = ns_sim::instruction_size(arch, pc, &read, arm_state);
         pc = pc.wrapping_add(width);
     }
     Ok(())
