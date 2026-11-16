@@ -56,6 +56,9 @@ pub struct PeriphState {
     /// Peripheral interrupt lines that are currently asserted (0..16).
     #[serde(default)]
     pub irq_pending: Vec<usize>,
+    /// SVD-defined chip registers (address, value).
+    #[serde(default)]
+    pub external_regs: Vec<(u32, u32)>,
 }
 
 /// Persisted machine-mode CSR values (RISC-V). Kept across all architectures
@@ -176,6 +179,12 @@ impl Session {
                     .filter(|(_, p)| **p)
                     .map(|(i, _)| i)
                     .collect(),
+                external_regs: sim
+                    .peripherals
+                    .external_regs
+                    .iter()
+                    .map(|(a, v)| (*a, *v))
+                    .collect(),
             },
             csr: CsrState {
                 mstatus: sim.csr.mstatus,
@@ -259,6 +268,9 @@ impl Session {
             if *line < 16 {
                 sim.peripherals.irq_pending[*line] = true;
             }
+        }
+        for (addr, value) in &self.peripherals.external_regs {
+            sim.peripherals.external_regs.insert(*addr, *value);
         }
         sim.csr.mstatus = self.csr.mstatus;
         sim.csr.mtvec = self.csr.mtvec;

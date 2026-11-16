@@ -110,19 +110,19 @@ ns-instruction-sim/
 |---|---|---|---|---|
 | `version` | — | 显示版本号 | — | 文本 |
 | `arch` | `list` | 列出支持的架构与示例设备 | — | 表 |
-| `device` | `list` / `info` / `svd` | 设备目录/详情/SVD 文件解析（选中外设时展开寄存器列表） | `device --file --peripheral --register --json` | 表/文本/JSON |
-| `run` | — | 加载固件并运行到结束/步数上限/指定步数 | `--firmware --arch --base --max-steps --steps --cycle-accurate --save-session --json` | 状态 |
+| `device` | `list` / `info` / `svd` | 设备目录/详情（含寄存器）/SVD 文件解析（选中外设时展开寄存器列表） | `device --file --peripheral --register --json` | 表/文本/JSON |
+| `run` | — | 加载固件并运行到结束/步数上限/指定步数（可指定会话保留外设/SVD 寄存器） | `--firmware --session --arch --base --max-steps --steps --cycle-accurate --save-session --json` | 状态 |
 | `step` | — | 单步一条指令 | `--session --arch --firmware --base --json` | 状态 |
 | `step-over` | — | 步过（跳过调用） | 同上 | 状态 |
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
 | `continue` | — | 连续运行至断点/停止/上限 | `--session --max-steps --save --json` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --session --json` | 表/值/JSON |
-| `mem` | `read` / `write` / `fill` / `load` | 内存读/写/填充/加载固件 | `--addr --len --bytes --file --value --firmware --base` | hex/JSON |
+| `mem` | `read` / `write` / `fill` / `load` | 内存读/写/填充/加载固件（无会话时可指定架构创建） | `--addr --len --bytes --file --value --firmware --base --arch` | hex/JSON |
 | `bp` | `list` / `set` / `clear` / `clear-all` | 断点管理 | `--addr --condition --hit-count --session` | 表/JSON |
-| `disasm` | — | 反汇编 N 条 | `--arch --addr --count --session` | 文本 |
+| `disasm` | — | 反汇编 N 条（可指定 ARM 状态） | `--arch --addr --count --arm-state --session` | 文本 |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry` | 文本 |
 | `state` | — | 完整状态（JSON/文本） | `--session --arch --firmware --base --json` | 状态/JSON |
-| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` | 外设状态/基址配置/控制/寄存器直读写 | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --len --bytes --session --json` | 表/JSON |
+| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/SVD 寄存器加载 | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --len --bytes --file --peripheral --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `line` / `addr` | ELF 符号与源行号映射 | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` | 周期计数/指令周期估算/外设推进 | `--addr --cycles --session --json` | 值/JSON |
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
@@ -133,11 +133,12 @@ ns-instruction-sim/
 
 1. **人类可读**（默认）：表格/文本，适合终端交互。
 2. **机器可读**（`--json`）：稳定字段的 JSON 对象（`arch`、`pc`、`cycleCount`、`halted`、
-   `lastResult`、`registers`、`uartText`、`uart`、`peripherals`（UART/GPIO/定时器/看门狗/中断）、
-   `csr`（mstatus/mtvec/mepc/mcause/mie/mhartid）），字段名不随版本随意变动。
+   `lastResult`、`registers`、`uartText`、`uart`、`peripherals`（UART/GPIO/定时器/看门狗/中断/`externalRegs`）、
+   `csr`（mstatus/mtvec/mepc/mcause/mie/mhartid）、`breakpoints`（地址/条件/命中次数/实际命中）），
+   字段名不随版本随意变动。
 3. **错误**：一律写 stderr，格式 `错误: <消息>`，进程退出码 `1`。成功的 `--json` 退出码 `0`。
 4. **会话文件**：JSON，含 `arch`、`pc`、`cycle_count`、`registers`、`memory`、`breakpoints`、
-   `memory_overlay`（显式内存写，跨架构重放）、`peripherals`、`csr`、`firmware`（路径/格式/基址）。
+   `memory_overlay`（显式内存写，跨架构重放）、`peripherals`（含 `external_regs`）、`csr`、`firmware`（路径/格式/基址）。
    缺失路径时自动新建临时会话。
 
 ### 3.3 新增命令必须满足
@@ -211,6 +212,10 @@ done
 - `version_command_and_flag`：`version` 子命令与 `--version` 均输出版本号。
 - `mem_write_read_arm_roundtrip`：非 RISC-V（ARM）内存写跨会话持久化。
 - `periph_config_relocates_bases`：外设 UART/GPIO 基址重定位并持久化。
+- `mem_write_with_arch_creates_session`：`mem write --arch` 直接创建指定架构会话。
+- `disasm_arm_state_override`：`disasm --arm-state a32|thumb` 切换 ARM 解码并校验步进宽度。
+- `periph_svd_load_populates_registers`：`periph svd-load` 从 SVD 载入复位值并支持直读写/持久化。
+- `periph_svd_load_instruction_write_couples`：`run --session` 在 SVD 加载的会话上运行，指令级 `sw` 直写寄存器并读回。
 
 ### 5.2 反汇编宽度
 

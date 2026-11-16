@@ -75,6 +75,7 @@ ns-instruction-sim device svd --file chip.svd --peripheral USART1 --register DR 
 ns-instruction-sim run --firmware app.elf --save-session s.json --json
 ns-instruction-sim run --firmware app.bin --arch riscv --base 0x80000000 --max-steps 1000
 ns-instruction-sim run --firmware app.elf --steps 1000 --json
+ns-instruction-sim run --firmware app.elf --session s.json --json
 
 # 单步 / 步过 / 步出 / 连续运行
 ns-instruction-sim step --session s.json
@@ -90,6 +91,7 @@ ns-instruction-sim reg set --session s.json x5 0x2a
 # 内存
 ns-instruction-sim mem read --session s.json --addr 0x20000000 --len 64
 ns-instruction-sim mem write --session s.json --addr 0x20000000 --bytes 0x01 0x02 0x03
+ns-instruction-sim mem write --session arm.json --arch arm --addr 0x20000000 --bytes 0xaa 0xbb
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 0
 
 # 断点
@@ -100,6 +102,7 @@ ns-instruction-sim bp clear --session s.json --addr 0x80000004
 
 # 反汇编 / 复位 / 状态 / 外设
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8
+ns-instruction-sim disasm --session arm.json --addr 0x0 --count 4 --arm-state thumb
 ns-instruction-sim reset --session s.json --entry 0x80000000
 ns-instruction-sim state --session s.json --json
 ns-instruction-sim periph status --session s.json
@@ -136,6 +139,10 @@ ns-instruction-sim csr set --session s.json mtvec 0x80000010
 ns-instruction-sim periph reg-read --session s.json --addr 0x40002000 --len 4
 ns-instruction-sim periph reg-write --session s.json --addr 0x40000000 --bytes 0x48 0x69
 ns-instruction-sim periph timer --session s.json --index 1 --enabled true --prescaler 8 --auto-reload 1000
+
+# 从 SVD 文件加载芯片寄存器（地址 -> 复位值）到仿真器，支持直读写与持久化
+ns-instruction-sim periph svd-load --session s.json --file crates/ns-device/src/svd/stm32f103c8.svd --json
+ns-instruction-sim periph svd-load --session s.json --file chip.svd --peripheral TIM2 --force
 ```
 
 ## 5. 新增子命令流程（必须遵循）

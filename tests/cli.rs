@@ -25,6 +25,10 @@ fn write_riscv_elf(path: &std::path::Path) {
         0x23, 0x28, 0x10, 0x00, // sw x1, 16(x0)
         0x73, 0x00, 0x00, 0x00, // ecall
     ];
+    write_riscv_elf_code(path, &code);
+}
+
+fn write_riscv_elf_code(path: &std::path::Path, code: &[u8]) {
     let mut elf = vec![0u8; 0x100];
     elf[0..4].copy_from_slice(b"\x7fELF");
     elf[4] = 1; // ELF32
@@ -491,6 +495,120 @@ fn device_svd_parse_and_filter() {
 }
 
 #[test]
+fn periph_svd_load_populates_registers() {
+    let dir = tmpdir();
+    let sess = dir.join("svd_load.json");
+    let svd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("crates/ns-device/src/svd/stm32f103c8.svd");
+    bootstrap(&sess);
+
+    // Load all SVD-defined registers into the session.
+    let out = Command::new(bin())
+        .args(["periph", "svd-load", "--session", sess.to_str().unwrap(),
+               "--file", svd.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["loaded"].as_u64().unwrap() >= 16);
+    assert!(json["peripherals"].as_u64().unwrap() >= 4);
+
+    // The reset value of TIM2 CR1 (0x40000000) is 0.
+    let addr = "0x40000000";
+    let out = Command::new(bin())
+        .args(["periph", "reg-read", "--session", sess.to_str().unwrap(),
+               "--addr", addr, "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"][0], 0u64);
+    assert_eq!(json["bytes"][1], 0u64);
+
+    // Write the register and read it back (both external_regs and memory).
+    let out = Command::new(bin())
+        .args(["periph", "reg-write", "--session", sess.to_str().unwrap(),
+               "--addr", addr, "--bytes", "0x01", "0x00", "0x00", "0x00", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["periph", "reg-read", "--session", sess.to_str().unwrap(),
+               "--addr", addr, "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"][0], 1u64);
+
+    // The written value survives a fresh session load (persistence).
+    let out = Command::new(bin())
+        .args(["periph", "reg-read", "--session", sess.to_str().unwrap(),
+               "--addr", addr, "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"][0], 1u64);
+
+    // state exposes the loaded external registers.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["peripherals"]["externalRegs"].is_object());
+}
+
+#[test]
+fn periph_svd_load_instruction_write_couples() {
+    let dir = tmpdir();
+    let sess = dir.join("svd_exec.json");
+    let elf = dir.join("svd_exec.elf");
+    let svd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("crates/ns-device/src/svd/stm32f103c8.svd");
+    bootstrap(&sess);
+    Command::new(bin())
+        .args(["periph", "svd-load", "--session", sess.to_str().unwrap(),
+               "--file", svd.to_str().unwrap()])
+        .output()
+        .unwrap();
+    // lui x3,0x40021 (x3=0x40021000 RCC.CR); addi x1,x0,0x2a (x1=42);
+    // sw x1,0(x3) -> write 42 to RCC.CR; ecall.
+    let code: [u8; 16] = [
+        0xB7, 0x11, 0x02, 0x40, // lui x3, 0x40021
+        0x93, 0x00, 0xA0, 0x02, // addi x1, x0, 0x2a
+        0x23, 0xA0, 0x11, 0x00, // sw x1, 0(x3)
+        0x73, 0x00, 0x00, 0x00, // ecall
+    ];
+    write_riscv_elf_code(&elf, &code);
+
+    // Run the firmware on the SVD-loaded session and save back to it.
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["lastResult"], "halted");
+
+    // The instruction-level store must have landed in the SVD register.
+    let out = Command::new(bin())
+        .args(["periph", "reg-read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x40021000", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"][0], 0x2au64);
+    assert_eq!(json["bytes"][1], 0u64);
+    assert_eq!(json["bytes"][2], 0u64);
+    assert_eq!(json["bytes"][3], 0u64);
+}
+
+#[test]
 fn run_steps_runs_exactly_n_instructions() {
     let dir = tmpdir();
     let elf = dir.join("steps.elf");
@@ -607,4 +725,61 @@ fn periph_config_relocates_bases() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["uartText"], "AB");
+}
+
+#[test]
+fn mem_write_with_arch_creates_session() {
+    let dir = tmpdir();
+    let sess = dir.join("memarch.json");
+    // `mem write --arch arm` on a missing session creates an ARM session.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm", "--addr", "0x20000000", "--bytes", "0xaa", "0xbb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["arch"], "arm");
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x20000000", "--len", "2"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("aa bb"));
+}
+
+#[test]
+fn disasm_arm_state_override() {
+    let dir = tmpdir();
+    let binfile = dir.join("thumb.bin");
+    let sess = dir.join("thumb.json");
+    // Thumb: nop (0xBF00), movs r0,#1 (0x2001).
+    std::fs::write(&binfile, [0x00u8, 0xbf, 0x01, 0x20]).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    // Thumb override: the 2-byte nop is followed by movs r0, #1 at 0x2.
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "2", "--arm-state", "thumb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("0x00000002"), "Thumb-1 should advance 2 bytes: {text}");
+    // A32 override advances 4 bytes.
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "1", "--arm-state", "a32"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    // Invalid value must be rejected.
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--arm-state", "bogus"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
 }

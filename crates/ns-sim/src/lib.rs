@@ -215,6 +215,11 @@ pub struct VirtualPeripherals {
     pub watchdog: Option<Watchdog>,
     /// Pending interrupt lines asserted by peripherals.
     pub irq_pending: [bool; 16],
+    /// Generic chip registers loaded from an SVD file (address -> value).
+    /// Consulted as a fallback by `peripheral_read`/`peripheral_write` after
+    /// the fixed UART/GPIO/timer/watchdog model, letting external callers read
+    /// and write arbitrary memory-mapped registers.
+    pub external_regs: HashMap<u32, u32>,
 }
 
 /// A virtual watchdog timer. When enabled, it counts core cycles; if the
@@ -323,6 +328,7 @@ impl VirtualPeripherals {
             timers: Vec::new(),
             watchdog: None,
             irq_pending: [false; 16],
+            external_regs: HashMap::new(),
         }
     }
 }
@@ -2441,6 +2447,14 @@ impl Simulator {
          self.gpio_write(address);
          self.timer_write(address);
          self.watchdog_write(address);
+         // Fall back to SVD-defined registers: store the full 32-bit value
+         // written at the register address (read back from memory).
+         if self.peripherals.external_regs.contains_key(&address) {
+             let value = self.read_u32(address);
+             if let Some(entry) = self.peripherals.external_regs.get_mut(&address) {
+                 *entry = value;
+             }
+         }
      }
 
     /// Handle watchdog register writes: base+0x00 feed (0xAA55 resets the
@@ -2578,6 +2592,9 @@ impl Simulator {
                     _ => 0,
                 });
             }
+        }
+        if let Some(value) = self.peripherals.external_regs.get(&address) {
+            return Some(*value);
         }
         None
     }

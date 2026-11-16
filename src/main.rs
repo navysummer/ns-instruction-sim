@@ -122,6 +122,9 @@ enum DeviceSub {
 
 #[derive(Args)]
 struct RunArgs {
+    /// 目标会话（存在则保留其外设/内存/断点并运行固件，缺失则新建）。
+    #[arg(short, long)]
+    session: Option<PathBuf>,
     /// 固件文件（ELF / Intel HEX / BIN）。
     #[arg(short, long)]
     firmware: PathBuf,
@@ -250,6 +253,9 @@ enum MemSub {
     Read {
         #[arg(short, long)]
         session: PathBuf,
+        /// 目标架构（无会话时使用，默认 riscv）。
+        #[arg(short, long)]
+        arch: Option<String>,
         /// 起始地址（十六进制或十进制，位置参数或 --addr）。
         #[arg(index = 1)]
         addr: Option<String>,
@@ -267,6 +273,9 @@ enum MemSub {
     Write {
         #[arg(short, long)]
         session: PathBuf,
+        /// 目标架构（无会话时使用，默认 riscv）。
+        #[arg(short, long)]
+        arch: Option<String>,
         /// 起始地址（位置参数或 --addr）。
         #[arg(index = 1)]
         addr: Option<String>,
@@ -284,6 +293,9 @@ enum MemSub {
     Fill {
         #[arg(short, long)]
         session: PathBuf,
+        /// 目标架构（无会话时使用，默认 riscv）。
+        #[arg(short, long)]
+        arch: Option<String>,
         /// 起始地址（位置参数或 --addr）。
         #[arg(index = 1)]
         addr: Option<String>,
@@ -375,6 +387,9 @@ struct DisasmArgs {
     /// 指令条数（默认 8）。
     #[arg(long, default_value = "8")]
     count: usize,
+    /// ARM 状态：`a32` 或 `thumb`（仅 ARM；默认取内核当前状态）。
+    #[arg(long, value_parser = ["a32", "thumb"])]
+    arm_state: Option<String>,
 }
 
 #[derive(Args)]
@@ -426,6 +441,22 @@ enum PeriphSub {
         /// GPIO 寄存器基址（默认 0x4000_2000）。
         #[arg(long)]
         gpio_base: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 从 SVD 文件加载芯片寄存器（地址 -> 复位值）到仿真器。
+    SvdLoad {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// SVD 文件路径。
+        #[arg(short, long)]
+        file: PathBuf,
+        /// 只加载指定外设（按名称，可选）。
+        #[arg(long)]
+        peripheral: Option<String>,
+        /// 覆盖既有寄存器值（默认 false：只写入缺失的）。
+        #[arg(long)]
+        force: bool,
         #[arg(long)]
         json: bool,
     },
@@ -877,6 +908,17 @@ struct StateOutput {
     peripherals: serde_json::Value,
     /// RISC-V machine-mode CSR snapshot.
     csr: serde_json::Value,
+    /// Active breakpoints (address, condition, configured hit count, runtime hits).
+    breakpoints: Vec<BreakpointOutput>,
+}
+
+#[derive(serde::Serialize)]
+struct BreakpointOutput {
+    address: u32,
+    condition: String,
+    #[serde(rename = "hitCount")]
+    hit_count: u32,
+    hits: u64,
 }
 
 fn peripherals_json(sim: &Simulator) -> serde_json::Value {
@@ -915,6 +957,8 @@ fn peripherals_json(sim: &Simulator) -> serde_json::Value {
         .map(|(i, _)| i)
         .collect();
     serde_json::json!({
+        "uartBase": sim.peripherals.uart_base,
+        "gpioBase": sim.peripherals.gpio_base,
         "uart": sim.peripherals.outputs,
         "uartText": String::from_utf8_lossy(&sim.peripherals.outputs),
         "gpioOut": sim.peripherals.gpio_out,
@@ -923,6 +967,7 @@ fn peripherals_json(sim: &Simulator) -> serde_json::Value {
         "timers": timers,
         "watchdog": watchdog,
         "irqPending": irq_pending,
+        "externalRegs": sim.peripherals.external_regs,
     })
 }
 
@@ -954,6 +999,16 @@ fn state_output(sim: &Simulator, result: StepResult) -> StateOutput {
         uart_text: String::from_utf8_lossy(&sim.peripherals.outputs).into_owned(),
         peripherals: peripherals_json(sim),
         csr: csr_json(sim),
+        breakpoints: sim
+            .breakpoints
+            .iter()
+            .map(|bp| BreakpointOutput {
+                address: bp.address,
+                condition: bp.condition.clone(),
+                hit_count: bp.hit_count,
+                hits: bp.hits(),
+            })
+            .collect(),
     }
 }
 
@@ -1014,6 +1069,12 @@ fn cmd_device_info(device: &str) -> Result<()> {
             println!("外设 ({}):", dev.peripherals.len());
             for p in dev.sorted_peripherals() {
                 println!("  {:<20} 0x{:08x}  {}", p.name, p.base_address, p.description);
+                for r in &p.registers {
+                    println!(
+                        "    {:<24} 0x{:08x}  {} 位  reset=0x{:08x}  {}",
+                        r.name, r.address, r.size, r.reset_value, r.description
+                    );
+                }
             }
         }
     }
@@ -1152,9 +1213,11 @@ fn cmd_device_svd(
 }
 
 fn cmd_run(args: RunArgs) -> Result<()> {
-    let arch = arch_from_arg(args.arch.as_deref())?;
-    let mut sim = Simulator::for_arch(arch)?;
     let base = parse_num(&args.base)?;
+    // If a session is given, load it (preserving peripherals, memory,
+    // breakpoints and SVD registers); otherwise create a fresh simulator.
+    let (mut sim, _existing_fw, _) =
+        load_or_create(args.session.as_deref(), args.arch.as_deref(), None, "0")?;
     let firmware = detect_format(&args.firmware);
     let fw_state = Some(FirmwareState {
         path: args.firmware.to_string_lossy().into_owned(),
@@ -1172,7 +1235,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     };
     let output = state_output(&sim, result);
 
-    if let Some(session_path) = &args.save_session {
+    if let Some(session_path) = args.save_session.as_ref().or_else(|| args.session.as_ref()) {
         let session = Session::capture(&sim, fw_state);
         session.save(session_path)?;
     }
@@ -1316,10 +1379,10 @@ fn cmd_reg(sub: RegSub) -> Result<()> {
 
 fn cmd_mem(sub: MemSub) -> Result<()> {
     match sub {
-        MemSub::Read { session, addr, addr_flag, len, out } => {
+        MemSub::Read { session, arch, addr, addr_flag, len, out } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
-            let (sim, _fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let (sim, _fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
             let mut bytes = Vec::with_capacity(len);
             for i in 0..len {
                 bytes.push(read_mem_byte(&sim, addr_num.wrapping_add(i as u32)));
@@ -1333,7 +1396,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Write { session, addr, addr_flag, bytes, file } => {
+        MemSub::Write { session, arch, addr, addr_flag, bytes, file } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let mut data = Vec::new();
@@ -1348,7 +1411,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                     data.push(v as u8);
                 }
             }
-            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let (mut sim, fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
             let mut overlay = Vec::new();
             for (i, b) in data.iter().enumerate() {
                 let a = addr_num.wrapping_add(i as u32);
@@ -1361,7 +1424,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             println!("写入 {} 字节 @ 0x{:08x}", data.len(), addr_num);
             Ok(())
         }
-        MemSub::Fill { session, addr, addr_flag, len, value, value_flag } => {
+        MemSub::Fill { session, arch, addr, addr_flag, len, value, value_flag } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let value = value_flag.or(value).ok_or_else(|| anyhow::anyhow!("缺少填充字节"))?;
             let addr_num = parse_num(&addr)?;
@@ -1370,7 +1433,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                 bail!("填充字节超出 0..=255: {}", value);
             }
             let value_byte = value_num as u8;
-            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let (mut sim, fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
             let bytes = vec![value_byte; len];
             let mut overlay = Vec::new();
             for (i, b) in bytes.iter().enumerate() {
@@ -1498,7 +1561,11 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
     } else {
         Simulator::for_arch(arch)?
     };
-    let arm_state = sim.arm_state();
+    let arm_state = match args.arm_state.as_deref() {
+        Some("a32") => true,
+        Some("thumb") => false,
+        _ => sim.arm_state(),
+    };
     let read = |addr: u32| -> u8 { sim.read_u8(addr) };
     for _ in 0..args.count {
         let text = ns_sim::disassemble_one_state(arch, pc, &read, arm_state);
@@ -1570,6 +1637,8 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 "elapsed": w.elapsed, "resetCount": w.reset_count, "lastResetPc": w.last_reset_pc,
             }));
             let out = serde_json::json!({
+                "uartBase": sim.peripherals.uart_base,
+                "gpioBase": sim.peripherals.gpio_base,
                 "uart": sim.peripherals.outputs,
                 "uartText": uart_text,
                 "gpioOut": sim.peripherals.gpio_out,
@@ -1582,6 +1651,10 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             if json {
                 print_json(&out)?;
             } else {
+                println!(
+                    "基址: UART=0x{:08x} GPIO=0x{:08x}",
+                    sim.peripherals.uart_base, sim.peripherals.gpio_base
+                );
                 println!("UART 输出: {} 字节 {:?}", sim.peripherals.outputs.len(), uart_text);
                 println!("GPIO OUT=0x{:08x} DIR=0x{:08x} IN=0x{:08x}", sim.peripherals.gpio_out, sim.peripherals.gpio_dir, sim.peripherals.gpio_in);
                 println!("GPIO 事件数: {}", sim.peripherals.gpio_events.len());
@@ -1612,6 +1685,50 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 println!(
                     "外设基址: UART=0x{:08x} GPIO=0x{:08x}",
                     sim.peripherals.uart_base, sim.peripherals.gpio_base
+                );
+            }
+            Ok(())
+        }
+        PeriphSub::SvdLoad { session, file, peripheral, force, json } => {
+            let device = ns_device::load_svd_file(&file)?;
+            let periphs: Vec<&ns_device::Peripheral> = match peripheral.as_deref() {
+                Some(name) => {
+                    let p = device.peripheral(name).ok_or_else(|| {
+                        anyhow::anyhow!("SVD 中无外设: {name}")
+                    })?;
+                    vec![p]
+                }
+                None => device.sorted_peripherals(),
+            };
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let mut loaded = 0usize;
+            for p in &periphs {
+                for r in &p.registers {
+                    let addr = r.address as u32;
+                    if force || !sim.peripherals.external_regs.contains_key(&addr) {
+                        sim.peripherals.external_regs.insert(addr, r.reset_value as u32);
+                        // 写入后备内存，便于直接 mem read 也能看到值。
+                        sim.write_u32(addr, r.reset_value as u32);
+                        loaded += 1;
+                    }
+                }
+            }
+            let out = serde_json::json!({
+                "file": file.display().to_string(),
+                "loaded": loaded,
+                "peripherals": periphs.len(),
+                "force": force,
+            });
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&out)?;
+            } else {
+                println!(
+                    "已从 {} 加载 {} 个寄存器（{} 个外设）",
+                    file.display(),
+                    loaded,
+                    periphs.len()
                 );
             }
             Ok(())
