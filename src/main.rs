@@ -390,6 +390,32 @@ enum MemSub {
         #[arg(long, default_value = "0")]
         base: String,
     },
+    /// 导出内存区域（C 数组或十六进制文本）。
+    Dump {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 目标架构（无会话时使用，默认 riscv）。
+        #[arg(short, long)]
+        arch: Option<String>,
+        /// 起始地址（十六进制或十进制，位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 起始地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 长度（字节，默认 64）。
+        #[arg(long, default_value = "64")]
+        len: usize,
+        /// C 数组名（仅 --format c）。
+        #[arg(long, default_value = "data")]
+        name: String,
+        /// 输出格式：`c`（C 数组）或 `hex`（十六进制文本）。
+        #[arg(long, default_value = "c")]
+        format: String,
+        /// 写入文件路径（缺省打印到 stdout）。
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Args)]
@@ -1850,6 +1876,42 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
             println!("已加载 {} 到仿真器", firmware.display());
+            Ok(())
+        }
+        MemSub::Dump { session, arch, addr, addr_flag, len, name, format, out } => {
+            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let addr_num = parse_num(&addr)?;
+            let (sim, _fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
+            let mut bytes = Vec::with_capacity(len);
+            for i in 0..len {
+                bytes.push(read_mem_byte(&sim, addr_num.wrapping_add(i as u32)));
+            }
+            let text = match format.as_str() {
+                "c" => {
+                    let mut s = format!("const unsigned char {name}[{len}] = {{\n");
+                    for chunk in bytes.chunks(16) {
+                        s.push_str("    ");
+                        for (i, b) in chunk.iter().enumerate() {
+                            if i > 0 {
+                                s.push_str(", ");
+                            }
+                            s.push_str(&format!("0x{b:02x}"));
+                        }
+                        s.push_str(",\n");
+                    }
+                    s.push_str("};\n");
+                    s
+                }
+                "hex" => hex_dump(addr_num, &bytes),
+                other => bail!("不支持的内存导出格式: {other}（支持 c/hex）"),
+            };
+            if let Some(out_path) = out {
+                std::fs::write(&out_path, text.as_bytes())
+                    .with_context(|| format!("写入 {} 失败", out_path.display()))?;
+                println!("已导出 {} 字节到 {}", bytes.len(), out_path.display());
+            } else {
+                print!("{text}");
+            }
             Ok(())
         }
     }

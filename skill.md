@@ -102,6 +102,7 @@ ns-instruction-sim mem write --session s.json --addr 0x20000000 --bytes 0x01 0x0
 ns-instruction-sim mem write --session arm.json --arch arm --addr 0x20000000 --bytes 0xaa 0xbb
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 0
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad 0xbe 0xef
+ns-instruction-sim mem dump --session s.json --addr 0x20000000 --len 64 --name bootloader --format c
 
 # 断点
 ns-instruction-sim bp set --session s.json --addr 0x80000004

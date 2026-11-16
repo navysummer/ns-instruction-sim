@@ -1480,3 +1480,33 @@ fn run_trace_prints_each_instruction() {
     assert!(text.contains("<elf>:1"), "missing source: {text}");
     assert!(text.contains("-> 0x8000000c"), "missing result PC: {text}");
 }
+
+#[test]
+fn mem_dump_c_array() {
+    let dir = tmpdir();
+    let sess = dir.join("dump.json");
+    bootstrap(&sess);
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--bytes", "0xde", "0xad", "0xbe", "0xef"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["mem", "dump", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "4", "--name", "bootloader", "--format", "c"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("const unsigned char bootloader[4]"), "missing decl: {text}");
+    assert!(text.contains("0xde"), "missing 0xde: {text}");
+    assert!(text.contains("0xef"), "missing 0xef: {text}");
+    // Invalid format must fail.
+    let out = Command::new(bin())
+        .args(["mem", "dump", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "4", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
