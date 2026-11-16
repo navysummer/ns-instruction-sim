@@ -550,6 +550,16 @@ enum PeriphSub {
         #[arg(long)]
         json: bool,
     },
+    /// 列出会话中已加载（SVD）的外设寄存器。
+    RegList {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 用内置设备键注释寄存器名（如 stm32f103c8，可选）。
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// 写入外设内存映射寄存器（触发外设写，如 UART 输出、TIMER 控制）。
     RegWrite {
         #[arg(short, long)]
@@ -1973,6 +1983,48 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 }))?;
             } else {
                 print!("{}", hex_dump(addr_num, &bytes));
+            }
+            Ok(())
+        }
+        PeriphSub::RegList { session, device, json } => {
+            let (sim, _, _) = load_or_create(Some(&session), None, None, "0")?;
+            // Optional address -> name annotation from a built-in device SVD.
+            let mut names: BTreeMap<u32, String> = BTreeMap::new();
+            if let Some(key) = device.as_deref() {
+                let dev = ns_device::device_for_target(key)
+                    .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {key}"))?;
+                for p in &dev.sorted_peripherals() {
+                    for r in &p.registers {
+                        names.insert(r.address as u32, format!("{}.{}", p.name, r.name));
+                    }
+                }
+            }
+            let mut entries: Vec<(u32, u32)> =
+                sim.peripherals.external_regs.iter().map(|(a, v)| (*a, *v)).collect();
+            entries.sort_by_key(|(a, _)| *a);
+            if json {
+                let items: Vec<_> = entries
+                    .iter()
+                    .map(|(a, v)| {
+                        serde_json::json!({
+                            "address": a,
+                            "value": v,
+                            "name": names.get(a).cloned().unwrap_or_default(),
+                        })
+                    })
+                    .collect();
+                print_json(&items)?;
+            } else {
+                if entries.is_empty() {
+                    println!("(未加载任何外设寄存器)");
+                }
+                for (a, v) in &entries {
+                    if let Some(name) = names.get(a) {
+                        println!("0x{a:08x}  0x{v:08x}  {name}");
+                    } else {
+                        println!("0x{a:08x}  0x{v:08x}");
+                    }
+                }
             }
             Ok(())
         }

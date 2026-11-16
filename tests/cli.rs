@@ -656,6 +656,49 @@ fn periph_svd_load_by_device_key() {
 }
 
 #[test]
+fn periph_reg_list_shows_loaded_registers() {
+    let dir = tmpdir();
+    let sess = dir.join("reg_list.json");
+    bootstrap(&sess);
+    Command::new(bin())
+        .args(["periph", "svd-load", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8"])
+        .output()
+        .unwrap();
+
+    // Text list with device annotation.
+    let out = Command::new(bin())
+        .args(["periph", "reg-list", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("TIM2.CR1"));
+    assert!(text.contains("GPIOA.CRL"));
+
+    // JSON list has all loaded registers.
+    let out = Command::new(bin())
+        .args(["periph", "reg-list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json.as_array().unwrap().len() >= 16);
+    assert_eq!(json[0]["address"], 0x4000_0000u64);
+
+    // Empty session reports no registers.
+    let empty = dir.join("reg_list_empty.json");
+    bootstrap(&empty);
+    let out = Command::new(bin())
+        .args(["periph", "reg-list", "--session", empty.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("未加载"));
+}
+
+#[test]
 fn periph_svd_load_instruction_write_couples() {
     let dir = tmpdir();
     let sess = dir.join("svd_exec.json");

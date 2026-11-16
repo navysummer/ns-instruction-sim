@@ -147,6 +147,7 @@ ns-instruction-sim periph timer --session s.json --index 1 --enabled true --pres
 ns-instruction-sim periph svd-load --session s.json --file crates/ns-device/src/svd/stm32f103c8.svd --json
 ns-instruction-sim periph svd-load --session s.json --file chip.svd --peripheral TIM2 --force
 ns-instruction-sim periph svd-load --session s.json --device stm32f103c8 --json
+ns-instruction-sim periph reg-list --session s.json --device stm32f103c8
 ```
 
 ## 5. 新增子命令流程（必须遵循）

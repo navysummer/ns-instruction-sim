@@ -44,6 +44,7 @@ ns-instruction-sim device init stm32f103c8 --peripheral GPIOA --register GPIOA.C
 ns-instruction-sim periph svd-load --session s.json --file crates/ns-device/src/svd/stm32f103c8.svd --json
 ns-instruction-sim periph svd-load --session s.json --file chip.svd --peripheral TIM2 --force
 ns-instruction-sim periph svd-load --session s.json --device stm32f103c8 --json
+ns-instruction-sim periph reg-list --session s.json --device stm32f103c8
 ```
 
 支持 12 种架构：RISC-V、ARM Cortex-M、MCS-51、MCS-251、C166、Xtensa、AVR、MSP430、V850、STM8、
