@@ -38,6 +38,7 @@ ns-instruction-sim device svd --file chip.svd --json
 ns-instruction-sim device svd --file chip.svd --peripheral USART1 --register DR
 ns-instruction-sim device linker stm32f103c8 --out chip.ld
 ns-instruction-sim device startup stm32f103c8 --out startup.s
+ns-instruction-sim device init stm32f103c8 --peripheral GPIOA --register GPIOA.CRL=0x44444444 --out periph_init.c
 
 # 从 SVD 文件加载芯片寄存器到仿真器（可直读写/持久化）
 ns-instruction-sim periph svd-load --session s.json --file crates/ns-device/src/svd/stm32f103c8.svd --json

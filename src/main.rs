@@ -120,6 +120,20 @@ enum DeviceSub {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
+    /// 生成外设初始化 C 骨架（时钟使能 + 复位值注释，可指定寄存器值）。
+    Init {
+        /// 目标设备键（如 stm32f103c8）。
+        device: String,
+        /// 要初始化的外设（可重复；缺省为设备全部外设）。
+        #[arg(short, long)]
+        peripheral: Vec<String>,
+        /// 具体寄存器写入 PERIPH.REG=VALUE（可重复；十六进制或十进制）。
+        #[arg(long)]
+        register: Vec<String>,
+        /// 写入文件路径（缺省打印到 stdout）。
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// 解析并显示一个 CMSIS-SVD 设备描述文件。
     Svd {
         /// SVD 文件路径。
@@ -794,6 +808,9 @@ fn real_main() -> Result<()> {
         Command::Device { sub: DeviceSub::Startup { device, out } } => {
             cmd_device_codegen(&device, out.as_deref(), CodegenKind::Startup)
         }
+        Command::Device { sub: DeviceSub::Init { device, peripheral, register, out } } => {
+            cmd_device_init(&device, &peripheral, &register, out.as_deref())
+        }
         Command::Device { sub: DeviceSub::Svd { file, peripheral, register, json } } => {
             cmd_device_svd(&file, peripheral.as_deref(), register.as_deref(), json)
         }
@@ -1174,6 +1191,63 @@ fn cmd_device_codegen(device: &str, out: Option<&Path>, kind: CodegenKind) -> Re
         Some(path) => {
             std::fs::write(path, &text).with_context(|| format!("写入 {} 失败", path.display()))?;
             println!("已生成{label} -> {}", path.display());
+        }
+        None => {
+            print!("{text}");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_device_init(
+    device: &str,
+    peripheral_names: &[String],
+    register_overrides: &[String],
+    out: Option<&Path>,
+) -> Result<()> {
+    if ns_device::catalog_entry(device).is_none() {
+        bail!("未知设备: {device}");
+    }
+    // Resolve which peripherals to configure (default: every SVD peripheral).
+    let names: Vec<String> = if peripheral_names.is_empty() {
+        let dev = ns_device::device_for_target(device)
+            .ok_or_else(|| anyhow::anyhow!("设备 {device} 无内置 SVD，请用 --peripheral 指定"))?;
+        dev.sorted_peripherals().iter().map(|p| p.name.clone()).collect()
+    } else {
+        peripheral_names.to_vec()
+    };
+
+    // Parse `PERIPH.REG=VALUE` overrides into per-peripheral register values.
+    let mut register_values: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+    for spec in register_overrides {
+        let (left, value) = spec
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("--register 格式应为 PERIPH.REG=VALUE: {spec}"))?;
+        let (periph, reg) = left
+            .split_once('.')
+            .ok_or_else(|| anyhow::anyhow!("--register 格式应为 PERIPH.REG=VALUE: {spec}"))?;
+        let value = parse_num(value)?;
+        register_values
+            .entry(periph.to_string())
+            .or_default()
+            .insert(reg.to_string(), value as u64);
+    }
+
+    let configs: Vec<ns_device::PeripheralConfig> = names
+        .iter()
+        .map(|name| ns_device::PeripheralConfig {
+            name: name.clone(),
+            purpose: String::new(),
+            options: Vec::new(),
+            register_values: register_values.get(name).cloned().unwrap_or_default(),
+        })
+        .collect();
+    let text = ns_device::generate_peripheral_init(device, &configs)
+        .ok_or_else(|| anyhow::anyhow!("无法生成外设初始化：设备 {device} 不受支持"))?;
+    match out {
+        Some(path) => {
+            std::fs::write(path, &text).with_context(|| format!("写入 {} 失败", path.display()))?;
+            println!("已生成外设初始化 -> {}", path.display());
         }
         None => {
             print!("{text}");

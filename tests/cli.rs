@@ -120,6 +120,39 @@ fn device_codegen_linker_and_startup() {
 }
 
 #[test]
+fn device_init_codegen() {
+    // Skeleton init for a selected peripheral.
+    let out = Command::new(bin())
+        .args(["device", "init", "stm32f103c8", "--peripheral", "GPIOA"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("gpioa_init"));
+    assert!(text.contains("peripheral_init"));
+    assert!(text.contains("GPIOA"));
+
+    // Concrete register override emits a real write.
+    let out = Command::new(bin())
+        .args(["device", "init", "stm32f103c8", "--peripheral", "GPIOA",
+               "--register", "GPIOA.CRL=0x44444444"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("GPIOA->CRL = 0x44444444"));
+
+    // Malformed register override must fail.
+    let out = Command::new(bin())
+        .args(["device", "init", "stm32f103c8", "--peripheral", "GPIOA",
+               "--register", "CRL=0x1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("PERIPH.REG"));
+}
+
+#[test]
 fn run_riscv_elf_and_inspect() {
     let dir = tmpdir();
     let elf = dir.join("test.elf");
