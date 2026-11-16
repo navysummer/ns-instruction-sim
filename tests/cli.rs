@@ -1824,3 +1824,26 @@ fn disasm_json() {
     assert_eq!(json[0]["bytes"], serde_json::json!([0x13, 0x81, 0x20, 0x00]));
     assert!(json[0]["text"].as_str().unwrap().contains("addi"));
 }
+
+#[test]
+fn reg_list_filter() {
+    let dir = tmpdir();
+    let sess = dir.join("regf.json");
+    bootstrap(&sess);
+    let out = Command::new(bin())
+        .args(["reg", "list", "--session", sess.to_str().unwrap(), "--filter", "ra", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let keys: Vec<&str> = json.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+    assert_eq!(keys, vec!["ra"], "filter should keep only ra");
+    // Substring filter.
+    let out = Command::new(bin())
+        .args(["reg", "list", "--session", sess.to_str().unwrap(), "--filter", "sp", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json.get("sp").is_some());
+    assert!(json.get("ra").is_none());
+}

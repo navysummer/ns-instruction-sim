@@ -94,6 +94,7 @@ ns-instruction-sim continue --session s.json --until 0x80000008
 
 # 寄存器
 ns-instruction-sim reg list --session s.json
+ns-instruction-sim reg list --session s.json --filter ra --json
 ns-instruction-sim reg get --session s.json x1
 ns-instruction-sim reg set --session s.json x5 0x2a
 

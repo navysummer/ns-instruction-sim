@@ -250,6 +250,9 @@ enum RegSub {
         session: Option<PathBuf>,
         #[arg(short, long)]
         arch: Option<String>,
+        /// 按名称子串筛选（大小写不敏感，如 `s` 或 `x1`）。
+        #[arg(long)]
+        filter: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -1741,7 +1744,7 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
 
 fn cmd_reg(sub: RegSub) -> Result<()> {
     match sub {
-        RegSub::List { session, arch, json } => {
+        RegSub::List { session, arch, filter, json } => {
             let arch = resolve_arch(session.as_deref(), arch.as_deref())?;
             let mut regs = BTreeMap::new();
             let count = ns_sim::reg_count_for(arch);
@@ -1755,6 +1758,10 @@ fn cmd_reg(sub: RegSub) -> Result<()> {
                         regs.insert(ns_sim::reg_label_for(arch, *i), *v);
                     }
                 }
+            }
+            let filter = filter.map(|f| f.to_ascii_lowercase());
+            if let Some(f) = &filter {
+                regs.retain(|name, _| name.to_ascii_lowercase().contains(f));
             }
             if json {
                 print_json(&regs)?;
