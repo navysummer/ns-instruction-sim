@@ -1967,3 +1967,27 @@ fn bp_management_json() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["cleared"], 0u64);
 }
+
+#[test]
+fn mem_write_fill_json() {
+    let dir = tmpdir();
+    let sess = dir.join("mwj.json");
+    bootstrap(&sess);
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--bytes", "0xaa", "0xbb", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["len"], 2u64);
+    assert_eq!(json["address"], 0x2000_0000u64);
+    let out = Command::new(bin())
+        .args(["mem", "fill", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000010", "--len", "4", "--value", "0xff", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["len"], 4u64);
+    assert_eq!(json["value"], 255u64);
+}

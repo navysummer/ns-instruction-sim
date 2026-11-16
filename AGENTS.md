@@ -225,6 +225,7 @@ done
 - `mem_read_word_width`：`mem read --width` 按字节/半字/字/双字读取（含非法宽度错误路径）。
 - `mem_read_json`：`mem read --json` 输出地址/宽度/字节数组。
 - `mem_write_word_width`：`mem write --width --values` 按字/半字小端写入（含越界错误路径）。
+- `mem_write_fill_json`：`mem write/fill --json` 机器可读确认。
 - `state_fields_and_summary`：`state --fields` JSON 字段子集、`state --summary` 单行摘要。
 - `reg_list_filter`：`reg list --filter` 按名称子串筛选寄存器。
 - `reset_json`：`reset --json` 输出 PC/周期/停止 JSON。

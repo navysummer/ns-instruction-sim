@@ -357,6 +357,8 @@ enum MemSub {
         /// 从二进制文件读取字节写入。
         #[arg(long)]
         file: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
     },
     /// 填充内存区域。
     Fill {
@@ -380,6 +382,8 @@ enum MemSub {
         /// 填充字节（--value 形式）。
         #[arg(long = "value", conflicts_with = "value")]
         value_flag: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// 在内存区域搜索字节模式（找到所有偏移）。
     Search {
@@ -413,6 +417,8 @@ enum MemSub {
         arch: Option<String>,
         #[arg(long, default_value = "0")]
         base: String,
+        #[arg(long)]
+        json: bool,
     },
     /// 导出内存区域（C 数组或十六进制文本）。
     Dump {
@@ -1898,7 +1904,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Write { session, arch, addr, addr_flag, bytes, width, values, file } => {
+        MemSub::Write { session, arch, addr, addr_flag, bytes, width, values, file, json } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let mut data = Vec::new();
@@ -1940,10 +1946,18 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             let mut s = Session::capture(&sim, fw);
             s.memory_overlay.extend(overlay);
             s.save(&session)?;
-            println!("写入 {} 字节 @ 0x{:08x}", data.len(), addr_num);
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr_num,
+                    "len": data.len(),
+                    "width": width,
+                }))?;
+            } else {
+                println!("写入 {} 字节 @ 0x{:08x}", data.len(), addr_num);
+            }
             Ok(())
         }
-        MemSub::Fill { session, arch, addr, addr_flag, len, value, value_flag } => {
+        MemSub::Fill { session, arch, addr, addr_flag, len, value, value_flag, json } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let value = value_flag.or(value).ok_or_else(|| anyhow::anyhow!("缺少填充字节"))?;
             let addr_num = parse_num(&addr)?;
@@ -1963,7 +1977,15 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             let mut s = Session::capture(&sim, fw);
             s.memory_overlay.extend(overlay);
             s.save(&session)?;
-            println!("填充 {} 字节 @ 0x{:08x} = 0x{value_byte:02x}", len, addr_num);
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr_num,
+                    "len": len,
+                    "value": value_byte,
+                }))?;
+            } else {
+                println!("填充 {} 字节 @ 0x{:08x} = 0x{value_byte:02x}", len, addr_num);
+            }
             Ok(())
         }
         MemSub::Search { session, arch, addr, addr_flag, len, pattern, json } => {
@@ -2018,7 +2040,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Load { session, firmware, arch, base } => {
+        MemSub::Load { session, firmware, arch, base, json } => {
             let base_num = parse_num(&base)?;
             let (mut sim, _fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
             load_firmware_into(&mut sim, &firmware, base_num)?;
@@ -2029,7 +2051,15 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             });
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
-            println!("已加载 {} 到仿真器", firmware.display());
+            if json {
+                print_json(&serde_json::json!({
+                    "firmware": firmware.to_string_lossy(),
+                    "base": base_num,
+                    "format": detect_format(&firmware).label(),
+                }))?;
+            } else {
+                println!("已加载 {} 到仿真器", firmware.display());
+            }
             Ok(())
         }
         MemSub::Dump { session, arch, addr, addr_flag, len, name, format, out } => {
