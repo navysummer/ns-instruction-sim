@@ -210,6 +210,9 @@ struct StepArgs {
 struct ContinueArgs {
     #[arg(short, long)]
     session: PathBuf,
+    /// 运行到指定地址（临时断点，不持久化）。
+    #[arg(long)]
+    until: Option<String>,
     /// 最大执行步数（默认 1,000,000）。
     #[arg(long, default_value = "1000000")]
     max_steps: u64,
@@ -1539,7 +1542,16 @@ fn cmd_step(args: StepArgs, kind: StepKind) -> Result<()> {
 
 fn cmd_continue(args: ContinueArgs) -> Result<()> {
     let (mut sim, fw, _) = load_or_create(Some(&args.session), None, None, "0")?;
+    // `--until ADDR` installs a temporary breakpoint that is removed before
+    // the session is saved (unless the address was already a breakpoint).
+    let until_addr = args.until.as_deref().map(parse_num).transpose()?;
+    let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
     let result = sim.run(args.max_steps);
+    if temp_bp {
+        if let Some(addr) = until_addr {
+            sim.clear_breakpoint(addr);
+        }
+    }
     let output = state_output(&sim, result, fw.as_ref());
     if args.save {
         let session = Session::capture(&sim, fw);

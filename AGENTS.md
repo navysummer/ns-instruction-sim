@@ -115,7 +115,7 @@ ns-instruction-sim/
 | `step` | — | 单步一条指令 | `--session --arch --firmware --base --json` | 状态 |
 | `step-over` | — | 步过（跳过调用） | 同上 | 状态 |
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
-| `continue` | — | 连续运行至断点/停止/上限 | `--session --max-steps --save --json` | 状态 |
+| `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` | 内存读/写/填充/搜索模式/加载固件 | `--addr --len --bytes --file --value --pattern --firmware --base --arch` | hex/JSON |
 | `bp` | `list` / `set` / `clear` / `clear-all` | 断点管理 | `--addr --condition --hit-count --session` | 表/JSON |
@@ -198,6 +198,7 @@ done
 - `device_list_and_info`：设备目录与详情。
 - `run_riscv_elf_and_inspect`：ELF 加载→运行→PC/寄存器/内存校验。
 - `breakpoint_flow`：断点命中→`continue` 停在断点。
+- `continue_until_stops_at_address`：`continue --until` 临时断点运行到指定地址且不持久化。
 - `reg_set_and_get`：寄存器写读往返。
 - `session_roundtrip_preserves_firmware_and_peripherals`：会话保存/恢复。
 - `all_arch_state_works`：12 架构 `state --json` 均成功。

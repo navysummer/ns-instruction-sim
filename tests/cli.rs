@@ -181,6 +181,38 @@ fn run_riscv_elf_and_inspect() {
 }
 
 #[test]
+fn continue_until_stops_at_address() {
+    let dir = tmpdir();
+    let elf = dir.join("until.elf");
+    let sess = dir.join("until.json");
+    write_riscv_elf(&elf);
+    // Run one instruction, leaving the session at 0x80000004.
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    // Run to 0x80000008 using a temporary breakpoint.
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess.to_str().unwrap(),
+               "--until", "0x80000008", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8000_0008u64);
+    assert_eq!(json["lastResult"], "breakpoint");
+    assert_eq!(json["registers"]["ra"], 1u64);
+    assert_eq!(json["registers"]["sp"], 3u64);
+    // The temporary breakpoint must not be persisted.
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("无断点"));
+}
+
+#[test]
 fn breakpoint_flow() {
     let dir = tmpdir();
     let elf = dir.join("bp.elf");
