@@ -1937,6 +1937,13 @@ fn resolve_reg_field(
         .iter()
         .find(|f| f.name == field)
         .ok_or_else(|| anyhow::anyhow!("寄存器 {register} 无位域: {field}"))?;
+    if f.bit_offset >= 32 || f.bit_width > 32 || f.bit_offset + f.bit_width > 32 {
+        bail!(
+            "位域 {field} 超出 32 位范围 (bit {} width {})",
+            f.bit_offset,
+            f.bit_width
+        );
+    }
     Ok((r.address as u32, f.bit_offset, f.bit_width))
 }
 
