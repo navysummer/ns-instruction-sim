@@ -109,6 +109,7 @@ ns-instruction-sim mem dump --session s.json --addr 0x20000000 --len 64 --name b
 ns-instruction-sim bp set --session s.json --addr 0x80000004
 ns-instruction-sim bp set --session s.json --addr 0x80000008 --condition "x1 == 3" --hit-count 2
 ns-instruction-sim bp set --session s.json --addr 0x8000000c --once
+ns-instruction-sim bp set --session s.json --symbol main
 ns-instruction-sim bp list --session s.json
 ns-instruction-sim bp clear --session s.json --addr 0x80000004
 ns-instruction-sim bp disable --session s.json --addr 0x80000004

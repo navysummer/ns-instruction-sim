@@ -446,6 +446,9 @@ enum BpSub {
         /// 地址（--addr 形式）。
         #[arg(long = "addr", conflicts_with = "addr")]
         addr_flag: Option<String>,
+        /// 按符号名设置断点（与地址互斥）。
+        #[arg(long, conflicts_with_all = ["addr", "addr_flag"])]
+        symbol: Option<String>,
         /// 条件表达式（如 `x1 == 10`）。
         #[arg(long)]
         condition: Option<String>,
@@ -2013,10 +2016,21 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             }
             Ok(())
         }
-        BpSub::Set { session, addr, addr_flag, condition, hit_count, once } => {
-            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
-            let addr_num = parse_num(&addr)?;
+        BpSub::Set { session, addr, addr_flag, symbol, condition, hit_count, once } => {
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let addr_num = if let Some(sym) = &symbol {
+                let found = sim
+                    .symbols
+                    .iter()
+                    .find(|s| s.name.eq_ignore_ascii_case(sym))
+                    .ok_or_else(|| anyhow::anyhow!("符号未找到: {sym}"))?;
+                found.address
+            } else {
+                let addr = addr_flag
+                    .or(addr)
+                    .ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+                parse_num(&addr)?
+            };
             if once {
                 sim.set_breakpoint_ex_once(addr_num, condition.unwrap_or_default(), hit_count);
             } else {

@@ -1625,3 +1625,39 @@ fn bp_enable_disable_roundtrip() {
     assert_eq!(json["lastResult"], "breakpoint");
     assert_eq!(json["pc"], 0x8000_0004u64);
 }
+
+#[test]
+fn bp_set_by_symbol() {
+    let dir = tmpdir();
+    let sess = dir.join("bpsym.json");
+    let elf = dir.join("bpsym.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(), "--symbol", "main"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000_0000u64);
+    // Unknown symbol must fail.
+    let out = Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(), "--symbol", "nope"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
