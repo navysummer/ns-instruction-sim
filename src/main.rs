@@ -1,0 +1,2134 @@
+//! ns-instruction-sim — a command-line instruction-level simulator.
+//!
+//! A thin, scriptable front-end over the `ns-sim` instruction-level cores
+//! used by ns-embed-ide. External tools (CI, scripts, IDEs) can drive every
+//! supported architecture (RISC-V, ARM Cortex-M, MCS-51, MCS-251, C166,
+//! Xtensa, AVR, MSP430, V850, STM8, RX, RL78) through subcommands:
+//!
+//! ```text
+//! ns-instruction-sim arch list
+//! ns-instruction-sim run --firmware app.elf
+//! ns-instruction-sim step --session sim.json
+//! ns-instruction-sim reg set --session sim.json --name x1 --value 0x10
+//! ns-instruction-sim mem dump --session sim.json --addr 0x20000000 --len 64
+//! ns-instruction-sim bp set --session sim.json --addr 0x80000000
+//! ns-instruction-sim disasm --arch riscv --addr 0x80000000 --count 8
+//! ```
+
+mod session;
+mod sim;
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use clap::{Args, Parser, Subcommand};
+
+use ns_sim::{Arch, Simulator, StepResult};
+use session::{FirmwareState, Session};
+use sim::{default_mem_base, detect_format, load_firmware_into, parse_num, read_mem_byte, write_mem_byte};
+
+#[derive(Parser)]
+#[command(
+    name = "ns-instruction-sim",
+    version,
+    about = "跨平台嵌入式指令级仿真命令行工具",
+    long_about = "跨平台嵌入式指令级仿真命令行工具。支持 RISC-V、ARM Cortex-M、MCS-51、MCS-251、C166、Xtensa、AVR、MSP430、V850、STM8、RX、RL78 全部架构的固件加载、单步/连续运行、断点、寄存器/内存读写、反汇编与周期计数，所有能力均可被外部软件通过命令行调用。",
+    version,
+    disable_version_flag = false
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// 显示版本号。
+    Version,
+    /// 列出支持的架构。
+    Arch {
+        #[command(subcommand)]
+        sub: ArchSub,
+    },
+    /// 列出支持的设备（芯片）目录。
+    Device {
+        #[command(subcommand)]
+        sub: DeviceSub,
+    },
+    /// 加载固件并运行（一条命令完成 加载→运行→输出状态）。
+    Run(RunArgs),
+    /// 单步执行一条指令。
+    Step(StepArgs),
+    /// 步过（step over）。
+    StepOver(StepArgs),
+    /// 步出（step out）。
+    StepOut(StepArgs),
+    /// 连续运行直到断点 / 停止 / 步数上限。
+    Continue(ContinueArgs),
+    /// 读取/修改寄存器。
+    Reg(RegArgs),
+    /// 读取/修改内存。
+    Mem(MemArgs),
+    /// 管理断点。
+    Bp(BpArgs),
+    /// 反汇编指令。
+    Disasm(DisasmArgs),
+    /// 重置仿真器。
+    Reset(ResetArgs),
+    /// 显示当前状态（JSON 或 人类可读）。
+    State(StateArgs),
+    /// 查询/控制虚拟外设。
+    Periph(PeriphArgs),
+    /// 查询符号/行号映射（来自 ELF 符号表）。
+    Symbol(SymbolArgs),
+    /// 查询/推进周期与指令周期估算。
+    Cycle(CycleArgs),
+    /// 触发/查询中断。
+    Interrupt(InterruptArgs),
+    /// 查询/控制虚拟看门狗。
+    Watchdog(WatchdogArgs),
+    /// 读写 RISC-V 控制状态寄存器（CSR）。
+    Csr(CsrArgs),
+}
+
+#[derive(Subcommand)]
+enum ArchSub {
+    /// 列出所有支持的架构与设备映射。
+    List,
+}
+
+#[derive(Subcommand)]
+enum DeviceSub {
+    /// 列出内置设备目录。
+    List,
+    /// 显示设备信息（内存映射、核心）。
+    Info { device: String },
+    /// 解析并显示一个 CMSIS-SVD 设备描述文件。
+    Svd {
+        /// SVD 文件路径。
+        #[arg(short, long)]
+        file: PathBuf,
+        /// 只看指定外设（按名称，可选）。
+        #[arg(long)]
+        peripheral: Option<String>,
+        /// 只看指定寄存器（按名称，需配合 --peripheral）。
+        #[arg(long)]
+        register: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Args)]
+struct RunArgs {
+    /// 固件文件（ELF / Intel HEX / BIN）。
+    #[arg(short, long)]
+    firmware: PathBuf,
+    /// 目标架构（可自动从 ELF 推导）。如 riscv/arm/mcs51/...
+    #[arg(short, long)]
+    arch: Option<String>,
+    /// 原始 BIN/HEX 的加载基址（十六进制或十进制）。
+    #[arg(long, default_value = "0")]
+    base: String,
+    /// 最大执行步数（默认 1,000,000）。
+    #[arg(long, default_value = "1000000")]
+    max_steps: u64,
+    /// 只运行 N 条指令（优先级高于 --max-steps；到断点/停机则提前停止）。
+    #[arg(long)]
+    steps: Option<u64>,
+    /// 保存会话到指定文件（JSON）。
+    #[arg(long)]
+    save_session: Option<PathBuf>,
+    /// 周期精确模式（按指令预估周期推进）。
+    #[arg(long)]
+    cycle_accurate: bool,
+    /// 输出 JSON 状态（默认文本）。
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct StepArgs {
+    /// 会话文件（不提供则新建临时会话并立即结束）。
+    #[arg(short, long)]
+    session: Option<PathBuf>,
+    /// 目标架构（无会话时使用）。
+    #[arg(short, long)]
+    arch: Option<String>,
+    /// 固件文件（无会话时使用）。
+    #[arg(long)]
+    firmware: Option<PathBuf>,
+    /// 固件加载基址（仅 BIN/HEX）。
+    #[arg(long, default_value = "0")]
+    base: String,
+    /// 步过/步出的最大执行步数（默认 100,000）。
+    #[arg(long, default_value = "100000")]
+    max_steps: u64,
+    /// 输出 JSON。
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct ContinueArgs {
+    #[arg(short, long)]
+    session: PathBuf,
+    /// 最大执行步数（默认 1,000,000）。
+    #[arg(long, default_value = "1000000")]
+    max_steps: u64,
+    /// 是否保存回会话。
+    #[arg(long, default_value = "true")]
+    save: bool,
+    /// 输出 JSON。
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct RegArgs {
+    #[command(subcommand)]
+    sub: RegSub,
+}
+
+#[derive(Subcommand)]
+enum RegSub {
+    /// 列出所有寄存器。
+    List {
+        #[arg(short, long)]
+        session: Option<PathBuf>,
+        #[arg(short, long)]
+        arch: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 读取单个寄存器。
+    Get {
+        #[arg(short, long)]
+        session: Option<PathBuf>,
+        #[arg(short, long)]
+        arch: Option<String>,
+        /// 寄存器名（如 x1、a0、R3、SP）。位置参数或 --name。
+        #[arg(index = 1)]
+        name: Option<String>,
+        /// 寄存器名（--name 形式）。
+        #[arg(long = "name", conflicts_with = "name")]
+        name_flag: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 写单个寄存器。
+    Set {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 寄存器名（位置参数或 --name）。
+        #[arg(index = 1)]
+        name: Option<String>,
+        /// 值（十六进制或十进制，位置参数或 --value）。
+        #[arg(index = 2)]
+        value: Option<String>,
+        /// 寄存器名（--name 形式）。
+        #[arg(long = "name", conflicts_with = "name")]
+        name_flag: Option<String>,
+        /// 值（--value 形式）。
+        #[arg(long = "value", conflicts_with = "value")]
+        value_flag: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Args)]
+struct MemArgs {
+    #[command(subcommand)]
+    sub: MemSub,
+}
+
+#[derive(Subcommand)]
+enum MemSub {
+    /// 读取内存（hex dump 或原始字节）。
+    Read {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 起始地址（十六进制或十进制，位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 起始地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 长度（字节，默认 64）。
+        #[arg(long, default_value = "64")]
+        len: usize,
+        /// 输出原始二进制到文件。
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// 写内存（字节或从文件）。
+    Write {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 起始地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 起始地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 要写的字节（空格分隔，支持 0xNN）。
+        #[arg(long, value_delimiter = ' ', num_args = 1..)]
+        bytes: Vec<String>,
+        /// 从二进制文件读取字节写入。
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    /// 填充内存区域。
+    Fill {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 起始地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 起始地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 长度（字节）。
+        #[arg(long, default_value = "1")]
+        len: usize,
+        /// 填充字节（0-255，位置参数或 --value）。
+        #[arg(index = 2)]
+        value: Option<String>,
+        /// 填充字节（--value 形式）。
+        #[arg(long = "value", conflicts_with = "value")]
+        value_flag: Option<String>,
+    },
+    /// 加载固件到内存（等价于 run 的加载步骤，不执行）。
+    Load {
+        #[arg(short, long)]
+        session: PathBuf,
+        #[arg(short, long)]
+        firmware: PathBuf,
+        #[arg(short, long)]
+        arch: Option<String>,
+        #[arg(long, default_value = "0")]
+        base: String,
+    },
+}
+
+#[derive(Args)]
+struct BpArgs {
+    #[command(subcommand)]
+    sub: BpSub,
+}
+
+#[derive(Subcommand)]
+enum BpSub {
+    /// 列出断点。
+    List {
+        #[arg(short, long)]
+        session: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 设置断点。
+    Set {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 条件表达式（如 `x1 == 10`）。
+        #[arg(long)]
+        condition: Option<String>,
+        /// 命中次数（第 N 次命中时暂停）。
+        #[arg(long, default_value = "0")]
+        hit_count: u32,
+    },
+    /// 清除断点。
+    Clear {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+    },
+    /// 清除全部断点。
+    ClearAll {
+        #[arg(short, long)]
+        session: PathBuf,
+    },
+}
+
+#[derive(Args)]
+struct DisasmArgs {
+    #[arg(short, long)]
+    session: Option<PathBuf>,
+    #[arg(short, long)]
+    arch: Option<String>,
+    /// 起始地址（默认当前 PC）。
+    #[arg(short = 'd', long)]
+    addr: Option<String>,
+    /// 指令条数（默认 8）。
+    #[arg(long, default_value = "8")]
+    count: usize,
+}
+
+#[derive(Args)]
+struct ResetArgs {
+    #[arg(short, long)]
+    session: PathBuf,
+    /// 重置 PC 到入口/基址。
+    #[arg(long)]
+    entry: Option<String>,
+}
+
+#[derive(Args)]
+struct StateArgs {
+    #[arg(short, long)]
+    session: Option<PathBuf>,
+    #[arg(short, long)]
+    arch: Option<String>,
+    #[arg(long)]
+    firmware: Option<PathBuf>,
+    #[arg(long, default_value = "0")]
+    base: String,
+    /// 输出 JSON（默认）。
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct PeriphArgs {
+    #[command(subcommand)]
+    sub: PeriphSub,
+}
+
+#[derive(Subcommand)]
+enum PeriphSub {
+    /// 显示虚拟外设状态（UART 输出、GPIO、定时器、看门狗）。
+    Status {
+        #[arg(short, long)]
+        session: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 配置虚拟外设基址（UART/GPIO，可选）。
+    Config {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// UART 寄存器基址（默认 0x4000_0000）。
+        #[arg(long)]
+        uart_base: Option<String>,
+        /// GPIO 寄存器基址（默认 0x4000_2000）。
+        #[arg(long)]
+        gpio_base: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 读取 UART 输出字节数 / 清空。
+    Uart {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 清空输出缓冲。
+        #[arg(long)]
+        clear: bool,
+    },
+    /// 设置 GPIO 输入引脚值。
+    Gpio {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 引脚号 0-31（位置参数或 --pin）。
+        #[arg(index = 1)]
+        pin: Option<u32>,
+        /// 引脚号（--pin 形式）。
+        #[arg(long = "pin", conflicts_with = "pin")]
+        pin_flag: Option<u32>,
+        /// 引脚值 0/1（位置参数或 --value）。
+        #[arg(index = 2)]
+        value: Option<u32>,
+        /// 引脚值（--value 形式）。
+        #[arg(long = "value", conflicts_with = "value")]
+        value_flag: Option<u32>,
+    },
+    /// 查询/配置虚拟定时器。
+    Timer {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 定时器索引（0..8）。
+        #[arg(long, default_value = "0")]
+        index: usize,
+        /// 启用/禁用（`--enabled true|false`）。
+        #[arg(long)]
+        enabled: Option<bool>,
+        /// 预分频（可选，仅配置时使用）。
+        #[arg(long)]
+        prescaler: Option<u32>,
+        /// 自动重载值（可选，仅配置时使用）。
+        #[arg(long)]
+        auto_reload: Option<u32>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 读取外设内存映射寄存器（触发外设读）。
+    RegRead {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 外设寄存器地址。
+        #[arg(long = "addr")]
+        addr: String,
+        /// 读取字节数（默认 4）。
+        #[arg(long, default_value = "4")]
+        len: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 写入外设内存映射寄存器（触发外设写，如 UART 输出、TIMER 控制）。
+    RegWrite {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 外设寄存器地址。
+        #[arg(long = "addr")]
+        addr: String,
+        /// 要写入的字节（空格分隔，支持 0xNN）。
+        #[arg(long, value_delimiter = ' ', num_args = 1..)]
+        bytes: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Args)]
+struct SymbolArgs {
+    #[command(subcommand)]
+    sub: SymbolSub,
+}
+
+#[derive(Subcommand)]
+enum SymbolSub {
+    /// 列出 ELF 符号表（名称/地址/大小）。
+    List {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 按名称子串过滤（大小写不敏感）。
+        #[arg(long)]
+        filter: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 查询地址处最接近的符号。
+    At {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 地址 → (源文件, 行号) 映射。
+    Line {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// (源文件, 行号) → 地址 映射。
+    Addr {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 源文件索引（0 基）。
+        #[arg(long)]
+        file: usize,
+        /// 源行号（1 基）。
+        #[arg(long)]
+        line: u32,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Args)]
+struct CycleArgs {
+    #[command(subcommand)]
+    sub: CycleSub,
+}
+
+#[derive(Subcommand)]
+enum CycleSub {
+    /// 读取当前周期计数。
+    Get {
+        #[arg(short, long)]
+        session: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 估算指定地址的指令周期数。
+    Estimate {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 指令地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 推进外设 N 个核心周期（不执行指令）。
+    Tick {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 周期数（默认 1）。
+        #[arg(long, default_value = "1")]
+        cycles: u64,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Args)]
+struct InterruptArgs {
+    #[command(subcommand)]
+    sub: InterruptSub,
+}
+
+#[derive(Subcommand)]
+enum InterruptSub {
+    /// 触发一次中断（需要 mstatus.MIE 且 mie 对应位使能）。
+    Take {
+        #[arg(short, long)]
+        session: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 查询当前挂起/使能的中断。
+    Pending {
+        #[arg(short, long)]
+        session: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 设置/清除外设中断线。
+    Set {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 中断线 0..15（位置参数或 --line）。
+        #[arg(index = 1)]
+        line: Option<usize>,
+        #[arg(long = "line", conflicts_with = "line")]
+        line_flag: Option<usize>,
+        /// 置位/清除（位置参数或 --value，默认 1）。
+        #[arg(index = 2)]
+        value: Option<u32>,
+        #[arg(long = "value", conflicts_with = "value")]
+        value_flag: Option<u32>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Args)]
+struct WatchdogArgs {
+    #[command(subcommand)]
+    sub: WatchdogSub,
+}
+
+#[derive(Subcommand)]
+enum WatchdogSub {
+    /// 查询看门狗状态。
+    Status {
+        #[arg(short, long)]
+        session: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 喂狗（写 0xAA55 重载超时）。
+    Feed {
+        #[arg(short, long)]
+        session: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 配置看门狗（启用/禁用、超时周期、基址）。
+    Config {
+        #[arg(short, long)]
+        session: PathBuf,
+        #[arg(long)]
+        enabled: Option<bool>,
+        /// 超时周期数（0 = 禁用）。
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// 寄存器基址（默认 0x4000_0000）。
+        #[arg(long)]
+        base: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Args)]
+struct CsrArgs {
+    #[command(subcommand)]
+    sub: CsrSub,
+}
+
+#[derive(Subcommand)]
+enum CsrSub {
+    /// 列出全部 CSR（RISC-V）。
+    List {
+        #[arg(short, long)]
+        session: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 读取单个 CSR。
+    Get {
+        #[arg(short, long)]
+        session: PathBuf,
+        /// CSR 名（mstatus/mtvec/mepc/mcause/mie/mhartid）。
+        #[arg(index = 1)]
+        name: Option<String>,
+        #[arg(long = "name", conflicts_with = "name")]
+        name_flag: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 写入单个 CSR。
+    Set {
+        #[arg(short, long)]
+        session: PathBuf,
+        #[arg(index = 1)]
+        name: Option<String>,
+        #[arg(index = 2)]
+        value: Option<String>,
+        #[arg(long = "name", conflicts_with = "name")]
+        name_flag: Option<String>,
+        #[arg(long = "value", conflicts_with = "value")]
+        value_flag: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn main() {
+    if let Err(e) = real_main() {
+        eprintln!("错误: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn real_main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Version => {
+            println!("ns-instruction-sim {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        Command::Arch { sub: ArchSub::List } => cmd_arch_list(),
+        Command::Device { sub: DeviceSub::List } => cmd_device_list(),
+        Command::Device { sub: DeviceSub::Info { device } } => cmd_device_info(&device),
+        Command::Device { sub: DeviceSub::Svd { file, peripheral, register, json } } => {
+            cmd_device_svd(&file, peripheral.as_deref(), register.as_deref(), json)
+        }
+        Command::Run(args) => cmd_run(args),
+        Command::Step(args) => cmd_step(args, StepKind::Step),
+        Command::StepOver(args) => cmd_step(args, StepKind::StepOver),
+        Command::StepOut(args) => cmd_step(args, StepKind::StepOut),
+        Command::Continue(args) => cmd_continue(args),
+        Command::Reg(RegArgs { sub }) => cmd_reg(sub),
+        Command::Mem(MemArgs { sub }) => cmd_mem(sub),
+        Command::Bp(BpArgs { sub }) => cmd_bp(sub),
+        Command::Disasm(args) => cmd_disasm(args),
+        Command::Reset(args) => cmd_reset(args),
+        Command::State(args) => cmd_state(args),
+        Command::Periph(PeriphArgs { sub }) => cmd_periph(sub),
+        Command::Symbol(SymbolArgs { sub }) => cmd_symbol(sub),
+        Command::Cycle(CycleArgs { sub }) => cmd_cycle(sub),
+        Command::Interrupt(InterruptArgs { sub }) => cmd_interrupt(sub),
+        Command::Watchdog(WatchdogArgs { sub }) => cmd_watchdog(sub),
+        Command::Csr(CsrArgs { sub }) => cmd_csr(sub),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn arch_from_arg(arch: Option<&str>) -> Result<Arch> {
+    match arch {
+        Some(name) => session::parse_arch(name),
+        None => Ok(Arch::RiscV),
+    }
+}
+
+/// Resolve the architecture for a session or a fresh sim.
+fn resolve_arch(session: Option<&Path>, arch_arg: Option<&str>) -> Result<Arch> {
+    if let Some(sp) = session {
+        if sp.exists() {
+            let s = Session::load(sp)?;
+            return session::parse_arch(&s.arch);
+        }
+    }
+    arch_from_arg(arch_arg)
+}
+
+/// Print JSON to stdout with pretty formatting.
+fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
+    let text = serde_json::to_string_pretty(value)?;
+    println!("{text}");
+    Ok(())
+}
+
+/// Hex dump of a memory slice.
+fn hex_dump(addr: u32, bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for (i, chunk) in bytes.chunks(16).enumerate() {
+        let base = addr as usize + i * 16;
+        out.push_str(&format!("{base:08x}  "));
+        for (j, b) in chunk.iter().enumerate() {
+            out.push_str(&format!("{b:02x} "));
+            if j == 7 {
+                out.push(' ');
+            }
+        }
+        for _ in chunk.len()..16 {
+            out.push_str("   ");
+            if chunk.len() <= 8 {
+                out.push(' ');
+            }
+        }
+        out.push_str(" |");
+        for b in chunk {
+            let c = if b.is_ascii_graphic() || *b == b' ' { *b as char } else { '.' };
+            out.push(c);
+        }
+        out.push('|');
+        out.push('\n');
+    }
+    out
+}
+
+/// Format a StepResult for display.
+fn fmt_step_result(result: StepResult) -> &'static str {
+    match result {
+        StepResult::Advanced => "advanced",
+        StepResult::Breakpoint => "breakpoint",
+        StepResult::Halted => "halted",
+    }
+}
+
+/// Ensure a session exists, creating it from the given simulator.
+/// Load an existing session into a simulator, or create a fresh one.
+fn load_or_create(
+    session_path: Option<&Path>,
+    arch_arg: Option<&str>,
+    firmware: Option<&Path>,
+    base: &str,
+) -> Result<(Simulator, Option<FirmwareState>, Option<PathBuf>)> {
+    if let Some(sp) = session_path {
+        if sp.exists() {
+            let s = Session::load(sp)?;
+            let fw = s.firmware.clone();
+            let sim = s.apply(None)?;
+            return Ok((sim, fw, Some(sp.to_path_buf())));
+        }
+    }
+    let arch = arch_from_arg(arch_arg)?;
+    let mut sim = Simulator::for_arch(arch)?;
+    let base_num = parse_num(base)?;
+    let mut fw = None;
+    if let Some(path) = firmware {
+        load_firmware_into(&mut sim, path, base_num)?;
+        fw = Some(FirmwareState {
+            path: path.to_string_lossy().into_owned(),
+            base: base_num,
+            format: detect_format(path).label().to_string(),
+        });
+    }
+    Ok((sim, fw, session_path.map(|p| p.to_path_buf())))
+}
+
+/// Common state output for `run`/`step`/`continue`.
+#[derive(serde::Serialize)]
+struct StateOutput {
+    arch: String,
+    pc: u32,
+    #[serde(rename = "cycleCount")]
+    cycle_count: u64,
+    halted: bool,
+    #[serde(rename = "lastResult")]
+    last_result: String,
+    registers: BTreeMap<String, u32>,
+    uart: Vec<u8>,
+    #[serde(rename = "uartText")]
+    uart_text: String,
+    /// Virtual-peripheral snapshot (UART/GPIO/timers/watchdog/interrupts).
+    peripherals: serde_json::Value,
+    /// RISC-V machine-mode CSR snapshot.
+    csr: serde_json::Value,
+}
+
+fn peripherals_json(sim: &Simulator) -> serde_json::Value {
+    let timers: Vec<_> = sim
+        .peripherals
+        .timers
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "base": t.base,
+                "enabled": t.enabled,
+                "counter": t.counter,
+                "autoReload": t.auto_reload,
+                "prescaler": t.prescaler,
+                "irqLine": t.irq_line,
+                "updateCount": t.update_count,
+            })
+        })
+        .collect();
+    let watchdog = sim.peripherals.watchdog.as_ref().map(|w| {
+        serde_json::json!({
+            "base": w.base,
+            "enabled": w.enabled,
+            "timeoutCycles": w.timeout_cycles,
+            "elapsed": w.elapsed,
+            "resetCount": w.reset_count,
+            "lastResetPc": w.last_reset_pc,
+        })
+    });
+    let irq_pending: Vec<usize> = sim
+        .peripherals
+        .irq_pending
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| **p)
+        .map(|(i, _)| i)
+        .collect();
+    serde_json::json!({
+        "uart": sim.peripherals.outputs,
+        "uartText": String::from_utf8_lossy(&sim.peripherals.outputs),
+        "gpioOut": sim.peripherals.gpio_out,
+        "gpioDir": sim.peripherals.gpio_dir,
+        "gpioIn": sim.peripherals.gpio_in,
+        "timers": timers,
+        "watchdog": watchdog,
+        "irqPending": irq_pending,
+    })
+}
+
+fn csr_json(sim: &Simulator) -> serde_json::Value {
+    serde_json::json!({
+        "mstatus": sim.csr.mstatus,
+        "mtvec": sim.csr.mtvec,
+        "mepc": sim.csr.mepc,
+        "mcause": sim.csr.mcause,
+        "mie": sim.csr.mie,
+        "mhartid": sim.csr.mhartid,
+    })
+}
+
+fn state_output(sim: &Simulator, result: StepResult) -> StateOutput {
+    let mut registers = BTreeMap::new();
+    let count = ns_sim::reg_count_for(sim.arch);
+    for i in 0..count {
+        registers.insert(ns_sim::reg_label_for(sim.arch, i), sim.read_reg(i));
+    }
+    StateOutput {
+        arch: session::arch_name(sim.arch).to_string(),
+        pc: sim.program_counter(),
+        cycle_count: sim.cycle_count,
+        halted: sim.halted,
+        last_result: fmt_step_result(result).to_string(),
+        registers,
+        uart: sim.peripherals.outputs.clone(),
+        uart_text: String::from_utf8_lossy(&sim.peripherals.outputs).into_owned(),
+        peripherals: peripherals_json(sim),
+        csr: csr_json(sim),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+fn cmd_arch_list() -> Result<()> {
+    let archs = [
+        ("riscv", "RISC-V (RV32I)", "esp32c3"),
+        ("arm", "ARM Cortex-M", "stm32f103c8"),
+        ("mcs51", "Intel 8051 (MCS-51)", "mcs51"),
+        ("mcs251", "Intel 80251 (MCS-251)", "80251"),
+        ("c166", "Infineon C166 (16-bit)", "c166"),
+        ("xtensa", "ESP32 Xtensa", "esp32"),
+        ("avr", "Atmel AVR (8-bit)", "atmega328p"),
+        ("msp430", "TI MSP430 (16-bit)", "msp430g2553"),
+        ("v850", "Renesas V850 (32-bit)", "v850es"),
+        ("stm8", "STMicroelectronics STM8", "stm8s003f3"),
+        ("rx", "Renesas RX (32-bit)", "rx62n"),
+        ("rl78", "Renesas RL78 (16-bit)", "rl78g14"),
+    ];
+    println!("{:<10} {:<34} {}", "ARCH", "LABEL", "EXAMPLE_DEVICE");
+    for (name, label, device) in archs {
+        println!("{name:<10} {label:<34} {device}");
+    }
+    Ok(())
+}
+
+fn cmd_device_list() -> Result<()> {
+    println!("{:<20} {:<34} {:<16} {:>10} {:>10}", "KEY", "LABEL", "CORE", "FLASH", "RAM");
+    for entry in ns_device::CATALOG {
+        println!(
+            "{:<20} {:<34} {:<16} {:>10} {:>10}",
+            entry.key, entry.label, entry.core, entry.flash_size, entry.ram_size
+        );
+    }
+    Ok(())
+}
+
+fn cmd_device_info(device: &str) -> Result<()> {
+    let entry = ns_device::catalog_entry(device)
+        .ok_or_else(|| anyhow::anyhow!("未知设备: {device}"))?;
+    println!("设备: {}", entry.label);
+    println!("  键: {}", entry.key);
+    println!("  核心: {}", entry.core);
+    println!("  Flash: 0x{:08x} ({} B)", entry.flash_start, entry.flash_size);
+    println!("  RAM:   0x{:08x} ({} B)", entry.ram_start, entry.ram_size);
+    println!();
+    println!("内存映射:");
+    for region in ns_device::memory_map(device) {
+        println!("  {:<16} 0x{:012x}  size={}", region.name, region.start, region.size);
+    }
+    // Show SVD peripherals if present.
+    if let Some(dev) = ns_device::device_for_target(device) {
+        if !dev.peripherals.is_empty() {
+            println!();
+            println!("外设 ({}):", dev.peripherals.len());
+            for p in dev.sorted_peripherals() {
+                println!("  {:<20} 0x{:08x}  {}", p.name, p.base_address, p.description);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn field_json(f: &ns_device::Field) -> serde_json::Value {
+    serde_json::json!({
+        "name": f.name,
+        "bitOffset": f.bit_offset,
+        "bitWidth": f.bit_width,
+        "description": f.description,
+    })
+}
+
+fn register_json(r: &ns_device::Register) -> serde_json::Value {
+    serde_json::json!({
+        "name": r.name,
+        "address": r.address,
+        "size": r.size,
+        "resetValue": r.reset_value,
+        "description": r.description,
+        "fields": r.fields.iter().map(field_json).collect::<Vec<_>>(),
+    })
+}
+
+fn peripheral_json(p: &ns_device::Peripheral) -> serde_json::Value {
+    serde_json::json!({
+        "name": p.name,
+        "baseAddress": p.base_address,
+        "description": p.description,
+        "registers": p.registers.iter().map(register_json).collect::<Vec<_>>(),
+    })
+}
+
+fn device_json(d: &ns_device::Device, peripherals: &[&ns_device::Peripheral]) -> serde_json::Value {
+    serde_json::json!({
+        "name": d.name,
+        "vendor": d.vendor,
+        "core": d.core,
+        "memory": d.memory.iter().map(|m| serde_json::json!({
+            "name": m.name,
+            "start": m.start,
+            "size": m.size,
+            "access": m.access,
+        })).collect::<Vec<_>>(),
+        "peripherals": peripherals.iter().map(|p| peripheral_json(p)).collect::<Vec<_>>(),
+    })
+}
+
+fn cmd_device_svd(
+    file: &Path,
+    peripheral: Option<&str>,
+    register: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let device = ns_device::load_svd_file(file)?;
+    let peripherals: Vec<&ns_device::Peripheral> = match peripheral {
+        Some(name) => {
+            let p = device
+                .peripheral(name)
+                .ok_or_else(|| anyhow::anyhow!("SVD 中无外设: {name}"))?;
+            vec![p]
+        }
+        None => device.sorted_peripherals(),
+    };
+
+    // A register filter requires a peripheral and shows its fields.
+    if let Some(reg_name) = register {
+        let p = peripherals
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("--register 需要先指定 --peripheral"))?;
+        let reg = p
+            .registers
+            .iter()
+            .find(|r| r.name == reg_name)
+            .ok_or_else(|| anyhow::anyhow!("外设 {} 中无寄存器: {reg_name}", p.name))?;
+        if json {
+            print_json(&register_json(reg))?;
+        } else {
+            println!("{}:{} @ 0x{:08x} ({} 位)", p.name, reg.name, reg.address, reg.size);
+            if !reg.description.is_empty() {
+                println!("  描述: {}", reg.description);
+            }
+            println!("  复位值: 0x{:08x}", reg.reset_value);
+            println!("  字段:");
+            if reg.fields.is_empty() {
+                println!("    (无)");
+            }
+            for f in &reg.fields {
+                println!(
+                    "    {:<24} bit {}:{}  {}",
+                    f.name,
+                    f.bit_offset,
+                    f.bit_offset + f.bit_width.saturating_sub(1),
+                    f.description
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    if json {
+        print_json(&device_json(&device, &peripherals))?;
+    } else {
+        println!("设备: {}", device.name);
+        println!("厂商: {}", device.vendor);
+        println!("核心: {}", device.core);
+        if !device.memory.is_empty() {
+            println!("内存映射:");
+            for m in &device.memory {
+                println!("  {:<16} 0x{:012x} size=0x{:x} {}", m.name, m.start, m.size, m.access);
+            }
+        }
+        println!("外设 ({}):", peripherals.len());
+        for p in &peripherals {
+            println!(
+                "  {:<24} 0x{:08x}  {} ({} 寄存器)",
+                p.name,
+                p.base_address,
+                p.description,
+                p.registers.len()
+            );
+            // When a specific peripheral is selected, expand its registers.
+            if peripheral.is_some() {
+                for r in &p.registers {
+                    println!(
+                        "    {:<24} 0x{:08x}  {} 位  reset=0x{:08x}  {}",
+                        r.name, r.address, r.size, r.reset_value, r.description
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_run(args: RunArgs) -> Result<()> {
+    let arch = arch_from_arg(args.arch.as_deref())?;
+    let mut sim = Simulator::for_arch(arch)?;
+    let base = parse_num(&args.base)?;
+    let firmware = detect_format(&args.firmware);
+    let fw_state = Some(FirmwareState {
+        path: args.firmware.to_string_lossy().into_owned(),
+        base,
+        format: firmware.label().to_string(),
+    });
+    load_firmware_into(&mut sim, &args.firmware, base)?;
+    sim.cycle_accurate = args.cycle_accurate;
+
+    // `--steps N` is a bounded "run exactly N instructions" mode; otherwise
+    // run to completion with the `--max-steps` upper bound.
+    let result = match args.steps {
+        Some(n) => sim.run(n),
+        None => sim.run(args.max_steps),
+    };
+    let output = state_output(&sim, result);
+
+    if let Some(session_path) = &args.save_session {
+        let session = Session::capture(&sim, fw_state);
+        session.save(session_path)?;
+    }
+
+    if args.json {
+        print_json(&output)?;
+    } else {
+        println!("架构: {}", sim.arch.label());
+        println!("PC:   0x{:08x}", output.pc);
+        println!("周期: {}", output.cycle_count);
+        println!("停止: {}", output.last_result);
+        if !output.uart.is_empty() {
+            println!("UART: {:?}", output.uart_text);
+        }
+        println!("寄存器:");
+        for (name, value) in &output.registers {
+            println!("  {name:<8} 0x{value:08x}");
+        }
+    }
+    Ok(())
+}
+
+enum StepKind {
+    Step,
+    StepOver,
+    StepOut,
+}
+
+fn cmd_step(args: StepArgs, kind: StepKind) -> Result<()> {
+    let base = parse_num(&args.base)?;
+    let (mut sim, fw, session_path) = load_or_create(
+        args.session.as_deref(),
+        args.arch.as_deref(),
+        args.firmware.as_deref(),
+        &args.base,
+    )?;
+    let result = match kind {
+        StepKind::Step => sim.step(),
+        StepKind::StepOver => sim.step_over(args.max_steps),
+        StepKind::StepOut => sim.step_out(args.max_steps),
+    };
+    let output = state_output(&sim, result);
+    if let Some(sp) = &session_path {
+        let session = Session::capture(&sim, fw);
+        session.save(sp)?;
+    }
+    if args.json {
+        print_json(&output)?;
+    } else {
+        println!("PC=0x{:08x} cycles={} halted={} result={}", output.pc, output.cycle_count, output.halted, output.last_result);
+    }
+    let _ = base;
+    Ok(())
+}
+
+fn cmd_continue(args: ContinueArgs) -> Result<()> {
+    let (mut sim, fw, _) = load_or_create(Some(&args.session), None, None, "0")?;
+    let result = sim.run(args.max_steps);
+    let output = state_output(&sim, result);
+    if args.save {
+        let session = Session::capture(&sim, fw);
+        session.save(&args.session)?;
+    }
+    if args.json {
+        print_json(&output)?;
+    } else {
+        println!("PC=0x{:08x} cycles={} halted={} result={}", output.pc, output.cycle_count, output.halted, output.last_result);
+    }
+    Ok(())
+}
+
+fn cmd_reg(sub: RegSub) -> Result<()> {
+    match sub {
+        RegSub::List { session, arch, json } => {
+            let arch = resolve_arch(session.as_deref(), arch.as_deref())?;
+            let mut regs = BTreeMap::new();
+            let count = ns_sim::reg_count_for(arch);
+            for i in 0..count {
+                regs.insert(ns_sim::reg_label_for(arch, i), 0u32);
+            }
+            if let Some(sp) = session {
+                if sp.exists() {
+                    let s = Session::load(&sp)?;
+                    for (i, v) in &s.registers {
+                        regs.insert(ns_sim::reg_label_for(arch, *i), *v);
+                    }
+                }
+            }
+            if json {
+                print_json(&regs)?;
+            } else {
+                for (name, value) in &regs {
+                    println!("{name:<8} 0x{value:08x}");
+                }
+            }
+            Ok(())
+        }
+        RegSub::Get { session, arch, name, name_flag, json } => {
+            let name = name_flag.or(name).unwrap_or_else(|| "".to_string());
+            let arch = resolve_arch(session.as_deref(), arch.as_deref())?;
+            let map = session::register_index_by_name(arch);
+            let idx = *map.get(&name.to_ascii_lowercase())
+                .ok_or_else(|| anyhow::anyhow!("未知寄存器: {name}"))?;
+            let value = if let Some(sp) = session {
+                if sp.exists() {
+                    let s = Session::load(&sp)?;
+                    s.registers.iter().find(|(i, _)| *i == idx).map(|(_, v)| *v).unwrap_or(0)
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            if json {
+                print_json(&serde_json::json!({ "name": name, "index": idx, "value": value }))?;
+            } else {
+                println!("{} = 0x{value:08x}", name);
+            }
+            Ok(())
+        }
+        RegSub::Set { session, name, value, name_flag, value_flag, json } => {
+            let name = name_flag.or(name).ok_or_else(|| anyhow::anyhow!("缺少寄存器名"))?;
+            let value = value_flag.or(value).ok_or_else(|| anyhow::anyhow!("缺少寄存器值"))?;
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let map = session::register_index_by_name(sim.arch);
+            let idx = *map.get(&name.to_ascii_lowercase())
+                .ok_or_else(|| anyhow::anyhow!("未知寄存器: {name}"))?;
+            let val = parse_num(&value)?;
+            sim.write_reg(idx, val);
+            let session_out = Session::capture(&sim, fw);
+            session_out.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({ "name": name, "index": idx, "value": val }))?;
+            } else {
+                println!("{} = 0x{val:08x}", name);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn cmd_mem(sub: MemSub) -> Result<()> {
+    match sub {
+        MemSub::Read { session, addr, addr_flag, len, out } => {
+            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let addr_num = parse_num(&addr)?;
+            let (sim, _fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let mut bytes = Vec::with_capacity(len);
+            for i in 0..len {
+                bytes.push(read_mem_byte(&sim, addr_num.wrapping_add(i as u32)));
+            }
+            if let Some(out_path) = out {
+                std::fs::write(&out_path, &bytes)
+                    .with_context(|| format!("写入 {} 失败", out_path.display()))?;
+                println!("已写入 {} 字节到 {}", bytes.len(), out_path.display());
+            } else {
+                print!("{}", hex_dump(addr_num, &bytes));
+            }
+            Ok(())
+        }
+        MemSub::Write { session, addr, addr_flag, bytes, file } => {
+            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let addr_num = parse_num(&addr)?;
+            let mut data = Vec::new();
+            if let Some(f) = file {
+                data = std::fs::read(&f).with_context(|| format!("读取 {} 失败", f.display()))?;
+            } else {
+                for b in &bytes {
+                    let v = parse_num(b)?;
+                    if v > 0xff {
+                        bail!("字节超出 0..=255: {}", b);
+                    }
+                    data.push(v as u8);
+                }
+            }
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let mut overlay = Vec::new();
+            for (i, b) in data.iter().enumerate() {
+                let a = addr_num.wrapping_add(i as u32);
+                write_mem_byte(&mut sim, a, *b);
+                overlay.push((a, *b));
+            }
+            let mut s = Session::capture(&sim, fw);
+            s.memory_overlay.extend(overlay);
+            s.save(&session)?;
+            println!("写入 {} 字节 @ 0x{:08x}", data.len(), addr_num);
+            Ok(())
+        }
+        MemSub::Fill { session, addr, addr_flag, len, value, value_flag } => {
+            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let value = value_flag.or(value).ok_or_else(|| anyhow::anyhow!("缺少填充字节"))?;
+            let addr_num = parse_num(&addr)?;
+            let value_num = parse_num(&value)?;
+            if value_num > 0xff {
+                bail!("填充字节超出 0..=255: {}", value);
+            }
+            let value_byte = value_num as u8;
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let bytes = vec![value_byte; len];
+            let mut overlay = Vec::new();
+            for (i, b) in bytes.iter().enumerate() {
+                let a = addr_num.wrapping_add(i as u32);
+                write_mem_byte(&mut sim, a, *b);
+                overlay.push((a, *b));
+            }
+            let mut s = Session::capture(&sim, fw);
+            s.memory_overlay.extend(overlay);
+            s.save(&session)?;
+            println!("填充 {} 字节 @ 0x{:08x} = 0x{value_byte:02x}", len, addr_num);
+            Ok(())
+        }
+        MemSub::Load { session, firmware, arch, base } => {
+            let base_num = parse_num(&base)?;
+            let (mut sim, _fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
+            load_firmware_into(&mut sim, &firmware, base_num)?;
+            let fw = Some(FirmwareState {
+                path: firmware.to_string_lossy().into_owned(),
+                base: base_num,
+                format: detect_format(&firmware).label().to_string(),
+            });
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            println!("已加载 {} 到仿真器", firmware.display());
+            Ok(())
+        }
+    }
+}
+
+fn cmd_bp(sub: BpSub) -> Result<()> {
+    match sub {
+        BpSub::List { session, json } => {
+            let s = Session::load(&session)?;
+            let sim = s.apply(None).ok();
+            if json {
+                let items: Vec<_> = s
+                    .breakpoints
+                    .iter()
+                    .map(|bp| {
+                        serde_json::json!({
+                            "address": bp.address,
+                            "condition": bp.condition,
+                            "hitCount": bp.hit_count,
+                            "hits": sim.as_ref().map(|sim| sim.breakpoint_hits(bp.address)).unwrap_or(0),
+                        })
+                    })
+                    .collect();
+                print_json(&items)?;
+            } else {
+                if s.breakpoints.is_empty() {
+                    println!("(无断点)");
+                }
+                for bp in &s.breakpoints {
+                    let extra = if !bp.condition.is_empty() || bp.hit_count > 0 {
+                        format!("  cond='{}' hit={}", bp.condition, bp.hit_count)
+                    } else {
+                        String::new()
+                    };
+                    let hits = sim
+                        .as_ref()
+                        .map(|sim| sim.breakpoint_hits(bp.address))
+                        .unwrap_or(0);
+                    println!("0x{:08x}{extra}  hits={hits}", bp.address);
+                }
+            }
+            Ok(())
+        }
+        BpSub::Set { session, addr, addr_flag, condition, hit_count } => {
+            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let addr_num = parse_num(&addr)?;
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            sim.set_breakpoint_ex(addr_num, condition.unwrap_or_default(), hit_count);
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            println!("断点已设置 @ 0x{:08x}", addr_num);
+            Ok(())
+        }
+        BpSub::Clear { session, addr, addr_flag } => {
+            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let addr_num = parse_num(&addr)?;
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let removed = sim.clear_breakpoint(addr_num);
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            println!("断点{}已清除 @ 0x{:08x}", if removed { "" } else { " 未找到，" }, addr_num);
+            Ok(())
+        }
+        BpSub::ClearAll { session } => {
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            sim.breakpoints.clear();
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            println!("已清除全部断点");
+            Ok(())
+        }
+    }
+}
+
+fn cmd_disasm(args: DisasmArgs) -> Result<()> {
+    let arch = resolve_arch(args.session.as_deref(), args.arch.as_deref())?;
+    let mut pc = match args.addr {
+        Some(a) => parse_num(&a)?,
+        None => {
+            if let Some(sp) = &args.session {
+                if sp.exists() {
+                    Session::load(sp)?.pc
+                } else {
+                    default_mem_base(arch)
+                }
+            } else {
+                default_mem_base(arch)
+            }
+        }
+    };
+    // Build a simulator to read code bytes: load the session's firmware if
+    // recorded, otherwise disassemble from a zeroed image (best-effort).
+    let sim = if let Some(sp) = &args.session {
+        if sp.exists() {
+            let s = Session::load(sp)?;
+            s.apply(None).unwrap_or_else(|_| Simulator::for_arch(arch).unwrap())
+        } else {
+            Simulator::for_arch(arch)?
+        }
+    } else {
+        Simulator::for_arch(arch)?
+    };
+    let arm_state = sim.arm_state();
+    let read = |addr: u32| -> u8 { sim.read_u8(addr) };
+    for _ in 0..args.count {
+        let text = ns_sim::disassemble_one_state(arch, pc, &read, arm_state);
+        println!("0x{pc:08x}: {text}");
+        let width = ns_sim::instruction_size(arch, pc, &read, arm_state);
+        pc = pc.wrapping_add(width);
+    }
+    Ok(())
+}
+
+fn cmd_reset(args: ResetArgs) -> Result<()> {
+    let (mut sim, fw, _) = load_or_create(Some(&args.session), None, None, "0")?;
+    let entry = match args.entry {
+        Some(e) => parse_num(&e)?,
+        None => sim.program_counter(),
+    };
+    sim.reset(entry);
+    let s = Session::capture(&sim, fw);
+    s.save(&args.session)?;
+    println!("已重置 @ 0x{:08x}", sim.program_counter());
+    Ok(())
+}
+
+fn cmd_state(args: StateArgs) -> Result<()> {
+    let (sim, _, _) = load_or_create(
+        args.session.as_deref(),
+        args.arch.as_deref(),
+        args.firmware.as_deref(),
+        &args.base,
+    )?;
+    let output = state_output(&sim, StepResult::Advanced);
+    if args.json {
+        print_json(&output)?;
+    } else {
+        println!("架构: {}", sim.arch.label());
+        println!("PC:   0x{:08x}", output.pc);
+        println!("周期: {}", output.cycle_count);
+        println!("停止: {}", output.halted);
+        println!("寄存器:");
+        for (name, value) in &output.registers {
+            println!("  {name:<8} 0x{value:08x}");
+        }
+        if !output.uart.is_empty() {
+            println!("UART: {:?}", output.uart_text);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_periph(sub: PeriphSub) -> Result<()> {
+    match sub {
+        PeriphSub::Status { session, json } => {
+            let (sim, _, _) = load_or_create(Some(&session), None, None, "0")?;
+            let uart_text = String::from_utf8_lossy(&sim.peripherals.outputs).into_owned();
+            let gpio_events: Vec<_> = sim
+                .peripherals
+                .gpio_events
+                .iter()
+                .map(|e| serde_json::json!({"cycle": e.cycle, "pin": e.pin, "value": e.value, "pc": e.pc}))
+                .collect();
+            let timers: Vec<_> = sim
+                .peripherals
+                .timers
+                .iter()
+                .map(|t| serde_json::json!({"base": t.base, "enabled": t.enabled, "counter": t.counter, "autoReload": t.auto_reload, "prescaler": t.prescaler, "updateCount": t.update_count}))
+                .collect();
+            let watchdog = sim.peripherals.watchdog.as_ref().map(|w| serde_json::json!({
+                "base": w.base, "enabled": w.enabled, "timeoutCycles": w.timeout_cycles,
+                "elapsed": w.elapsed, "resetCount": w.reset_count, "lastResetPc": w.last_reset_pc,
+            }));
+            let out = serde_json::json!({
+                "uart": sim.peripherals.outputs,
+                "uartText": uart_text,
+                "gpioOut": sim.peripherals.gpio_out,
+                "gpioDir": sim.peripherals.gpio_dir,
+                "gpioIn": sim.peripherals.gpio_in,
+                "gpioEvents": gpio_events,
+                "timers": timers,
+                "watchdog": watchdog,
+            });
+            if json {
+                print_json(&out)?;
+            } else {
+                println!("UART 输出: {} 字节 {:?}", sim.peripherals.outputs.len(), uart_text);
+                println!("GPIO OUT=0x{:08x} DIR=0x{:08x} IN=0x{:08x}", sim.peripherals.gpio_out, sim.peripherals.gpio_dir, sim.peripherals.gpio_in);
+                println!("GPIO 事件数: {}", sim.peripherals.gpio_events.len());
+                println!("定时器数: {}", sim.peripherals.timers.len());
+            }
+            Ok(())
+        }
+        PeriphSub::Config { session, uart_base, gpio_base, json } => {
+            if uart_base.is_none() && gpio_base.is_none() {
+                bail!("至少提供 --uart-base 或 --gpio-base");
+            }
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            if let Some(v) = uart_base.as_deref() {
+                sim.peripherals.uart_base = parse_num(v)?;
+            }
+            if let Some(v) = gpio_base.as_deref() {
+                sim.peripherals.gpio_base = parse_num(v)?;
+            }
+            let out = serde_json::json!({
+                "uartBase": sim.peripherals.uart_base,
+                "gpioBase": sim.peripherals.gpio_base,
+            });
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&out)?;
+            } else {
+                println!(
+                    "外设基址: UART=0x{:08x} GPIO=0x{:08x}",
+                    sim.peripherals.uart_base, sim.peripherals.gpio_base
+                );
+            }
+            Ok(())
+        }
+        PeriphSub::Uart { session, clear } => {
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let text = String::from_utf8_lossy(&sim.peripherals.outputs).into_owned();
+            let len = sim.peripherals.outputs.len();
+            if clear {
+                sim.peripherals.outputs.clear();
+                let s = Session::capture(&sim, fw);
+                s.save(&session)?;
+            }
+            println!("UART 输出 ({len} 字节): {text}");
+            Ok(())
+        }
+        PeriphSub::Gpio { session, pin, pin_flag, value, value_flag } => {
+            let pin = pin_flag.or(pin).ok_or_else(|| anyhow::anyhow!("缺少引脚号"))?;
+            let value = value_flag.or(value).ok_or_else(|| anyhow::anyhow!("缺少引脚值"))?;
+            if pin > 31 {
+                bail!("引脚号必须在 0..=31");
+            }
+            if value > 1 {
+                bail!("引脚值必须是 0 或 1");
+            }
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            if value == 1 {
+                sim.peripherals.gpio_in |= 1 << pin;
+            } else {
+                sim.peripherals.gpio_in &= !(1 << pin);
+            }
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            println!("GPIO IN 引脚 {pin} = {value}");
+            Ok(())
+        }
+        PeriphSub::Timer { session, index, enabled, prescaler, auto_reload, json } => {
+            if index >= 8 {
+                bail!("定时器索引必须在 0..8");
+            }
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            // Ensure the timer exists (extend the vector up to index+1).
+            while sim.peripherals.timers.len() <= index {
+                sim.peripherals
+                    .timers
+                    .push(ns_sim::Timer::new(0x4000_1000, sim.peripherals.timers.len()));
+            }
+            {
+                let t = &mut sim.peripherals.timers[index];
+                if let Some(v) = enabled {
+                    t.enabled = v;
+                }
+                if let Some(v) = prescaler {
+                    t.prescaler = v;
+                }
+                if let Some(v) = auto_reload {
+                    t.auto_reload = v;
+                }
+            }
+            let t = &sim.peripherals.timers[index];
+            let out = serde_json::json!({
+                "index": index,
+                "base": t.base,
+                "enabled": t.enabled,
+                "counter": t.counter,
+                "autoReload": t.auto_reload,
+                "prescaler": t.prescaler,
+                "irqLine": t.irq_line,
+                "updateCount": t.update_count,
+            });
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&out)?;
+            } else {
+                println!(
+                    "定时器[{index}]: base=0x{:08x} enabled={} counter={} autoReload={} prescaler={} irqLine={} updates={}",
+                    t.base, t.enabled, t.counter, t.auto_reload, t.prescaler, t.irq_line, t.update_count
+                );
+            }
+            Ok(())
+        }
+        PeriphSub::RegRead { session, addr, len, json } => {
+            let addr_num = parse_num(&addr)?;
+            let (sim, _, _) = load_or_create(Some(&session), None, None, "0")?;
+            let mut bytes = Vec::with_capacity(len);
+            // If the address maps to a peripheral register, report the 32-bit
+            // register value (little-endian); otherwise fall back to raw bytes.
+            if let Some(value) = sim.peripheral_read_reg(addr_num) {
+                let value_bytes = value.to_le_bytes();
+                for i in 0..len {
+                    bytes.push(if i < 4 { value_bytes[i] } else { 0 });
+                }
+            } else {
+                for i in 0..len {
+                    bytes.push(sim.read_u8(addr_num.wrapping_add(i as u32)));
+                }
+            }
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr_num, "bytes": bytes,
+                }))?;
+            } else {
+                print!("{}", hex_dump(addr_num, &bytes));
+            }
+            Ok(())
+        }
+        PeriphSub::RegWrite { session, addr, bytes, json } => {
+            let addr_num = parse_num(&addr)?;
+            let mut data = Vec::new();
+            for b in &bytes {
+                let v = parse_num(b)?;
+                if v > 0xff {
+                    bail!("字节超出 0..=255: {}", b);
+                }
+                data.push(v as u8);
+            }
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            // Write the byte sequence to backing memory, then route each byte
+            // through the peripheral handler. GPIO/timer/watchdog only act on
+            // the base offset (0), while UART emits every byte.
+            sim.write_bytes(addr_num, &data);
+            for (i, b) in data.iter().enumerate() {
+                sim.peripheral_write_reg(addr_num.wrapping_add(i as u32), *b);
+            }
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({ "address": addr_num, "written": data.len() }))?;
+            } else {
+                println!("已写入 {} 字节 @ 0x{:08x}", data.len(), addr_num);
+            }
+            Ok(())
+        }
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// Symbol / cycle / interrupt / watchdog / CSR commands
+// ---------------------------------------------------------------------------
+
+/// Load a simulator from an existing session (firmware re-loaded if recorded).
+fn load_session_sim(session: &Path) -> Result<Simulator> {
+    let s = Session::load(session)?;
+    s.apply(None)
+        .map_err(|e| anyhow::anyhow!("恢复会话 {} 失败: {e}", session.display()))
+}
+
+fn cmd_symbol(sub: SymbolSub) -> Result<()> {
+    match sub {
+        SymbolSub::List { session, filter, json } => {
+            let sim = load_session_sim(&session)?;
+            let filter = filter.map(|f| f.to_ascii_lowercase());
+            let symbols: Vec<_> = sim
+                .symbols
+                .iter()
+                .filter(|s| {
+                    filter
+                        .as_ref()
+                        .map(|f| s.name.to_ascii_lowercase().contains(f))
+                        .unwrap_or(true)
+                })
+                .map(|s| serde_json::json!({ "name": s.name, "address": s.address, "size": s.size }))
+                .collect();
+            if json {
+                print_json(&symbols)?;
+            } else if symbols.is_empty() {
+                println!("(无符号)");
+            } else {
+                println!("{:<40} {:>12} {:>8}", "NAME", "ADDRESS", "SIZE");
+                for s in &symbols {
+                    println!(
+                        "{:<40} 0x{:08x} {:>8}",
+                        s["name"].as_str().unwrap_or(""),
+                        s["address"].as_u64().unwrap_or(0),
+                        s["size"].as_u64().unwrap_or(0)
+                    );
+                }
+            }
+            Ok(())
+        }
+        SymbolSub::At { session, addr, addr_flag, json } => {
+            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let addr_num = parse_num(&addr)?;
+            let sim = load_session_sim(&session)?;
+            let found = sim.symbol_at(addr_num).map(|s| {
+                serde_json::json!({ "name": s.name, "address": s.address, "size": s.size })
+            });
+            if json {
+                print_json(&found)?;
+            } else if let Some(s) = &found {
+                println!(
+                    "0x{:08x}: {} (size {})",
+                    s["address"].as_u64().unwrap_or(0),
+                    s["name"].as_str().unwrap_or(""),
+                    s["size"].as_u64().unwrap_or(0)
+                );
+            } else {
+                println!("0x{:08x}: (无符号)", addr_num);
+            }
+            Ok(())
+        }
+        SymbolSub::Line { session, addr, addr_flag, json } => {
+            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let addr_num = parse_num(&addr)?;
+            let sim = load_session_sim(&session)?;
+            let found = sim
+                .line_for_address(addr_num)
+                .map(|(file, line)| serde_json::json!({ "file": file, "line": line }));
+            if json {
+                print_json(&found)?;
+            } else if let Some(v) = &found {
+                println!("0x{:08x}: file={} line={}", addr_num, v["file"], v["line"]);
+            } else {
+                println!("0x{:08x}: (无行号映射)", addr_num);
+            }
+            Ok(())
+        }
+        SymbolSub::Addr { session, file, line, json } => {
+            let sim = load_session_sim(&session)?;
+            let found = sim.address_for_line(file, line);
+            if json {
+                print_json(&found)?;
+            } else if let Some(a) = found {
+                println!("file={} line={} -> 0x{a:08x}", file, line);
+            } else {
+                println!("file={} line={}: (无地址映射)", file, line);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn cmd_cycle(sub: CycleSub) -> Result<()> {
+    match sub {
+        CycleSub::Get { session, json } => {
+            let sim = load_session_sim(&session)?;
+            if json {
+                print_json(&serde_json::json!({ "cycleCount": sim.cycle_count }))?;
+            } else {
+                println!("周期: {}", sim.cycle_count);
+            }
+            Ok(())
+        }
+        CycleSub::Estimate { session, addr, addr_flag, json } => {
+            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let addr_num = parse_num(&addr)?;
+            let sim = load_session_sim(&session)?;
+            let cycles = sim.cycles_for_instruction(addr_num);
+            if json {
+                print_json(&serde_json::json!({ "address": addr_num, "cycles": cycles }))?;
+            } else {
+                println!("0x{:08x}: {} 周期", addr_num, cycles);
+            }
+            Ok(())
+        }
+        CycleSub::Tick { session, cycles, json } => {
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            sim.tick_peripherals_for(cycles);
+            sim.cycle_count = sim.cycle_count.saturating_add(cycles);
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({ "cycles": cycles, "cycleCount": sim.cycle_count }))?;
+            } else {
+                println!("已推进 {cycles} 周期，累计 {}", sim.cycle_count);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn cmd_interrupt(sub: InterruptSub) -> Result<()> {
+    match sub {
+        InterruptSub::Take { session, json } => {
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let taken = sim.take_interrupt();
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({ "taken": taken, "pc": sim.program_counter(), "mcause": sim.csr.mcause }))?;
+            } else if taken {
+                println!("已取中断，PC=0x{:08x} mcause=0x{:08x}", sim.program_counter(), sim.csr.mcause);
+            } else {
+                println!("无中断可取（检查 mstatus.MIE 与 mie 使能位）");
+            }
+            Ok(())
+        }
+        InterruptSub::Pending { session, json } => {
+            let sim = load_session_sim(&session)?;
+            let lines: Vec<usize> = sim
+                .peripherals
+                .irq_pending
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| **p)
+                .map(|(i, _)| i)
+                .collect();
+            if json {
+                print_json(&serde_json::json!({
+                    "anyPending": sim.any_pending(),
+                    "pendingLines": lines,
+                    "mstatus": sim.csr.mstatus,
+                    "mie": sim.csr.mie,
+                }))?;
+            } else {
+                println!("anyPending={} 挂起行={:?} mstatus=0x{:08x} mie=0x{:08x}",
+                    sim.any_pending(), lines, sim.csr.mstatus, sim.csr.mie);
+            }
+            Ok(())
+        }
+        InterruptSub::Set { session, line, line_flag, value, value_flag, json } => {
+            let line = line_flag.or(line).ok_or_else(|| anyhow::anyhow!("缺少中断线"))?;
+            let value = value_flag.or(value).unwrap_or(1);
+            if line >= 16 {
+                bail!("中断线必须在 0..16");
+            }
+            if value > 1 {
+                bail!("中断线值必须是 0 或 1");
+            }
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            sim.peripherals.irq_pending[line] = value == 1;
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({ "line": line, "value": value }))?;
+            } else {
+                println!("IRQ {line} = {value}");
+            }
+            Ok(())
+        }
+    }
+}
+
+fn cmd_watchdog(sub: WatchdogSub) -> Result<()> {
+    match sub {
+        WatchdogSub::Status { session, json } => {
+            let sim = load_session_sim(&session)?;
+            let w = sim.peripherals.watchdog.as_ref();
+            if json {
+                print_json(&w.map(|w| serde_json::json!({
+                    "base": w.base, "enabled": w.enabled, "timeoutCycles": w.timeout_cycles,
+                    "elapsed": w.elapsed, "resetCount": w.reset_count, "lastResetPc": w.last_reset_pc,
+                })))?;
+            } else if let Some(w) = w {
+                println!(
+                    "看门狗: base=0x{:08x} enabled={} timeout={} elapsed={} resets={} lastResetPc=0x{:08x}",
+                    w.base, w.enabled, w.timeout_cycles, w.elapsed, w.reset_count, w.last_reset_pc
+                );
+            } else {
+                println!("(未启用看门狗)");
+            }
+            Ok(())
+        }
+        WatchdogSub::Feed { session, json } => {
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let base = sim
+                .peripherals
+                .watchdog
+                .as_ref()
+                .map(|w| w.base)
+                .unwrap_or(0x4000_0000);
+            if sim.peripherals.watchdog.is_none() {
+                sim.peripherals.watchdog = Some(ns_sim::Watchdog::new(base));
+            }
+            sim.write_u32(base, 0xAA55);
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({ "fed": true, "base": base }))?;
+            } else {
+                println!("已喂狗 @ 0x{:08x}", base);
+            }
+            Ok(())
+        }
+        WatchdogSub::Config { session, enabled, timeout, base, json } => {
+            let base_num = base.as_deref().map(parse_num).transpose()?.unwrap_or(0x4000_0000);
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let (out, base_out, enabled_out, timeout_out) = {
+                let w = sim.peripherals.watchdog.get_or_insert_with(|| ns_sim::Watchdog::new(base_num));
+                w.base = base_num;
+                if let Some(v) = enabled {
+                    w.enabled = v;
+                }
+                if let Some(v) = timeout {
+                    w.timeout_cycles = v;
+                }
+                let out = serde_json::json!({
+                    "base": w.base, "enabled": w.enabled, "timeoutCycles": w.timeout_cycles,
+                    "elapsed": w.elapsed, "resetCount": w.reset_count, "lastResetPc": w.last_reset_pc,
+                });
+                (out, w.base, w.enabled, w.timeout_cycles)
+            };
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&out)?;
+            } else {
+                println!(
+                    "看门狗配置: base=0x{:08x} enabled={} timeout={}",
+                    base_out, enabled_out, timeout_out
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+/// CSR field accessor helpers (RISC-V machine-mode registers).
+fn csr_field(name: &str, sim: &Simulator) -> Option<u32> {
+    match name.to_ascii_lowercase().as_str() {
+        "mstatus" => Some(sim.csr.mstatus),
+        "mtvec" => Some(sim.csr.mtvec),
+        "mepc" => Some(sim.csr.mepc),
+        "mcause" => Some(sim.csr.mcause),
+        "mie" => Some(sim.csr.mie),
+        "mhartid" => Some(sim.csr.mhartid),
+        _ => None,
+    }
+}
+
+fn csr_field_mut(name: &str, sim: &mut Simulator, value: u32) -> bool {
+    match name.to_ascii_lowercase().as_str() {
+        "mstatus" => sim.csr.mstatus = value,
+        "mtvec" => sim.csr.mtvec = value,
+        "mepc" => sim.csr.mepc = value,
+        "mcause" => sim.csr.mcause = value,
+        "mie" => sim.csr.mie = value,
+        "mhartid" => sim.csr.mhartid = value,
+        _ => return false,
+    }
+    true
+}
+
+fn cmd_csr(sub: CsrSub) -> Result<()> {
+    match sub {
+        CsrSub::List { session, json } => {
+            let sim = load_session_sim(&session)?;
+            let names = ["mstatus", "mtvec", "mepc", "mcause", "mie", "mhartid"];
+            let mut out = serde_json::Map::new();
+            for name in names {
+                out.insert(name.to_string(), serde_json::json!(csr_field(name, &sim)));
+            }
+            if json {
+                print_json(&out)?;
+            } else {
+                for (name, value) in &out {
+                    println!("{name:<8} 0x{:08x}", value.as_u64().unwrap_or(0));
+                }
+            }
+            Ok(())
+        }
+        CsrSub::Get { session, name, name_flag, json } => {
+            let name = name_flag.or(name).ok_or_else(|| anyhow::anyhow!("缺少 CSR 名"))?;
+            let sim = load_session_sim(&session)?;
+            let value = csr_field(&name, &sim).ok_or_else(|| anyhow::anyhow!("未知 CSR: {name}"))?;
+            if json {
+                print_json(&serde_json::json!({ "name": name, "value": value }))?;
+            } else {
+                println!("{name} = 0x{value:08x}");
+            }
+            Ok(())
+        }
+        CsrSub::Set { session, name, value, name_flag, value_flag, json } => {
+            let name = name_flag.or(name).ok_or_else(|| anyhow::anyhow!("缺少 CSR 名"))?;
+            let value = value_flag.or(value).ok_or_else(|| anyhow::anyhow!("缺少 CSR 值"))?;
+            let val = parse_num(&value)?;
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            if !csr_field_mut(&name, &mut sim, val) {
+                bail!("未知 CSR: {name}");
+            }
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({ "name": name, "value": val }))?;
+            } else {
+                println!("{name} = 0x{val:08x}");
+            }
+            Ok(())
+        }
+    }
+}
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_num_hex_and_dec() {
+        assert_eq!(parse_num("0x10").unwrap(), 16);
+        assert_eq!(parse_num("16").unwrap(), 16);
+        assert_eq!(parse_num("0b1010").unwrap(), 10);
+        assert!(parse_num("zz").is_err());
+    }
+
+    #[test]
+    fn arch_roundtrip() {
+        for (name, arch) in [
+            ("riscv", Arch::RiscV),
+            ("arm", Arch::Arm),
+            ("mcs51", Arch::Mcs51),
+            ("mcs251", Arch::Mcs251),
+            ("c166", Arch::C166),
+            ("xtensa", Arch::Xtensa),
+            ("avr", Arch::Avr),
+            ("msp430", Arch::Msp430),
+            ("v850", Arch::V850),
+            ("stm8", Arch::Stm8),
+            ("rx", Arch::Rx),
+            ("rl78", Arch::Rl78),
+        ] {
+            assert_eq!(session::parse_arch(name).unwrap(), arch);
+            assert_eq!(session::parse_arch(session::arch_name(arch)).unwrap(), arch);
+        }
+    }
+}

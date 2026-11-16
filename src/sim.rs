@@ -1,0 +1,319 @@
+//! Firmware loading and simulator construction helpers.
+
+use std::path::Path;
+
+use anyhow::{Context, Result};
+
+use ns_sim::{Arch, Simulator};
+
+/// The supported firmware formats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirmwareFormat {
+    Elf,
+    Hex,
+    Bin,
+}
+
+impl FirmwareFormat {
+    pub fn label(self) -> &'static str {
+        match self {
+            FirmwareFormat::Elf => "elf",
+            FirmwareFormat::Hex => "hex",
+            FirmwareFormat::Bin => "bin",
+        }
+    }
+}
+
+/// Detect the firmware format from a path (extension first, then content).
+pub fn detect_format(path: &Path) -> FirmwareFormat {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "elf" | "axf" | "out" => FirmwareFormat::Elf,
+        "hex" | "ihex" | "ihx" => FirmwareFormat::Hex,
+        "bin" => FirmwareFormat::Bin,
+        _ => {
+            // Content sniffing: ELF magic or Intel-HEX record.
+            if let Ok(bytes) = std::fs::read(path) {
+                if bytes.starts_with(b"\x7fELF") {
+                    return FirmwareFormat::Elf;
+                }
+                if bytes.starts_with(b":") {
+                    return FirmwareFormat::Hex;
+                }
+            }
+            FirmwareFormat::Bin
+        }
+    }
+}
+
+/// Load a firmware file into the simulator, handling ELF / Intel HEX / BIN.
+///
+/// `override_base` is only used for raw BIN (and Intel HEX, where a non-zero
+/// value overrides the decoded base); ELF derives its own entry/segments.
+pub fn load_firmware_into(
+    sim: &mut Simulator,
+    path: &Path,
+    override_base: u32,
+) -> Result<()> {
+    let format = detect_format(path);
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("读取固件 {} 失败", path.display()))?;
+
+    match format {
+        FirmwareFormat::Elf => {
+            sim.load_elf(&bytes)
+                .with_context(|| format!("加载 ELF {} 失败", path.display()))?;
+        }
+        FirmwareFormat::Hex => {
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|_| anyhow::anyhow!("Intel HEX 不是有效 UTF-8: {}", path.display()))?;
+            let decoded = ns_flash_hex::decode(text)
+                .with_context(|| format!("解析 Intel HEX {} 失败", path.display()))?;
+            let base = if override_base != 0 { override_base } else { decoded.base as u32 };
+            load_by_arch(sim, base, &decoded.bytes)?;
+        }
+        FirmwareFormat::Bin => {
+            load_by_arch(sim, override_base, &bytes)?;
+        }
+    }
+    Ok(())
+}
+
+/// Architecture-specific raw image loading. Mirrors the IDE's `start_simulation`.
+pub fn load_by_arch(sim: &mut Simulator, base: u32, image: &[u8]) -> Result<()> {
+    match sim.arch {
+        Arch::Mcs51 => sim.load_mcs51(base as u16, image)?,
+        Arch::Mcs251 => sim.load_x51(base, image)?,
+        Arch::C166 => sim.load_c166(base as u16, image)?,
+        Arch::Stm8 => sim.load_stm8(base, image)?,
+        Arch::Avr => sim.load_avr(base, image)?,
+        Arch::Msp430 => sim.load_msp430(base, image)?,
+        Arch::V850 => sim.load_v850(base, image)?,
+        Arch::Rx => sim.load_rx(base, image)?,
+        Arch::Rl78 => sim.load_rl78(base, image)?,
+        Arch::RiscV | Arch::Arm | Arch::Xtensa => sim.load_image(base, image),
+    }
+    Ok(())
+}
+
+/// The default memory-view base address for an architecture (matches the IDE).
+pub fn default_mem_base(arch: Arch) -> u32 {
+    match arch {
+        Arch::RiscV => 0x1000_0000,
+        Arch::Arm => 0x2000_0000,
+        Arch::Mcs51 => 0,
+        Arch::Mcs251 => 0,
+        Arch::C166 => 0,
+        Arch::Xtensa => 0x3FF0_0000,
+        Arch::Avr => 0x0100,
+        Arch::Msp430 => 0x0200,
+        Arch::Stm8 => 0x0000,
+        Arch::Rx => 0x0010_0000,
+        Arch::V850 => 0x1F_0000,
+        Arch::Rl78 => 0xFFE00,
+    }
+}
+
+/// Parse a numeric value that may be hex (`0x…`) or decimal.
+pub fn parse_num(text: &str) -> Result<u32> {
+    let text = text.trim();
+    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16)
+            .map_err(|e| anyhow::anyhow!("无效十六进制数 '{text}': {e}"))
+    } else if let Some(bin) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+        u32::from_str_radix(bin, 2)
+            .map_err(|e| anyhow::anyhow!("无效二进制数 '{text}': {e}"))
+    } else {
+        text.parse::<u32>()
+            .map_err(|e| anyhow::anyhow!("无效数值 '{text}': {e}"))
+    }
+}
+
+/// Decode Intel HEX using an embedded copy of the parser from ns-flash.
+///
+/// We intentionally avoid a direct dependency on ns-flash (which pulls in
+/// ns-project and GPUI-free but heavier deps); the parser is self-contained
+/// and verified against the same test vectors.
+mod ns_flash_hex {
+    use anyhow::{Result, bail};
+
+    /// Decoded Intel HEX: contiguous bytes + base address.
+    pub struct Decoded {
+        pub bytes: Vec<u8>,
+        pub base: u64,
+    }
+
+    /// Decode Intel HEX records. Supports 00 (data), 01 (EOF), 02 (extended
+    /// segment address), 04 (extended linear address).
+    pub fn decode(text: &str) -> Result<Decoded> {
+        let mut segments: Vec<(u64, Vec<u8>)> = Vec::new();
+        let mut base: u64 = 0;
+        let mut saw_eof = false;
+
+        for (index, raw) in text.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if !line.starts_with(':') {
+                bail!("第 {} 行不是合法 Intel HEX 记录: {}", index + 1, line);
+            }
+            let record = parse_record(line)
+                .map_err(|e| anyhow::anyhow!("解析 Intel HEX 第 {} 行失败: {e}", index + 1))?;
+            match record.record_type {
+                0x00 => {
+                    let addr = base + record.address as u64;
+                    if let Some((_, seg)) = segments.iter_mut().find(|(a, _)| *a == addr) {
+                        seg.extend_from_slice(&record.data);
+                    } else {
+                        segments.push((addr, record.data));
+                    }
+                }
+                0x01 => saw_eof = true,
+                0x02 => {
+                    if record.data.len() != 2 {
+                        bail!("扩展段地址记录长度应为 2");
+                    }
+                    base = u16::from_be_bytes([record.data[0], record.data[1]]) as u64 * 16;
+                }
+                0x04 => {
+                    if record.data.len() != 2 {
+                        bail!("扩展线性地址记录长度应为 2");
+                    }
+                    base = u16::from_be_bytes([record.data[0], record.data[1]]) as u64 * 65536;
+                }
+                _ => {}
+            }
+            if saw_eof {
+                break;
+            }
+        }
+        if !saw_eof {
+            bail!("Intel HEX 文件缺少 EOF 记录");
+        }
+        segments.sort_by_key(|(a, _)| *a);
+        let base_addr = segments.first().map(|(a, _)| *a).unwrap_or(0);
+        let mut bytes = Vec::new();
+        for (addr, data) in segments {
+            let offset = (addr - base_addr) as usize;
+            if offset > bytes.len() {
+                bytes.resize(offset, 0);
+            }
+            bytes.extend_from_slice(&data);
+        }
+        Ok(Decoded { bytes, base: base_addr })
+    }
+
+    struct Record {
+        address: u16,
+        record_type: u8,
+        data: Vec<u8>,
+    }
+
+    fn parse_record(line: &str) -> Result<Record> {
+        let hex = line.strip_prefix(':').unwrap_or(line);
+        if hex.len() < 10 || hex.len() % 2 != 0 {
+            bail!("记录长度无效");
+        }
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| anyhow::anyhow!("非法十六进制字符"))?;
+        let byte_count = bytes[0] as usize;
+        if bytes.len() != byte_count + 5 {
+            bail!("记录长度与字节数不符");
+        }
+        let address = u16::from_be_bytes([bytes[1], bytes[2]]);
+        let record_type = bytes[3];
+        let data = bytes[4..4 + byte_count].to_vec();
+        let checksum = bytes[4 + byte_count];
+        let sum: u8 = bytes[..4 + byte_count].iter().fold(0, |a, b| a.wrapping_add(*b));
+        if sum.wrapping_add(checksum) != 0 {
+            bail!("校验和错误");
+        }
+        Ok(Record { address, record_type, data })
+    }
+}
+
+/// Read a single byte from the simulator's data space.
+///
+/// The `ns-sim::Simulator::read_u8` accessor only routes ARM/Xtensa/AVR/
+/// MSP430/V850/STM8/RX/RL78 cores; the 8051/80251/C166 cores keep their own
+/// Harvard memory model. This helper addresses the data space for those cores
+/// so the CLI's `mem read` sees the same memory the CPU writes.
+pub fn read_mem_byte(sim: &Simulator, addr: u32) -> u8 {
+    if let Some(core) = &sim.mcs51 {
+        // Internal RAM 0x00-0xFF, external data 0x100+.
+        return match addr {
+            0x00..=0xFF => core.idram[addr as usize],
+            0x100..=0xFFFF => {
+                let i = (addr - 0x100) as usize;
+                if i < core.xram.len() { core.xram[i] } else { 0 }
+            }
+            _ => 0,
+        };
+    }
+    if let Some(core) = &sim.x51 {
+        return match addr {
+            0x00..=0xFF => core.idram[addr as usize],
+            0x100..=0xFFFF => {
+                let i = (addr - 0x100) as usize;
+                if i < core.xram.len() { core.xram[i] } else { 0 }
+            }
+            _ => 0,
+        };
+    }
+    if let Some(core) = &sim.c166 {
+        return match addr {
+            0x0000..=0xFFFF => {
+                let i = addr as usize;
+                if i < core.data.len() { core.data[i] } else { 0 }
+            }
+            _ => 0,
+        };
+    }
+    sim.read_u8(addr)
+}
+
+/// Write a single byte into the simulator's data space (mirrors read_mem_byte).
+pub fn write_mem_byte(sim: &mut Simulator, addr: u32, value: u8) {
+    if let Some(core) = &mut sim.mcs51 {
+        match addr {
+            0x00..=0xFF => core.idram[addr as usize] = value,
+            0x100..=0xFFFF => {
+                let i = (addr - 0x100) as usize;
+                if i < core.xram.len() { core.xram[i] = value; }
+            }
+            _ => {}
+        }
+        return;
+    }
+    if let Some(core) = &mut sim.x51 {
+        match addr {
+            0x00..=0xFF => core.idram[addr as usize] = value,
+            0x100..=0xFFFF => {
+                let i = (addr - 0x100) as usize;
+                if i < core.xram.len() { core.xram[i] = value; }
+            }
+            _ => {}
+        }
+        return;
+    }
+    if let Some(core) = &mut sim.c166 {
+        match addr {
+            0x0000..=0xFFFF => {
+                let i = addr as usize;
+                if i < core.data.len() { core.data[i] = value; }
+            }
+            _ => {}
+        }
+        return;
+    }
+    // The generic path routes through write_bytes which handles most cores.
+    sim.write_bytes(addr, &[value]);
+}
