@@ -860,6 +860,25 @@ fn periph_reg_list_shows_loaded_registers() {
 }
 
 #[test]
+fn periph_status_reports_svd_registers() {
+    let dir = tmpdir();
+    let sess = dir.join("pstat.json");
+    bootstrap(&sess);
+    Command::new(bin())
+        .args(["periph", "svd-load", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["periph", "status", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["externalRegs"].as_object().unwrap().len() >= 16);
+}
+
+#[test]
 fn periph_reg_name_access() {
     let dir = tmpdir();
     let sess = dir.join("reg_name.json");

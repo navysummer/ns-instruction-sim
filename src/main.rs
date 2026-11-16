@@ -2047,6 +2047,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 "gpioEvents": gpio_events,
                 "timers": timers,
                 "watchdog": watchdog,
+                "externalRegs": sim.peripherals.external_regs,
             });
             if json {
                 print_json(&out)?;
@@ -2059,6 +2060,10 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 println!("GPIO OUT=0x{:08x} DIR=0x{:08x} IN=0x{:08x}", sim.peripherals.gpio_out, sim.peripherals.gpio_dir, sim.peripherals.gpio_in);
                 println!("GPIO 事件数: {}", sim.peripherals.gpio_events.len());
                 println!("定时器数: {}", sim.peripherals.timers.len());
+                println!(
+                    "SVD 寄存器数: {}",
+                    sim.peripherals.external_regs.len()
+                );
             }
             Ok(())
         }
