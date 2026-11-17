@@ -2066,14 +2066,11 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                 }
             }
             let (mut sim, fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
-            let mut overlay = Vec::new();
             for (i, b) in data.iter().enumerate() {
                 let a = addr_num.wrapping_add(i as u32);
                 write_mem_byte(&mut sim, a, *b);
-                overlay.push((a, *b));
             }
-            let mut s = Session::capture(&sim, fw);
-            s.memory_overlay.extend(overlay);
+            let s = Session::capture(&sim, fw);
             s.save(&session)?;
             if json {
                 print_json(&serde_json::json!({
@@ -2097,14 +2094,11 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             let value_byte = value_num as u8;
             let (mut sim, fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
             let bytes = vec![value_byte; len];
-            let mut overlay = Vec::new();
             for (i, b) in bytes.iter().enumerate() {
                 let a = addr_num.wrapping_add(i as u32);
                 write_mem_byte(&mut sim, a, *b);
-                overlay.push((a, *b));
             }
-            let mut s = Session::capture(&sim, fw);
-            s.memory_overlay.extend(overlay);
+            let s = Session::capture(&sim, fw);
             s.save(&session)?;
             if json {
                 print_json(&serde_json::json!({

@@ -203,6 +203,8 @@ done
 - `reg_set_and_get`：寄存器写读往返。
 - `session_roundtrip_preserves_firmware_and_peripherals`：会话保存/恢复。
 - `all_arch_state_works`：12 架构 `state --json` 均成功。
+- `all_arch_core_operations`：12 架构寄存器列出/单步/内存写读往返/反汇编均成功。
+- `mem_overlay_persists_across_step`：ARM（私有内存模型核心）显式内存写在单步后仍持久化（memory_overlay 跨调用重放）。
 - `cycle_get_and_tick`：周期计数读取/推进/指令周期估算。
 - `csr_set_get_roundtrip`：CSR 写读往返与会话持久化。
 - `watchdog_config_feed_status`：看门狗配置/喂狗/状态。

@@ -388,6 +388,80 @@ fn all_arch_state_works() {
 }
 
 #[test]
+fn all_arch_core_operations() {
+    let dir = tmpdir();
+    for arch in ["riscv", "arm", "mcs51", "mcs251", "c166", "xtensa", "avr", "msp430", "v850", "stm8", "rx", "rl78"] {
+        let sess = dir.join(format!("core-{arch}.json"));
+        // Bootstrap the session with a data-space write for this architecture.
+        let out = Command::new(bin())
+            .args(["mem", "write", "--session", sess.to_str().unwrap(),
+                   "--arch", arch, "--addr", "0x20", "--bytes", "0xaa", "0xbb"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "mem write failed for {arch}: {}", String::from_utf8_lossy(&out.stderr));
+        // Register listing must expose a non-empty architecture register view.
+        let out = Command::new(bin())
+            .args(["reg", "list", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "reg list failed for {arch}: {}", String::from_utf8_lossy(&out.stderr));
+        let regs: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(regs.as_object().map(|o| !o.is_empty()).unwrap_or(false), "empty registers for {arch}");
+        // A single step must advance the core without error.
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "step failed for {arch}: {}", String::from_utf8_lossy(&out.stderr));
+        // The bytes written must be read back in the same data space.
+        let out = Command::new(bin())
+            .args(["mem", "read", "--session", sess.to_str().unwrap(),
+                   "--addr", "0x20", "--len", "2", "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "mem read failed for {arch}: {}", String::from_utf8_lossy(&out.stderr));
+        let mem: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(mem["bytes"][0], 0xaau64, "byte 0 wrong for {arch}");
+        assert_eq!(mem["bytes"][1], 0xbbu64, "byte 1 wrong for {arch}");
+        // Disassembly must decode at least one instruction.
+        let out = Command::new(bin())
+            .args(["disasm", "--arch", arch, "--addr", "0", "--count", "1", "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "disasm failed for {arch}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+}
+
+#[test]
+fn mem_overlay_persists_across_step() {
+    // Explicit data-space writes on cores with a private memory model (e.g. ARM
+    // Cortex-M) must survive a step/run/continue. The session's memory_overlay
+    // carries them forward; a step must not drop the record.
+    let dir = tmpdir();
+    let sess = dir.join("overlay-step.json");
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--arch", "arm", "--addr", "0x20", "--bytes", "0xaa", "0xbb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20", "--len", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mem: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(mem["bytes"][0], 0xaau64, "write lost across step");
+    assert_eq!(mem["bytes"][1], 0xbbu64, "write lost across step");
+}
+
+#[test]
 fn cycle_get_and_tick() {
     let dir = tmpdir();
     let sess = dir.join("cycle.json");

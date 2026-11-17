@@ -371,6 +371,10 @@ pub struct Simulator {
     pub pc: u32,
     pub registers: [u32; REG_COUNT],
     pub memory: Vec<u8>,
+    /// Explicit data-space writes that must be replayed when the session is
+    /// reloaded (architecture cores with their own memory model do not mirror
+    /// into `memory`, so the CLI records them here for cross-invocation replay).
+    pub memory_overlay: Vec<(u32, u8)>,
     /// Whether execution should stop (a breakpoint or halt instruction).
     pub halted: bool,
     /// Simulated breakpoints (with optional condition / hit count).
@@ -813,6 +817,7 @@ impl Simulator {
             pc: ENTRY_POINT,
             registers: [0; REG_COUNT],
             memory: vec![0; MEMORY_SIZE],
+            memory_overlay: Vec::new(),
             halted: false,
             breakpoints: Vec::new(),
             cycle_count: 0,

@@ -291,9 +291,7 @@ pub fn write_mem_byte(sim: &mut Simulator, addr: u32, value: u8) {
             }
             _ => {}
         }
-        return;
-    }
-    if let Some(core) = &mut sim.x51 {
+    } else if let Some(core) = &mut sim.x51 {
         match addr {
             0x00..=0xFF => core.idram[addr as usize] = value,
             0x100..=0xFFFF => {
@@ -302,9 +300,7 @@ pub fn write_mem_byte(sim: &mut Simulator, addr: u32, value: u8) {
             }
             _ => {}
         }
-        return;
-    }
-    if let Some(core) = &mut sim.c166 {
+    } else if let Some(core) = &mut sim.c166 {
         match addr {
             0x0000..=0xFFFF => {
                 let i = addr as usize;
@@ -312,8 +308,27 @@ pub fn write_mem_byte(sim: &mut Simulator, addr: u32, value: u8) {
             }
             _ => {}
         }
-        return;
+    } else if let Some(core) = &mut sim.avr {
+        // AVR data space: R0-R31 (0x00-0x1F), I/O (0x20-0x5F), SRAM (0x60+).
+        // Note the generic `load_image` path targets program memory, so the
+        // data space must be written explicitly to mirror `read_mem_byte`.
+        match addr {
+            0x00..=0x1F => core.regs[addr as usize] = value,
+            0x20..=0x5F => core.io[(addr - 0x20) as usize] = value,
+            0x60.. => {
+                let i = (addr - 0x60) as usize;
+                if i < core.sram.len() { core.sram[i] = value; }
+            }
+        }
+    } else {
+        // The generic path routes through write_bytes which handles most cores.
+        sim.write_bytes(addr, &[value]);
     }
-    // The generic path routes through write_bytes which handles most cores.
-    sim.write_bytes(addr, &[value]);
+    // Record the explicit data-space write so it survives session reloads
+    // (cores with their own memory model do not mirror into `memory`).
+    if let Some(entry) = sim.memory_overlay.iter_mut().find(|(a, _)| *a == addr) {
+        entry.1 = value;
+    } else {
+        sim.memory_overlay.push((addr, value));
+    }
 }

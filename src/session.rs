@@ -213,7 +213,7 @@ impl Session {
                 .filter(|(_, b)| **b != 0)
                 .map(|(i, b)| (i as u32, *b))
                 .collect(),
-            memory_overlay: Vec::new(),
+            memory_overlay: sim.memory_overlay.clone(),
         }
     }
 
@@ -304,6 +304,9 @@ impl Session {
         for (addr, value) in &self.memory_overlay {
             crate::sim::write_mem_byte(&mut sim, *addr, *value);
         }
+        // Replay re-records each entry into the fresh simulator; overwrite with
+        // the canonical loaded overlay so the list never duplicates on reload.
+        sim.memory_overlay = self.memory_overlay.clone();
         Ok(sim)
     }
 }
