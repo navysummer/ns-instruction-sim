@@ -262,6 +262,9 @@ done
   调用者下一条指令（pc+3），`ret` 被 `step-out` 识别。
 - `disasm_msp430_extension_words`：MSP430 双操作数指令的立即数/绝对/索引操作数携带扩展字，
   反汇编按实际宽度推进（操作码字 + 扩展字），替换固定 2 字节（`MOV #imm16,R5`=4、`MOV Rn,Rn`=2）。
+- `msp430_step_over_and_step_out_use_return`：MSP430 反汇编使用大写助记符（`CALL`/`RETI`），
+  返回/调用识别必须大小写无关；`step-over` 在 4 字节 `CALL #imm` 上于 pc+4 恢复，`step-out`
+  识别 `MOV @SP+, PC`（`RET` 伪指令）并在返回地址停下。
 - `step_source_annotates_lines`：`step --source` 按 DWARF 行表标注 file:line。
 - `stm8_step_over_and_step_out_use_call_width`：`step-over` 按实际指令宽度计算返回地址
   （STM8 `call addr16`=3 字节），`step-out` 识别 `ret` 并在返回地址停下（修复哈佛内核代码空间读取）。

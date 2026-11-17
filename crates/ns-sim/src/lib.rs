@@ -2893,7 +2893,10 @@ pub fn disassemble_one(arch: Arch, pc: u32, read: &dyn Fn(u32) -> u8) -> String 
 /// `step_out` to detect the function epilogue; matches the mnemonics emitted
 /// across all supported architectures.
 pub fn is_return_mnemonic(insn: &str) -> bool {
-    let insn = insn.trim_start();
+    // Disassemblers emit mnemonics in different cases (e.g. MSP430 renders
+    // `RETI`/`CALL` uppercase), so compare case-insensitively.
+    let insn = insn.trim_start().to_ascii_lowercase();
+    let insn = insn.as_str();
     for prefix in ["ret", "reti", "iret", "rts", "rti", "rfe", "rte", "retf", "mret"] {
         if insn == prefix
             || insn
@@ -2920,6 +2923,14 @@ pub fn is_return_mnemonic(insn: &str) -> bool {
     }
     if body == "pop" || body == "ldm" || body == "ldmia" || body == "ldmfd" {
         return insn.contains("pc") || insn.contains("r15");
+    }
+    // MSP430 assembles `RET` as `MOV @SP+, PC`: popping the return address
+    // into the program counter leaves the current function.
+    if body == "mov"
+        && insn.contains("@sp+")
+        && insn.split_whitespace().next_back() == Some("pc")
+    {
+        return true;
     }
     false
 }
@@ -3714,8 +3725,22 @@ mod tests {
             assert!(is_return_mnemonic(insn), "{insn}");
             assert!(is_return_mnemonic(&format!("{insn} #0x10")), "{insn} with operand");
         }
+        // Some disassemblers (e.g. MSP430) render return mnemonics uppercase.
+        for insn in ["RET", "RETI", "RTS", "RTI", "RFE", "RTE", "RETF", "MRET"] {
+            assert!(is_return_mnemonic(insn), "{insn}");
+        }
         // ARM-family returns: `bx lr`/`bx r14` and `pop {.., pc}` / `ldm .. {.., pc}`.
-        for insn in ["bx lr", "bx r14", "blx lr", "pop {r4, pc}", "pop {pc}", "ldm sp!, {r4, pc}"] {
+        for insn in [
+            "bx lr",
+            "bx r14",
+            "blx lr",
+            "pop {r4, pc}",
+            "pop {pc}",
+            "ldm sp!, {r4, pc}",
+            // MSP430 `RET` is assembled as `MOV @SP+, PC`.
+            "MOV @SP+, PC",
+            "mov @sp+, pc",
+        ] {
             assert!(is_return_mnemonic(insn), "{insn}");
         }
         // Non-return instructions are rejected.
@@ -3723,6 +3748,7 @@ mod tests {
             "add a0, a1",
             "lw a0, 0(a1)",
             "mov A, #0x2A",
+            "mov @r4+, pc",
             "reti_handler",
             "bx r0",
             "bx r1",
@@ -3846,6 +3872,41 @@ mod tests {
         sim.set_program_counter(0x8008);
         assert_eq!(sim.step_out(64), StepResult::Advanced);
         assert_eq!(sim.program_counter(), 0x8004, "step-out returns after rts");
+    }
+
+    #[test]
+    fn step_over_and_step_out_use_msp430_return() {
+        // MSP430 renders mnemonics uppercase, so the return/call detectors
+        // must compare case-insensitively. `RET` is `MOV @SP+, PC`. CALL #imm
+        // is 4 bytes; step-over must resume at pc+4.
+        let mut sim = Simulator::for_arch(Arch::Msp430).expect("MSP430 core");
+        // 0x0200: CALL #0x0300 (0x12B0), 0x0204: return point,
+        // 0x0300: MOV @SP+, PC (0x4130, the RET pseudo).
+        sim.load_msp430(0x0200, &[0xB0, 0x12, 0x00, 0x03]).expect("load");
+        sim.msp430.as_mut().unwrap().write_bytes(0x0300, &[0x30, 0x41]);
+        sim.write_reg(1, 0x0400); // SP
+        sim.set_program_counter(0x0200);
+        assert_eq!(sim.step_over(64), StepResult::Advanced);
+        assert_eq!(
+            sim.program_counter(),
+            0x0204,
+            "step-over must resume after 4-byte CALL #imm"
+        );
+
+        // step-out from a function ending in `MOV @SP+, PC` lands on the
+        // caller's next instruction (the return address pushed by the CALL).
+        let mut sim = Simulator::for_arch(Arch::Msp430).expect("MSP430 core");
+        sim.load_msp430(0x0300, &[0x30, 0x41]).expect("load"); // MOV @SP+, PC
+        sim.write_reg(1, 0x0400); // SP
+        // Push a synthetic return address so RET pops PC = 0x0204.
+        sim.msp430.as_mut().unwrap().write_u16(0x0400, 0x0204); // return PC
+        sim.set_program_counter(0x0300);
+        assert_eq!(sim.step_out(64), StepResult::Advanced);
+        assert_eq!(
+            sim.program_counter(),
+            0x0204,
+            "step-out must return after MOV @SP+, PC"
+        );
     }
 
     #[test]

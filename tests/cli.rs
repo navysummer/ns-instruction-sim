@@ -2785,6 +2785,65 @@ fn disasm_msp430_extension_words() {
 }
 
 #[test]
+fn msp430_step_over_and_step_out_use_return() {
+    // MSP430 renders mnemonics uppercase; `RET` is `MOV @SP+, PC`. step-over
+    // on a 4-byte `CALL #imm` must resume at pc+4, and step-out must stop at
+    // the `MOV @SP+, PC` epilogue.
+    let dir = tmpdir();
+    let sess = dir.join("mspstep.json");
+    let code = dir.join("mspstep.bin");
+    // 0x0200: CALL #0x0300 (4 bytes) -> return 0x0204; 0x0300: MOV @SP+, PC.
+    let mut buf = vec![0u8; 0x102];
+    buf[0..4].copy_from_slice(&[0xB0, 0x12, 0x00, 0x03]);
+    buf[0x100..0x102].copy_from_slice(&[0x30, 0x41]);
+    std::fs::write(&code, buf).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "msp430", "--firmware", code.to_str().unwrap(), "--base", "0x0200"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // step-over from the CALL returns to pc == 0x0204 (CALL #imm is 4 bytes).
+    let out = Command::new(bin())
+        .args(["step-over", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0204u64);
+
+    // step-out: a function ending in `MOV @SP+, PC` pops the return address.
+    let sess2 = dir.join("mspstep_out.json");
+    let code2 = dir.join("mspstep_out.bin");
+    std::fs::write(&code2, [0x30, 0x41]).unwrap(); // MOV @SP+, PC
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess2.to_str().unwrap(),
+               "--arch", "msp430", "--firmware", code2.to_str().unwrap(), "--base", "0x0300"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reg", "set", "--session", sess2.to_str().unwrap(),
+               "--name", "sp", "--value", "0x0400"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess2.to_str().unwrap(),
+               "--addr", "0x0400", "--bytes", "0x04", "0x02"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["step-out", "--session", sess2.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0204u64);
+}
+
+#[test]
 fn disasm_rl78_variable_width() {
     // RL78 is variable-length (1/2/3/4 bytes). Disassembly must advance by the
     // actual decoded width, not a fixed 4 bytes, including the 0x61-prefixed
