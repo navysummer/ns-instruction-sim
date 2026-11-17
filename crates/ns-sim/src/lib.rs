@@ -2943,7 +2943,7 @@ pub fn is_call_mnemonic(insn: &str) -> bool {
         // MCS-51 / 80251 / C166 / AVR / MSP430.
         | "lcall" | "acall" | "call" | "callf" | "callr" | "callt" | "rcall" | "icall"
         // V850 / RX.
-        | "jarl" | "bsr" | "jsr" | "bsr.l"
+        | "jarl" | "bsr" | "bsr.a" | "bsr.w" | "bsr.l" | "jsr"
     )
 }
 
@@ -3810,6 +3810,42 @@ mod tests {
         core.idram[0x09] = 0x03; // return low
         assert_eq!(sim.step_out(64), StepResult::Advanced);
         assert_eq!(sim.program_counter(), 0x0003, "step-out must return after RET");
+    }
+
+    #[test]
+    fn step_over_and_step_out_use_rx_call_width() {
+        // RX BSR.w is 4 bytes: step-over must resume at the return address
+        // (pc+4), not a hard-coded width. BSR.w pushes the return address,
+        // so a valid stack pointer is required.
+        let mut sim = Simulator::for_arch(Arch::Rx).expect("RX core");
+        // bsr.w +4 at 0x8000, nop at 0x8004 (return point), rts at 0x8008.
+        let code = [
+            0x39, 0x00, 0x00, 0x04, // bsr.w +4
+            0x00, 0x03,             // nop
+            0x00, 0x00,             // spare
+            0x00, 0x02,             // rts
+        ];
+        sim.load_rx(0x8000, &code).expect("load");
+        sim.write_reg(0, 0x2000); // SP
+        sim.set_program_counter(0x8000);
+        assert_eq!(sim.step_over(64), StepResult::Advanced);
+        assert_eq!(
+            sim.program_counter(),
+            0x8004,
+            "step-over must resume after 4-byte BSR.w"
+        );
+
+        // step-out from the rts lands on the caller's next instruction.
+        let mut sim = Simulator::for_arch(Arch::Rx).expect("RX core");
+        let code = [0x00, 0x02]; // rts
+        sim.load_rx(0x8008, &code).expect("load");
+        sim.write_reg(0, 0x2000);
+        // Push a synthetic return address (0x8004).
+        sim.rx.as_mut().unwrap().regs[0] = 0x1FFC;
+        sim.rx.as_mut().unwrap().write_u32(0x1FFC, 0x8004);
+        sim.set_program_counter(0x8008);
+        assert_eq!(sim.step_out(64), StepResult::Advanced);
+        assert_eq!(sim.program_counter(), 0x8004, "step-out returns after rts");
     }
 
     #[test]

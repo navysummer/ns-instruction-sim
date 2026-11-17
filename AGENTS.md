@@ -308,6 +308,12 @@ done
   `disasm_stm8_variable_width`/`disasm_msp430_extension_words`/`disasm_rl78_variable_width`/
   `disasm_rx_variable_width`/`disasm_rx_decodes_families` 锁定。
 
+- `step-over`/`step-out` 通过 `is_call_mnemonic`/`is_return_mnemonic` 识别调用与返回，并用
+  `instruction_size` 计算返回地址。RX 的 `bsr.w`/`bsr.a` 已纳入调用助记符，`step-over` 在
+  `bsr.w`（4 字节）后回到 `pc+4`；核心修正 `BRA.a`/`BSR.a`、`BRA.w`/`BSR.w` 的 link 标志
+  （`BSR` 入栈返回地址、`BRA` 不入栈）。由 ns-sim 单测 `branch_link_flags`/
+  `step_over_and_step_out_use_rx_call_width` 与 CLI 端到端 `rx_step_over_uses_call_width` 锁定。
+
 ---
 
 ## 6. 参考实现原则（复制自 ns-embed-ide）

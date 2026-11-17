@@ -422,15 +422,15 @@ impl RxCore {
             // NOP
             return;
         }
-        // 0000 0100 = BRA.a, 0000 0101 = BSR.a.
+        // 0000 0100 = BRA.a (branch, no link), 0000 0101 = BSR.a (call, link).
         if insn == 0x0004 {
             let dsp = self.fetch32() as i32;
-            self.branch_disp(dsp, true);
+            self.branch_disp(dsp, false);
             return;
         }
         if insn == 0x0005 {
             let dsp = self.fetch32() as i32;
-            self.branch_disp(dsp, false);
+            self.branch_disp(dsp, true);
             return;
         }
         // 0111 1111 1001 0110 = WAIT
@@ -468,15 +468,15 @@ impl RxCore {
             }
             return;
         }
-        // 0011 1000 = BRA.w, 0011 1001 = BSR.w
+        // 0011 1000 = BRA.w (branch, no link), 0011 1001 = BSR.w (call, link).
         if insn == 0x3800 {
             let dsp = self.fetch16() as i16 as i32;
-            self.branch_disp(dsp, true);
+            self.branch_disp(dsp, false);
             return;
         }
         if insn == 0x3900 {
             let dsp = self.fetch16() as i16 as i32;
-            self.branch_disp(dsp, false);
+            self.branch_disp(dsp, true);
             return;
         }
         // 0011 101 . = BCnd.w
@@ -1889,6 +1889,38 @@ mod tests {
         c.step(&[]);
         assert_eq!(c.read_u8(0x2000) & 0x01, 0x01, "bset sets bit 0");
         assert_eq!(c.pc, 0x1002);
+    }
+
+    #[test]
+    fn branch_link_flags() {
+        // BSR.w (0x3900) is a call: it must push the return address (pc after
+        // the opcode word and displacement), while BRA.w (0x3800) must not.
+        let mut c = core_with(&[0x39, 0x00, 0x00, 0x04]);
+        c.regs[0] = 0x2000;
+        c.step(&[]);
+        assert_eq!(c.pc, 0x1008, "bsr.w target");
+        assert_eq!(c.regs[0], 0x1FFC, "bsr.w pushes the return address");
+        assert_eq!(c.read_u32(0x1FFC), 0x1004, "pushed return address");
+
+        let mut c = core_with(&[0x38, 0x00, 0x00, 0x04]);
+        c.regs[0] = 0x2000;
+        c.step(&[]);
+        assert_eq!(c.pc, 0x1008, "bra.w target");
+        assert_eq!(c.regs[0], 0x2000, "bra.w must not push");
+
+        // BSR.a (0x0005) is a call; BRA.a (0x0004) is not.
+        let mut c = core_with(&[0x00, 0x05, 0x00, 0x00, 0x00, 0x04]);
+        c.regs[0] = 0x2000;
+        c.step(&[]);
+        assert_eq!(c.pc, 0x100A, "bsr.a target");
+        assert_eq!(c.regs[0], 0x1FFC, "bsr.a pushes");
+        assert_eq!(c.read_u32(0x1FFC), 0x1006, "bsr.a return address");
+
+        let mut c = core_with(&[0x00, 0x04, 0x00, 0x00, 0x00, 0x04]);
+        c.regs[0] = 0x2000;
+        c.step(&[]);
+        assert_eq!(c.pc, 0x100A, "bra.a target");
+        assert_eq!(c.regs[0], 0x2000, "bra.a must not push");
     }
 
     /// Assert that the static decoder width matches the core's actual byte

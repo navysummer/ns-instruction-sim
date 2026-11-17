@@ -2906,3 +2906,36 @@ fn disasm_rx_decodes_families() {
     assert_eq!(json[3]["address"], 0x8009u64);
     assert_eq!(json[3]["text"], "mov.l +16[r0], +32[r12]");
 }
+
+#[test]
+fn rx_step_over_uses_call_width() {
+    // RX BSR.w is 4 bytes: step-over must resume at the return address (pc+4),
+    // and BSR.w pushes the return address to the stack.
+    let dir = tmpdir();
+    let sess = dir.join("rxstepover.json");
+    let code = dir.join("rxstepover.bin");
+    std::fs::write(&code, [
+        0x39, 0x00, 0x00, 0x04, // bsr.w +4
+        0x00, 0x03,             // nop (return point)
+        0x00, 0x00,             // spare
+        0x00, 0x02,             // rts
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "rx", "--firmware", code.to_str().unwrap(), "--base", "0x8000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", "r0", "--value", "0x2000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["step-over", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8004u64);
+}
