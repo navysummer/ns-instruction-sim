@@ -2885,9 +2885,56 @@ fn disasm_rl78_variable_width() {
     assert_eq!(json[4]["address"], 0x8009u64);
     assert_eq!(json[4]["text"], "add a, es:[0x5678]");
     assert_eq!(json[5]["address"], 0x800Cu64);
-    assert_eq!(json[5]["text"], "prefix 0x61: 0xa8 0x78");
+    assert_eq!(json[5]["text"], "mov a, es:[0x5678]");
     assert_eq!(json[6]["address"], 0x8010u64);
     assert_eq!(json[6]["text"], "and a, A");
+}
+
+#[test]
+fn disasm_rl78_decodes_core_families() {
+    // RL78 disassembly must decode the opcodes the core executes (register-
+    // register, ES:[HL+B/C], ES:[HL+imm8], ES:[imm16], PSW and control-flow
+    // forms) instead of `.byte`/`prefix 0x61:` placeholders.
+    let dir = tmpdir();
+    let sess = dir.join("rl78fam.json");
+    let code = dir.join("rl78fam.bin");
+    std::fs::write(&code, [
+        0x61, 0x48,       // cmp a, X
+        0x61, 0x80,       // add a, es:[hl+b]
+        0x61, 0xB8, 0x10, // mov a, es:[hl+0x10]
+        0x61, 0xA8, 0x78, 0x56, // mov a, es:[0x5678]
+        0x61, 0xC8,       // skc
+        0x61, 0xCD,       // pop psw
+        0x61, 0xEC,       // retb
+        0x0E, 0x05,       // add a, [hl+0x05]
+        0x09, 0x78, 0x56, // mov a, [b+0x5678]
+        0x9B,             // mov [hl], a
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "rl78", "--firmware", code.to_str().unwrap(), "--base", "0x8000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0x8000", "--count", "10", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let texts: Vec<&str> = json.as_array().unwrap().iter()
+        .map(|v| v["text"].as_str().unwrap()).collect();
+    assert_eq!(texts[0], "cmp a, X");
+    assert_eq!(texts[1], "add a, es:[hl+b]");
+    assert_eq!(texts[2], "mov a, es:[hl+0x10]");
+    assert_eq!(texts[3], "mov a, es:[0x5678]");
+    assert_eq!(texts[4], "skc");
+    assert_eq!(texts[5], "pop psw");
+    assert_eq!(texts[6], "retb");
+    assert_eq!(texts[7], "add a, [hl+0x05]");
+    assert_eq!(texts[8], "mov a, [b+0x5678]");
+    assert_eq!(texts[9], "mov [hl], a");
 }
 
 #[test]

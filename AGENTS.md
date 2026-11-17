@@ -258,6 +258,11 @@ done
 - `disasm_v850_variable_width`：V850 变长指令（2/4/6 字节）按解码宽度推进（NOP=2、DISPOSE=4）。
 - `disasm_stm8_variable_width`：STM8 变长指令按实际宽度推进并解码内核主流操作码族（NOP=1、JRA=2、
   CALL=3、CALLF=4、`0x90` 前缀 Y 索引=3），替换原先仅解码 7 个操作码的极小反汇编器。
+- `disasm_rl78_decodes_core_families`：RL78 反汇编扩展为镜像内核 `execute_single`/`execute_61`
+  的实际分发——`0x61` 前缀的寄存器-寄存器（add/addc/sub/subc/cmp/and/or/xor/xch）、
+  `ES:[HL+B/C]`、`ES:[HL+imm8]`、`ES:[imm16]`、PSW（push/pop）、控制流（skc/sknc/skz/sknz/
+  br/reti/retb/rol/ror/rolwc/halt/stop/brk）及单字节 add/addw/mov/inc/dec/push/pop/ret 家族，
+  替代 `.byte`/`prefix 0x61:` 占位符。
 - `stm8_step_over_and_step_out_use_call_width`：STM8 `call addr16` 为 3 字节，`step-over` 运行调用并停在
   调用者下一条指令（pc+3），`ret` 被 `step-out` 识别。
 - `disasm_msp430_extension_words`：MSP430 双操作数指令的立即数/绝对/索引操作数携带扩展字，
@@ -309,7 +314,10 @@ done
   `disasm_mcs51_code_space_width`/`disasm_mcs251_code_space_width`/`disasm_avr_32bit_width`/
   `disasm_c166_imm_width`/`disasm_xtensa_24bit_width`/`disasm_v850_variable_width`/
   `disasm_stm8_variable_width`/`disasm_msp430_extension_words`/`disasm_rl78_variable_width`/
-  `disasm_rx_variable_width`/`disasm_rx_decodes_families` 锁定。
+  `disasm_rx_variable_width`/`disasm_rx_decodes_families`/`disasm_rl78_decodes_core_families` 锁定。
+  RL78 反汇编同时镜像核心 `execute_61` 的 `op & 0xF8` 低组优先分发（`0x61 0x59` 等被寄存器-
+  寄存器家族捕获为 `and a, A`，`0x61 0xAA`/`0xAB` 经 `0xA8` 家族路由为 `mov a, ES:[imm16]`），
+  与核心执行语义逐字节一致。
 
 - RX 长操作码族（`0xFC`/`0xFD`，寄存器-寄存器与立即数长格式）在核心 `execute_fc`/`execute_fd`
   中为**部分实现**：若干 `match` 分支已实现（`MOV #imm16, rd`、`MVFC/MVTC`、`SHLL/SHLR/SHAR`、

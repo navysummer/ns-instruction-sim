@@ -1190,41 +1190,138 @@ pub fn instruction_len(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
 /// Produces a readable one-line rendering; unknown bytes print as `.byte 0xXX`.
 pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     let b0 = read(pc);
-    // 0x61-prefixed: decode a couple of common forms for readability.
     if b0 == 0x61 {
-        let b1 = read(pc + 1);
-        let b2 = read(pc + 2);
-        let sub = b1 & 0xF8;
-        let reg = (b1 & 0x07) as usize;
-        let rname = ["X", "A", "C", "B", "E", "D", "L", "H"][reg as usize];
-        match sub {
-            0x48 => return format!("cmp a, {rname}"),
-            0x40 => return format!("cmp {rname}, a"),
-            0x28 => return format!("sub a, {rname}"),
-            0x20 => return format!("sub {rname}, a"),
-            0x08 => return format!("add a, {rname}"),
-            0x00 => return format!("add {rname}, a"),
-            0x18 => return format!("addc a, {rname}"),
-            0x10 => return format!("addc {rname}, a"),
-            0x58 => return format!("and a, {rname}"),
-            0x50 => return format!("and {rname}, a"),
-            0x68 => return format!("or a, {rname}"),
-            0x60 => return format!("or {rname}, a"),
-            0x78 => return format!("xor a, {rname}"),
-            0x70 => return format!("xor {rname}, a"),
-            _ => return format!("prefix 0x61: 0x{b1:02x} 0x{b2:02x}"),
-        }
+        return disassemble_61(pc, read);
     }
+    let u8at = |p: u32| read(p);
+    let u16at = |p: u32| (read(p) as u16) | ((read(p + 1) as u16) << 8);
+    let rn = |i: usize| ["X", "A", "C", "B", "E", "D", "L", "H"][i & 7];
+    let wn = |i: usize| ["AX", "BC", "DE", "HL"][i & 3];
     match b0 {
         0x00 => "nop".to_string(),
-        0x0C => format!("add a, #0x{:02x}", read(pc + 1)),
-        0x0F => format!("add a, es:[0x{:04x}]", (read(pc + 1) as u16) | ((read(pc + 2) as u16) << 8)),
-        0x04 => format!("addw ax, #0x{:04x}", (read(pc + 1) as u16) | ((read(pc + 2) as u16) << 8)),
-        0xFF => "brk1".to_string(),
+        0x02 => format!("addw ax, es:[0x{:04x}]", u16at(pc + 1)),
+        0x04 => format!("addw ax, #0x{:04x}", u16at(pc + 1)),
+        0x06 => format!("addw ax, !0x{:02x}", u8at(pc + 1)),
+        0x01 | 0x03 | 0x05 | 0x07 => format!("addw ax, {}", wn(((b0 >> 1) & 3) as usize)),
+        0x0B => format!("add a, !0x{:02x}", u8at(pc + 1)),
+        0x0A => format!("add !0x{:02x}, #0x{:02x}", u8at(pc + 1), u8at(pc + 2)),
+        0x0C => format!("add a, #0x{:02x}", u8at(pc + 1)),
+        0x0D => "add a, [hl]".to_string(),
+        0x0E => format!("add a, [hl+0x{:02x}]", u8at(pc + 1)),
+        0x0F => format!("add a, es:[0x{:04x}]", u16at(pc + 1)),
+        0x10 => format!("addw sp, #0x{:02x}", u8at(pc + 1)),
+        0x11 | 0x13 | 0x15 | 0x17 => format!("movw ax, {}", wn(((b0 >> 1) & 3) as usize)),
+        0x12 | 0x14 | 0x16 => format!("movw {}, ax", wn(((b0 >> 1) & 3) as usize)),
+        0x30 | 0x32 | 0x34 | 0x36 => {
+            format!("movw {}, #0x{:04x}", wn(((b0 >> 1) & 3) as usize), u16at(pc + 1))
+        }
+        0x1C => format!("addc a, #0x{:02x}", u8at(pc + 1)),
+        0x1F => format!("addc a, es:[0x{:04x}]", u16at(pc + 1)),
+        0x1D => "addc a, [hl]".to_string(),
+        0x1E => format!("addc a, [hl+0x{:02x}]", u8at(pc + 1)),
+        0x1B => format!("addc a, !0x{:02x}", u8at(pc + 1)),
+        0x1A => format!("addc !0x{:02x}, #0x{:02x}", u8at(pc + 1), u8at(pc + 2)),
+        0x5C => format!("and a, #0x{:02x}", u8at(pc + 1)),
+        0x5D => "and a, [hl]".to_string(),
+        0x5E => format!("and a, [hl+0x{:02x}]", u8at(pc + 1)),
+        0x5F => format!("and a, es:[0x{:04x}]", u16at(pc + 1)),
+        0x6C => format!("or a, #0x{:02x}", u8at(pc + 1)),
+        0x6D => "or a, [hl]".to_string(),
+        0x6E => format!("or a, [hl+0x{:02x}]", u8at(pc + 1)),
+        0x6F => format!("or a, es:[0x{:04x}]", u16at(pc + 1)),
+        0x50..=0x57 => format!("mov {}, #0x{:02x}", rn((b0 & 7) as usize), u8at(pc + 1)),
+        0x60..=0x67 => format!("mov a, {}", rn((b0 & 7) as usize)),
+        0x80..=0x87 => format!("inc {}", rn((b0 & 7) as usize)),
+        0x90..=0x97 => format!("dec {}", rn((b0 & 7) as usize)),
+        0x89 => "mov a, [de]".to_string(),
+        0x8A => format!("mov a, [de+0x{:02x}]", u8at(pc + 1)),
+        0x8B => "mov a, [hl]".to_string(),
+        0x8C => format!("mov a, [hl+0x{:02x}]", u8at(pc + 1)),
+        0x8D => format!("mov a, !0x{:02x}", u8at(pc + 1)),
+        0x8F => format!("mov a, es:[0x{:04x}]", u16at(pc + 1)),
+        0x88 => format!("mov a, [sp+0x{:02x}]", u8at(pc + 1)),
+        0x09 => format!("mov a, [b+0x{:04x}]", u16at(pc + 1)),
+        0x49 => format!("mov a, [bc+0x{:04x}]", u16at(pc + 1)),
+        0x29 => format!("mov a, [c+0x{:04x}]", u16at(pc + 1)),
+        0x99 => "mov [de], a".to_string(),
+        0x9B => "mov [hl], a".to_string(),
+        0x9D => format!("mov !0x{:02x}, a", u8at(pc + 1)),
+        0x9F => format!("mov es:[0x{:04x}], a", u16at(pc + 1)),
+        0xC1 | 0xC3 | 0xC5 | 0xC7 => format!("push {}", wn(((b0 >> 1) & 3) as usize)),
+        0xC0 | 0xC2 | 0xC4 | 0xC6 => format!("pop {}", wn(((b0 >> 1) & 3) as usize)),
         0xD7 => "ret".to_string(),
-        0xF6 => "clrw ax".to_string(),
-        0xF7 => "clrw bc".to_string(),
+        0x41 => format!("mov a, #0x{:02x}", u8at(pc + 1)),
+        0xFF => "brk1".to_string(),
         _ => format!(".byte 0x{b0:02x}"),
+    }
+}
+
+/// Disassemble a `0110 0001` (0x61) prefixed instruction, mirroring the core's
+/// `execute_61` dispatch: the register-register families select on the upper
+/// five bits of the second byte (`op & 0xF8`), and a handful of remaining
+/// opcodes (ES:[imm16] / ES:[HL+imm8] / control flow) fall through.
+fn disassemble_61(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
+    let b1 = read(pc + 1);
+    let u8at = |p: u32| read(p);
+    let u16at = |p: u32| (read(p) as u16) | ((read(p + 1) as u16) << 8);
+    let rn = |i: usize| ["X", "A", "C", "B", "E", "D", "L", "H"][i & 7];
+    let rba = rn((b1 & 7) as usize);
+    let b_or_c = |op: u8| if op & 1 == 0 { "b" } else { "c" };
+    match b1 & 0xF8 {
+        0x00 => format!("add {rba}, a"),
+        0x08 => format!("add a, {rba}"),
+        0x10 => format!("addc {rba}, a"),
+        0x18 => format!("addc a, {rba}"),
+        0x20 => format!("sub {rba}, a"),
+        0x28 => format!("sub a, {rba}"),
+        0x30 => format!("subc {rba}, a"),
+        0x38 => format!("subc a, {rba}"),
+        0x40 => format!("cmp {rba}, a"),
+        0x48 => format!("cmp a, {rba}"),
+        0x50 => format!("and {rba}, a"),
+        0x58 => format!("and a, {rba}"),
+        0x60 => format!("or {rba}, a"),
+        0x68 => format!("or a, {rba}"),
+        0x70 => format!("xor {rba}, a"),
+        0x78 => format!("xor a, {rba}"),
+        0x80 => format!("add a, es:[hl+{}]", b_or_c(b1)),
+        0x88 => format!("xch a, {rba}"),
+        0x90 => format!("addc a, es:[hl+{}]", b_or_c(b1)),
+        0xA0 => format!("sub a, es:[hl+{}]", b_or_c(b1)),
+        // 0xA8-0xAF all route through the `0xA8` family in the core (mov A,
+        // ES:[imm16]); the 0xA9/0xAA/0xAB encodings are shadowed by it.
+        0xA8 => format!("mov a, es:[0x{:04x}]", u16at(pc + 2)),
+        0xB0 => format!("subc a, es:[hl+{}]", b_or_c(b1)),
+        0xC0 => format!("cmp a, es:[hl+{}]", b_or_c(b1)),
+        0xD0 => format!("and a, es:[hl+{}]", b_or_c(b1)),
+        0xE0 => format!("or a, es:[hl+{}]", b_or_c(b1)),
+        0xF0 => format!("xor a, es:[hl+{}]", b_or_c(b1)),
+        _ => match b1 {
+            0xB8 => format!("mov a, es:[hl+0x{:02x}]", u8at(pc + 2)),
+            0xB9 => format!("mov es:[hl+0x{:02x}], a", u8at(pc + 2)),
+            0xCE => format!("movs es:[hl+0x{:02x}], x", u8at(pc + 2)),
+            0xC8 => "skc".to_string(),
+            0xD8 => "sknc".to_string(),
+            0xE8 => "skz".to_string(),
+            0xF8 => "sknz".to_string(),
+            0xC9 | 0xE9 => format!("mov a, es:[hl+{}]", b_or_c(b1)),
+            0xD9 | 0xF9 => format!("mov es:[hl+{}], a", b_or_c(b1)),
+            0xCB => "br ax".to_string(),
+            0xCC => "brk".to_string(),
+            0xCD => "pop psw".to_string(),
+            0xDB => "ror a".to_string(),
+            0xDD => "push psw".to_string(),
+            0xEB => "rol a".to_string(),
+            0xEC => "retb".to_string(),
+            0xED => "halt".to_string(),
+            0xEE | 0xFE => {
+                let r = if b1 & 0x10 == 0 { "ax" } else { "bc" };
+                format!("rolwc {r}")
+            }
+            0xFC => "reti".to_string(),
+            0xFD => "stop".to_string(),
+            _ => format!("prefix 0x61: 0x{b1:02x}"),
+        },
     }
 }
 
@@ -1345,6 +1442,91 @@ mod tests {
         let r = c.step(&[]);
         assert_eq!(r, Rl78Step::Advanced);
         assert_eq!(c.pc, 0x1001);
+    }
+
+    #[test]
+    fn disassembles_core_opcode_forms() {
+        // The disassembler must mirror the core's dispatch so `disasm` shows
+        // real instructions (not `.byte`/`prefix 0x61:` placeholders) for the
+        // opcodes the core actually executes.
+        let d = |code: &[u8]| {
+            let read = move |a: u32| code.get(a as usize).copied().unwrap_or(0);
+            disassemble(0, &read)
+        };
+        // Single-byte forms.
+        assert_eq!(d(&[0x00]), "nop");
+        assert_eq!(d(&[0x0C, 0x2A]), "add a, #0x2a");
+        assert_eq!(d(&[0x0A, 0x30, 0x55]), "add !0x30, #0x55");
+        assert_eq!(d(&[0x0F, 0x78, 0x56]), "add a, es:[0x5678]");
+        assert_eq!(d(&[0x0E, 0x05]), "add a, [hl+0x05]");
+        assert_eq!(d(&[0x06, 0x30]), "addw ax, !0x30");
+        assert_eq!(d(&[0x01]), "addw ax, AX");
+        assert_eq!(d(&[0x03]), "addw ax, BC");
+        assert_eq!(d(&[0x04, 0x34, 0x12]), "addw ax, #0x1234");
+        assert_eq!(d(&[0x10, 0x08]), "addw sp, #0x08");
+        assert_eq!(d(&[0x5D]), "and a, [hl]");
+        assert_eq!(d(&[0x51, 0x42]), "mov A, #0x42");
+        assert_eq!(d(&[0x60]), "mov a, X");
+        assert_eq!(d(&[0x80]), "inc X");
+        assert_eq!(d(&[0x90]), "dec X");
+        assert_eq!(d(&[0x89]), "mov a, [de]");
+        assert_eq!(d(&[0x8A, 0x05]), "mov a, [de+0x05]");
+        assert_eq!(d(&[0x8D, 0x30]), "mov a, !0x30");
+        assert_eq!(d(&[0x88, 0x08]), "mov a, [sp+0x08]");
+        assert_eq!(d(&[0x09, 0x78, 0x56]), "mov a, [b+0x5678]");
+        assert_eq!(d(&[0x9B]), "mov [hl], a");
+        assert_eq!(d(&[0x9F, 0x78, 0x56]), "mov es:[0x5678], a");
+        assert_eq!(d(&[0xC3]), "push BC");
+        assert_eq!(d(&[0xC2]), "pop BC");
+        assert_eq!(d(&[0xD7]), "ret");
+        assert_eq!(d(&[0xFF]), "brk1");
+        // 0x61 prefix reg-reg families.
+        assert_eq!(d(&[0x61, 0x48]), "cmp a, X");
+        assert_eq!(d(&[0x61, 0x40]), "cmp X, a");
+        assert_eq!(d(&[0x61, 0x08]), "add a, X");
+        assert_eq!(d(&[0x61, 0x18]), "addc a, X");
+        assert_eq!(d(&[0x61, 0x28]), "sub a, X");
+        assert_eq!(d(&[0x61, 0x38]), "subc a, X");
+        assert_eq!(d(&[0x61, 0x58]), "and a, X");
+        assert_eq!(d(&[0x61, 0x68]), "or a, X");
+        assert_eq!(d(&[0x61, 0x78]), "xor a, X");
+        assert_eq!(d(&[0x61, 0x88]), "xch a, X");
+        // The low group is decoded first, so shadowed encodings become the
+        // register-register form (matching the core).
+        assert_eq!(d(&[0x61, 0x59]), "and a, A");
+        assert_eq!(d(&[0x61, 0x09]), "add a, A");
+        assert_eq!(d(&[0x61, 0x69]), "or a, A");
+        // ES:[HL+B/C] forms select the index register by bit 0.
+        assert_eq!(d(&[0x61, 0x80]), "add a, es:[hl+b]");
+        assert_eq!(d(&[0x61, 0x81]), "add a, es:[hl+c]");
+        assert_eq!(d(&[0x61, 0x90]), "addc a, es:[hl+b]");
+        assert_eq!(d(&[0x61, 0xC0]), "cmp a, es:[hl+b]");
+        assert_eq!(d(&[0x61, 0xF2]), "xor a, es:[hl+b]");
+        // ES:[imm16] and ES:[HL+imm8] fall-through forms.
+        assert_eq!(d(&[0x61, 0xA8, 0x78, 0x56]), "mov a, es:[0x5678]");
+        assert_eq!(d(&[0x61, 0xAA, 0x78, 0x56]), "mov a, es:[0x5678]");
+        assert_eq!(d(&[0x61, 0xB8, 0x10]), "mov a, es:[hl+0x10]");
+        assert_eq!(d(&[0x61, 0xB9, 0x10]), "mov es:[hl+0x10], a");
+        assert_eq!(d(&[0x61, 0xCE, 0x10]), "movs es:[hl+0x10], x");
+        assert_eq!(d(&[0x61, 0xC9]), "mov a, es:[hl+c]");
+        assert_eq!(d(&[0x61, 0xD9]), "mov es:[hl+c], a");
+        // Control flow / PSW / halt forms.
+        assert_eq!(d(&[0x61, 0xC8]), "skc");
+        assert_eq!(d(&[0x61, 0xD8]), "sknc");
+        assert_eq!(d(&[0x61, 0xE8]), "skz");
+        assert_eq!(d(&[0x61, 0xF8]), "sknz");
+        assert_eq!(d(&[0x61, 0xCB]), "br ax");
+        assert_eq!(d(&[0x61, 0xFC]), "reti");
+        assert_eq!(d(&[0x61, 0xEC]), "retb");
+        assert_eq!(d(&[0x61, 0xCD]), "pop psw");
+        assert_eq!(d(&[0x61, 0xDD]), "push psw");
+        assert_eq!(d(&[0x61, 0xEB]), "rol a");
+        assert_eq!(d(&[0x61, 0xDB]), "ror a");
+        assert_eq!(d(&[0x61, 0xEE]), "rolwc ax");
+        assert_eq!(d(&[0x61, 0xFE]), "rolwc bc");
+        assert_eq!(d(&[0x61, 0xCC]), "brk");
+        assert_eq!(d(&[0x61, 0xED]), "halt");
+        assert_eq!(d(&[0x61, 0xFD]), "stop");
     }
 
     #[test]
