@@ -2386,3 +2386,81 @@ fn device_codegen_json() {
     assert_eq!(json["kind"], "init");
     assert!(json["content"].as_str().unwrap().contains("void"));
 }
+
+#[test]
+fn disasm_mcs51_code_space_width() {
+    // MCS-51 has a separate code ROM: disassembly must read from it and advance
+    // the cursor by the variable instruction width (NOP=1 byte, LJMP addr16=3).
+    let dir = tmpdir();
+    let sess = dir.join("m51dis.json");
+    let code = dir.join("m51dis.bin");
+    // NOP, LJMP 0x0010, NOP, NOP.
+    std::fs::write(&code, [0x00, 0x02, 0x00, 0x10, 0x00, 0x00]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "mcs51", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "3", "--raw"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("0x00000000: nop"), "missing nop: {text}");
+    assert!(text.contains("0x00000001: ljmp 0x0010"), "missing ljmp: {text}");
+    assert!(text.contains("0x00000004: nop"), "missing nop at 4: {text}");
+    // JSON form reports the exact bytes consumed per instruction.
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0u64);
+    assert_eq!(json[0]["text"], "nop");
+    assert_eq!(json[0]["bytes"], serde_json::json!([0]));
+    assert_eq!(json[1]["address"], 1u64);
+    assert_eq!(json[1]["text"], "ljmp 0x0010");
+    assert_eq!(json[1]["bytes"], serde_json::json!([2, 0, 0x10]));
+}
+
+#[test]
+fn disasm_mcs251_code_space_width() {
+    // The 80251 is variable-length: disassembly must advance by the width of
+    // each instruction (NOP=1, MOV Rn,#imm16=3).
+    let dir = tmpdir();
+    let sess = dir.join("x51dis.json");
+    let code = dir.join("x51dis.bin");
+    // NOP, MOV R0,#0x1234, NOP.
+    std::fs::write(&code, [0x00, 0x74, 0x12, 0x34, 0x00, 0x00]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "mcs251", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "2", "--raw"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("0x00000000: nop"), "missing nop: {text}");
+    assert!(text.contains("0x00000001: mov r4, #0x1234"), "missing mov: {text}");
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0u64);
+    assert_eq!(json[0]["bytes"], serde_json::json!([0]));
+    assert_eq!(json[1]["address"], 1u64);
+    assert_eq!(json[1]["bytes"], serde_json::json!([0x74, 0x12, 0x34]));
+}

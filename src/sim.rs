@@ -288,6 +288,30 @@ pub fn read_mem_u32(sim: &Simulator, addr: u32) -> u32 {
     })
 }
 
+/// Read a byte from the architecture's **code** space (for disassembly /
+/// instruction fetching). Cores with a separate program ROM (MCS-51 / 80251 /
+/// C166 / AVR) do not mirror their code into `sim.memory`, so the ROM is read
+/// directly; every other core routes through the generic byte accessor.
+pub fn read_code_byte(sim: &Simulator, addr: u32) -> u8 {
+    if let Some(core) = &sim.mcs51 {
+        let i = addr as usize;
+        return if i < core.rom.len() { core.rom[i] } else { 0 };
+    }
+    if let Some(core) = &sim.x51 {
+        let i = addr as usize;
+        return if i < core.rom.len() { core.rom[i] } else { 0 };
+    }
+    if let Some(core) = &sim.c166 {
+        let i = addr as usize;
+        return if i < core.rom.len() { core.rom[i] } else { 0 };
+    }
+    if let Some(core) = &sim.avr {
+        let i = addr as usize;
+        return if i < core.rom.len() { core.rom[i] } else { 0 };
+    }
+    sim.read_u8(addr)
+}
+
 /// Write a single byte into the simulator's data space (mirrors read_mem_byte).
 pub fn write_mem_byte(sim: &mut Simulator, addr: u32, value: u8) {
     if let Some(core) = &mut sim.mcs51 {

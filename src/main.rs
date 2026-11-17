@@ -26,7 +26,7 @@ use clap::{Args, Parser, Subcommand};
 
 use ns_sim::{Arch, Simulator, StepResult};
 use session::{FirmwareState, Session};
-use sim::{default_mem_base, detect_format, load_firmware_into, parse_num, read_mem_byte, read_mem_u32, write_mem_byte};
+use sim::{default_mem_base, detect_format, load_firmware_into, parse_num, read_code_byte, read_mem_byte, read_mem_u32, write_mem_byte};
 
 #[derive(Parser)]
 #[command(
@@ -1826,7 +1826,7 @@ fn trace_run(sim: &mut Simulator, steps: Option<u64>, max_steps: u64) -> StepRes
         let insn = ns_sim::disassemble_one_state(
             sim.arch,
             pc_before,
-            &|addr| sim.read_u8(addr),
+            &|addr| read_code_byte(sim, addr),
             sim.arm_state(),
         );
         let src = source_annotation(sim, pc_before);
@@ -2483,7 +2483,7 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
         Some("thumb") => false,
         _ => sim.arm_state(),
     };
-    let read = |addr: u32| -> u8 { sim.read_u8(addr) };
+    let read = |addr: u32| -> u8 { read_code_byte(&sim, addr) };
     let mut items = Vec::new();
     for _ in 0..args.count {
         let width = ns_sim::instruction_size(arch, pc, &read, arm_state);
@@ -2494,7 +2494,7 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
                 if i > 0 {
                     s.push(' ');
                 }
-                s.push_str(&format!("{:02x}", sim.read_u8(pc.wrapping_add(i as u32))));
+                s.push_str(&format!("{:02x}", read_code_byte(&sim, pc.wrapping_add(i as u32))));
             }
             format!("  ; raw: {s}")
         } else {
@@ -2505,7 +2505,7 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
                 "address": pc,
                 "text": text,
                 "bytes": (0..width)
-                    .map(|i| sim.read_u8(pc.wrapping_add(i as u32)))
+                    .map(|i| read_code_byte(&sim, pc.wrapping_add(i as u32)))
                     .collect::<Vec<_>>(),
                 "source": source_annotation(&sim, pc).trim().to_string(),
                 "armState": arm_state,

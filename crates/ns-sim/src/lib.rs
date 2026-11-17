@@ -2924,8 +2924,74 @@ pub fn instruction_size(
     }
     match arch {
         Arch::C166 | Arch::Avr | Arch::Msp430 | Arch::Xtensa => 2,
+        Arch::Mcs51 => mcs51_instruction_len(read(pc)),
+        Arch::Mcs251 => mcs251_instruction_len(read(pc)),
         _ => 4,
     }
+}
+
+/// Number of code bytes consumed by an 8051 (MCS-51) instruction. MCS-51 is
+/// variable-length: most operations are 1 byte, immediate/direct/relative
+/// forms carry one operand byte (2 total), and absolute jumps/calls and
+/// two-operand direct forms carry two operand bytes (3 total).
+fn mcs51_instruction_len(op: u8) -> u32 {
+    // 3-byte encodings: absolute jumps/calls, DPTR loads, and forms that carry
+    // two operand bytes.
+    if op == 0x02 || op == 0x12      // LJMP / LCALL addr16
+        || op == 0x90                 // MOV DPTR, #imm16
+        || op == 0x75                 // MOV direct, #imm
+        || op == 0x85                 // MOV direct, direct
+        || op == 0x43 || op == 0x53 || op == 0x63 // ANL/ORL/XRL direct, #imm
+        || op == 0x10 || op == 0x20 || op == 0x30 // JBC / JB / JNB bit, rel
+        || (0xB4..=0xBF).contains(&op) // CJNE A/Rn/@Ri, #imm|direct, rel
+        || op == 0xD5                  // DJNZ direct, rel
+    {
+        return 3;
+    }
+    // 1-byte encodings: accumulator/register/indirect operations with no
+    // operand byte.
+    if op == 0x00 // NOP
+        || op == 0x04 || op == 0x06 || op == 0x07 || (0x08..=0x0F).contains(&op) // INC A/@Ri/Rn
+        || op == 0x13 || op == 0x14 || op == 0x16 || op == 0x17 || (0x18..=0x1F).contains(&op) // RRC/DEC
+        || op == 0x22 || op == 0x23 || op == 0x26 || op == 0x27 || (0x28..=0x2F).contains(&op) // RET/RL/ADD
+        || op == 0x32 || op == 0x33 || op == 0x36 || op == 0x37 || (0x38..=0x3F).contains(&op) // RETI/RRC/ADDC
+        || op == 0x46 || op == 0x47 || (0x48..=0x4F).contains(&op) // ORL A,@Ri/Rn
+        || op == 0x56 || op == 0x57 || (0x58..=0x5F).contains(&op) // ANL A,@Ri/Rn
+        || op == 0x66 || op == 0x67 || (0x68..=0x6F).contains(&op) // XRL A,@Ri/Rn
+        || op == 0x73 || op == 0x83 || op == 0x84 || op == 0x93 // JMP @A+DPTR / MOVC / DIV
+        || op == 0x96 || op == 0x97 || (0x98..=0x9F).contains(&op) // SUBB A,@Ri/Rn
+        || op == 0xA3 || op == 0xA4 || op == 0xB3 // INC DPTR / MUL / CPL C
+        || op == 0xC3 || op == 0xC4 || op == 0xC6 || op == 0xC7 || (0xC8..=0xCF).contains(&op) // CLR C/SWAP/XCH
+        || op == 0xD3 || op == 0xD4 || op == 0xD6 || op == 0xD7 // SETB C / DA / XCHD
+        || op == 0xE0 || op == 0xE2 || op == 0xE3 || op == 0xE4 || op == 0xE6 || op == 0xE7 || (0xE8..=0xEF).contains(&op) // MOVX/MOV A
+        || op == 0xF0 || op == 0xF2 || op == 0xF3 || op == 0xF4 || op == 0xF6 || op == 0xF7 || (0xF8..=0xFF).contains(&op) // MOVX/MOV Rn
+    {
+        return 1;
+    }
+    // Remaining encodings carry one operand byte: immediate, relative, direct,
+    // or the addr11 page byte of AJMP/ACALL.
+    2
+}
+
+/// Number of code bytes consumed by an 80251 (MCS-251) instruction. The 80251
+/// is variable-length: register/accumulator/indirect ops are 1 byte, relative
+/// branches and direct forms are 2, `MOV Rn,#imm16` is 3, and 24-bit absolute
+/// jumps/calls and DPTR loads are 4.
+fn mcs251_instruction_len(op: u8) -> u32 {
+    // 4-byte encodings: 24-bit absolute jumps/calls and DPTR loads.
+    if op == 0x02 || op == 0x12 || op == 0x90 {
+        return 4;
+    }
+    // 3-byte encodings: MOV Rn, #imm16.
+    if (0x74..=0x7F).contains(&op) {
+        return 3;
+    }
+    // 2-byte encodings: relative branches and MOV A, direct.
+    if op == 0x40 || op == 0x50 || op == 0x60 || op == 0x70 || op == 0x80 || op == 0xE5 {
+        return 2;
+    }
+    // Everything else (register/accumulator/indirect operations) is 1 byte.
+    1
 }
 
 fn disassemble_riscv(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
@@ -3382,8 +3448,8 @@ fn disassemble_mcs51(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         0x84 => "div ab".to_string(),
         0x22 => "ret".to_string(),
         0x32 => "reti".to_string(),
-        0x02 => format!("ljmp 0x{:02x}{:02x}{:02x}", read(pc + 1), read(pc + 2), read(pc + 3)),
-        0x12 => format!("lcall 0x{:02x}{:02x}{:02x}", read(pc + 1), read(pc + 2), read(pc + 3)),
+        0x02 => format!("ljmp 0x{:02x}{:02x}", read(pc + 1), read(pc + 2)),
+        0x12 => format!("lcall 0x{:02x}{:02x}", read(pc + 1), read(pc + 2)),
         0x80 => format!("sjmp {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
         0x60 => format!("jz {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
         0x70 => format!("jnz {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
@@ -4243,6 +4309,59 @@ mod tests {
         // Fixed-width architectures.
         assert_eq!(instruction_size(Arch::RiscV, 0, &read, false), 4);
         assert_eq!(instruction_size(Arch::Avr, 0, &read, false), 2);
+        // MCS-51 is variable-length: NOP (1), LJMP addr16 (3), MOV A,#imm (2),
+        // MOV direct,#imm (3), MOV A,R0 (1).
+        let read = |addr: u32| match addr {
+            0 => 0x00,
+            1 => 0x02,
+            2 => 0x00,
+            3 => 0x10,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Mcs51, 0, &read, false), 1);
+        assert_eq!(instruction_size(Arch::Mcs51, 1, &read, false), 3);
+        let read = |addr: u32| match addr {
+            0 => 0x74,
+            1 => 0x2A,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Mcs51, 0, &read, false), 2);
+        let read = |addr: u32| match addr {
+            0 => 0x75,
+            1 => 0x30,
+            2 => 0x55,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Mcs51, 0, &read, false), 3);
+        let read = |addr: u32| if addr == 0 { 0xE8 } else { 0 };
+        assert_eq!(instruction_size(Arch::Mcs51, 0, &read, false), 1);
+        // MCS-251 (80251): NOP (1), MOV Rn,#imm16 (3), LJMP addr24 (4),
+        // SJMP rel (2), MOV A,R0 (1).
+        let read = |addr: u32| match addr {
+            0 => 0x00,
+            1 => 0x74,
+            2 => 0x12,
+            3 => 0x34,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Mcs251, 0, &read, false), 1);
+        assert_eq!(instruction_size(Arch::Mcs251, 1, &read, false), 3);
+        let read = |addr: u32| match addr {
+            0 => 0x02,
+            1 => 0x00,
+            2 => 0x00,
+            3 => 0x10,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Mcs251, 0, &read, false), 4);
+        let read = |addr: u32| match addr {
+            0 => 0x80,
+            1 => 0x02,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Mcs251, 0, &read, false), 2);
+        let read = |addr: u32| if addr == 0 { 0xE8 } else { 0 };
+        assert_eq!(instruction_size(Arch::Mcs251, 0, &read, false), 1);
     }
 
     #[test]
