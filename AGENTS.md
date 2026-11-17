@@ -300,7 +300,8 @@ done
   `op & 0xF8` 分发行为一致——`0x61 0x59` 等按寄存器-寄存器家族解码为 2 字节）；RX 按操作码与
   寻址方式变长（`BRA.s`=1、`BCnd.s`/通用 2 字节、带 8 位位移/立即数=3、带 16 位位移/立即数=4、
   `BRA.a`/`BSR.a`=6），其反汇编与核心一致采用大端取指字并按 `op & 0xF8`/`op & 0xFC`/`op & 0xE0`
-  家族分发。
+  家族分发；核心的 `MOV dsp[lds], dsp[ldd]` 家族收窄为 `op 0xC0-0xEF`，使位操作（0xF0/0xF4）、
+  寄存器索引（0xF8/0xFA）与长操作码（0xFC）家族可正常执行与解码。
   该行为由 ns-sim 单测 `instruction_size_matches_encoding_width` 与 CLI 端到端
   `disasm_mcs51_code_space_width`/`disasm_mcs251_code_space_width`/`disasm_avr_32bit_width`/
   `disasm_c166_imm_width`/`disasm_xtensa_24bit_width`/`disasm_v850_variable_width`/

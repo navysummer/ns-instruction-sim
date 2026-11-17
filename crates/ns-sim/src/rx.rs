@@ -886,8 +886,10 @@ impl RxCore {
             self.regs[rd] = v;
             return;
         }
-        // 1100/1101/1110 = MOV.b/w/l dsp[lds], dsp[ldd]
-        if (op & 0xE0) == 0xC0 || (op & 0xE0) == 0xE0 {
+        // 1100/1101/1110 = MOV.b/w/l dsp[lds], dsp[ldd]. The 0xE0 family is
+        // `11 1 sz ...` (op 0xE0-0xEF); op 0xF0-0xFF are the bit-operation,
+        // register-indexed and long-opcode families handled below.
+        if (op & 0xE0) == 0xC0 || (op & 0xF0) == 0xE0 {
             let sz = ((op >> 5) & 0x03) as u8;
             let ldd = ((insn >> 8) & 0x03) as i32;
             let lds = ((low >> 4) & 0x03) as i32;
@@ -1538,7 +1540,7 @@ pub fn instruction_len(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
         return base;
     }
     // MOV.b/w/l dsp[lds], dsp[ldd]: sum of src/dst displacement widths.
-    if matches!(op & 0xE0, 0xC0 | 0xE0) {
+    if (op & 0xE0) == 0xC0 || (op & 0xF0) == 0xE0 {
         let lds = ((low >> 4) & 0x03) as u32;
         let ldd = ((insn >> 8) & 0x03) as u32;
         let disp = |ld: u32| match ld {
@@ -1548,10 +1550,19 @@ pub fn instruction_len(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
         };
         return base + disp(lds) + disp(ldd);
     }
-    // Note: the core's `(op & 0xE0) == 0xE0` MOV dsp[lds], dsp[ldd] family
-    // covers op 0xE0-0xFF, so the bit-operation (0xF0/0xF4), register-indexed
-    // (0xF8/0xFA) and long-opcode (0xFC) families are unreachable in the core
-    // and fall through to this default.
+    // BSET/BCLR/BTST #imm, dsp[rd] and PUSH dsp[rs]: displacement width.
+    if matches!(op & 0xFC, 0xF0 | 0xF4) {
+        let ld = ((insn >> 8) & 0x03) as u32;
+        return base + match ld {
+            1 => 1,
+            2 | 3 => 2,
+            _ => 0,
+        };
+    }
+    // MOV [ri+rb], rd / MOV rd, [ri+rb]: no extra operand.
+    if matches!(op & 0xFC, 0xF8 | 0xFA | 0xFC) {
+        return base;
+    }
     // Unknown: the core fetches the opcode word then halts.
     base
 }
@@ -1755,7 +1766,7 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("{} r{}", m, rs);
     }
     // MOV.b/w/l dsp[lds], dsp[ldd].
-    if matches!(op & 0xE0, 0xC0 | 0xE0) {
+    if (op & 0xE0) == 0xC0 || (op & 0xF0) == 0xE0 {
         let sz = ((op >> 5) & 0x03) as u8;
         let ldd = (b0 & 0x03) as usize;
         let lds = ((low >> 4) & 0x03) as usize;
@@ -1781,6 +1792,40 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             _ => format!("[r{}]", rd),
         };
         return format!("mov.{} {}, {}", sz_name(sz), src, dst);
+    }
+    // BSET/BCLR/BTST #imm, dsp[rd].
+    if matches!(op & 0xFC, 0xF0 | 0xF4) {
+        let bit = (low & 0x07) as u8;
+        let ld = (b0 & 0x03) as usize;
+        let rs = ((low >> 4) & 0x0F) as usize;
+        let is_tst = (op & 0xFC) == 0xF4;
+        let name = if is_tst {
+            "btst"
+        } else if (low & 0x80) != 0 {
+            "bclr"
+        } else {
+            "bset"
+        };
+        let dsp = match ld {
+            1 => format!("{:+}[r{}]", read(pc + 2) as i8, rs),
+            2 | 3 => format!("{:+}[r{}]", ((read(pc + 2) as i16) << 8) | read(pc + 3) as i16, rs),
+            _ => format!("[r{}]", rs),
+        };
+        return format!("{} #{}, {}", name, bit, dsp);
+    }
+    // MOV.b/w/l [ri+rb], rd / MOV.b/w/l rd, [ri+rb].
+    if matches!(op & 0xFC, 0xF8 | 0xFA) {
+        let to_reg = (op & 0x04) == 0;
+        let sz = ((b0 >> 4) & 0x03) as u8;
+        let ri = (low & 0x0F) as usize;
+        let rb = ((low >> 4) & 0x0F) as usize;
+        let rd = (b0 & 0x0F) as usize;
+        let mem = format!("[r{}+r{}]", ri, rb);
+        return if to_reg {
+            format!("mov.{} {}, r{}", sz_name(sz), mem, rd)
+        } else {
+            format!("mov.{} r{}, {}", sz_name(sz), rd, mem)
+        };
     }
     format!("0x{:04x}", insn)
 }
@@ -1831,6 +1876,18 @@ mod tests {
         let mut c = core_with(&[0x00, 0x03]);
         let r = c.step(&[]);
         assert_eq!(r, RxStep::Advanced);
+        assert_eq!(c.pc, 0x1002);
+    }
+
+    #[test]
+    fn bitop_memory_sets_bit() {
+        // BSET #0, [r0]: op 0xF0, bit=0, dsp=0. With r0=0x2000 it sets bit 0
+        // of memory[0x2000]. This exercises the 0xF0 bit-operation family,
+        // which the `(op & 0xE0) == 0xE0` MOV family no longer shadows.
+        let mut c = core_with(&[0xF0, 0x00]);
+        c.regs[0] = 0x2000;
+        c.step(&[]);
+        assert_eq!(c.read_u8(0x2000) & 0x01, 0x01, "bset sets bit 0");
         assert_eq!(c.pc, 0x1002);
     }
 
