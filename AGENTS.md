@@ -209,6 +209,8 @@ done
 - `csr_set_get_roundtrip`：CSR 写读往返与会话持久化。
 - `watchdog_config_feed_status`：看门狗配置/喂狗（复位 elapsed 计数并持久化）/状态。
 - `watchdog_force_reset`：`watchdog reset` 记录复位事件并复位核心（持久化）。
+- `watchdog_reset_default_goes_to_entry`：`watchdog reset` 未指定 `--entry` 时回到固件/架构入口
+  （而非看门狗触发时的 PC），仍记录 `lastResetPc`。
 - `interrupt_set_pending_and_take`：中断置线/挂起查询/触发跳转（mtvec/mcause）。
 - `bp_list_shows_hits`：断点命中次数持久化并展示。
 - `bp_once_autoclears`：`bp set --once` 命中后自动清除，再次 `continue` 不再停靠。
