@@ -2750,3 +2750,36 @@ fn stm8_step_over_and_step_out_use_call_width() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["pc"], 0x8003u64);
 }
+
+#[test]
+fn disasm_msp430_extension_words() {
+    // MSP430 double-operand instructions carry an extension word for
+    // immediate/absolute/indexed operands; disassembly must advance by the
+    // actual width (opcode word + extension words), not a fixed 2 bytes.
+    let dir = tmpdir();
+    let sess = dir.join("mspdis.json");
+    let code = dir.join("mspdis.bin");
+    // MOV #0x1234, R5 (4 bytes), MOV R0, R0 (2 bytes), JMP +2 (2 bytes).
+    std::fs::write(&code, [
+        0x35, 0x40, 0x34, 0x12, // MOV #0x1234, R5
+        0x00, 0x40,             // MOV R0, R0
+        0x02, 0x20,             // JMP +2
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "msp430", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "3", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0u64);
+    assert_eq!(json[0]["text"], "MOV #0x1234, R5");
+    assert_eq!(json[1]["address"], 4u64);
+    assert_eq!(json[2]["address"], 6u64);
+}

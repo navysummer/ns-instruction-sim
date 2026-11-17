@@ -2982,7 +2982,7 @@ pub fn instruction_size(
     }
     match arch {
         Arch::C166 => c166_instruction_len(read(pc)),
-        Arch::Msp430 => 2,
+        Arch::Msp430 => msp430::instruction_len(pc, read),
         Arch::Xtensa => 3,
         Arch::Avr => avr_instruction_len(read(pc), read(pc + 1)),
         Arch::Mcs51 => mcs51_instruction_len(read(pc)),
@@ -4576,6 +4576,30 @@ mod tests {
             _ => 0,
         };
         assert_eq!(instruction_size(Arch::Stm8, 0, &read, false), 3);
+        // MSP430 is 2 bytes plus one extension word per immediate/absolute/
+        // indexed operand: MOV Rn,Rn is 2, MOV #imm16,R5 is 4, PUSH #imm16 is 4.
+        let read = |addr: u32| match addr {
+            0 => 0x00,
+            1 => 0x40,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Msp430, 0, &read, false), 2);
+        let read = |addr: u32| match addr {
+            0 => 0x35,
+            1 => 0x40,
+            2 => 0x34,
+            3 => 0x12,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Msp430, 0, &read, false), 4);
+        let read = |addr: u32| match addr {
+            0 => 0x30,
+            1 => 0x12,
+            2 => 0x34,
+            3 => 0x12,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Msp430, 0, &read, false), 4);
     }
 
     #[test]

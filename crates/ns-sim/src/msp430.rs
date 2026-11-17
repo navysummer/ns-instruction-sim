@@ -768,6 +768,71 @@ fn reg_name(index: usize) -> String {
     }
 }
 
+/// Number of extension words consumed by a single-operand source addressing
+/// mode, matching the core's `resolve_unary` and the disassembler's `source`.
+fn source_ext(reg: usize, as_: u8) -> u32 {
+    match reg {
+        3 => 0, // CG2 constants never consume a word.
+        2 => {
+            if as_ == 1 {
+                1
+            } else {
+                0
+            }
+        }
+        0 => {
+            if as_ == 1 || as_ == 3 {
+                1
+            } else {
+                0
+            }
+        }
+        _ => {
+            if as_ == 1 {
+                1
+            } else {
+                0
+            }
+        }
+    }
+}
+
+/// Number of extension words consumed by a double-operand destination mode.
+fn dest_ext(ad: u8) -> u32 {
+    if ad == 0 {
+        0
+    } else {
+        1
+    }
+}
+
+/// Number of code bytes consumed by the MSP430 instruction at `pc`. Matches the
+/// core's byte-fetch model: the opcode word is 2 bytes, and each extension word
+/// (immediate/absolute/indexed operand) adds 2 more.
+pub fn instruction_len(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
+    let word_at = |addr: u32| -> u16 {
+        let a = addr & 0xFFFF;
+        (read(a) as u16) | ((read((a + 1) & 0xFFFF) as u16) << 8)
+    };
+    let insn = word_at(pc);
+    let top = insn & 0xF000;
+    if top == 0x2000 {
+        // Jump instructions are a single opcode word.
+        return 2;
+    }
+    let as_ = ((insn >> 4) & 3) as u8;
+    if top == 0x1000 {
+        let reg = (insn & 0xF) as usize;
+        return 2 + 2 * source_ext(reg, as_);
+    }
+    if top >= 0x4000 {
+        let src_reg = ((insn >> 8) & 0xF) as usize;
+        let ad = ((insn >> 7) & 1) as u8;
+        return 2 + 2 * (source_ext(src_reg, as_) + dest_ext(ad));
+    }
+    2
+}
+
 /// Disassemble the instruction at `pc` using `read` for little-endian bytes.
 ///
 /// Extension words are consumed as required by the addressing modes, so the
@@ -1260,5 +1325,47 @@ mod tests {
         assert_eq!(core.read_reg(4), 55);
         assert_eq!(core.read_reg(7), 55);
         assert_eq!(core.pc, 0x0216, "parked on the self jump");
+    }
+}
+
+#[cfg(test)]
+mod disasm_tests {
+    use super::*;
+
+    fn reader(bytes: &[u8]) -> impl Fn(u32) -> u8 {
+        let bytes = bytes.to_vec();
+        move |addr: u32| {
+            let a = (addr as usize) & 0xFFFF;
+            bytes.get(a).copied().unwrap_or(0)
+        }
+    }
+
+    #[test]
+    fn instruction_len_matches_core_fetch() {
+        // NOP-like 2-byte form: MOV Rn, Rn (0x4000 | dst|src) with no extension.
+        let r = reader(&[0x40, 0x40, 0x00, 0x00]);
+        assert_eq!(instruction_len(0, &r), 2);
+        // Jump instruction (single opcode word).
+        let r = reader(&[0x00, 0x20, 0x00, 0x00]);
+        assert_eq!(instruction_len(0, &r), 2);
+        // MOV #imm16, R5: opcode word + immediate extension word (4 bytes).
+        let r = reader(&[0x35, 0x40, 0x34, 0x12]);
+        assert_eq!(instruction_len(0, &r), 4);
+        // Single-operand PUSH #imm16 (as_=3, reg=0): opcode word + imm word.
+        let r = reader(&[0x30, 0x12, 0x34, 0x12]);
+        assert_eq!(instruction_len(0, &r), 4);
+        // CALL &abs16 (as_=1, reg=2): opcode word + absolute address word.
+        let r = reader(&[0x92, 0x12, 0x00, 0x02]);
+        assert_eq!(instruction_len(0, &r), 4);
+    }
+
+    #[test]
+    fn disassembles_extension_words() {
+        // MOV #0x1234, R5 decodes the immediate extension word.
+        let r = reader(&[0x35, 0x40, 0x34, 0x12]);
+        assert_eq!(disassemble(0, &r), "MOV #0x1234, R5");
+        // PUSH #0x1234 (0x1230: as_=3, reg=0 => immediate source).
+        let r = reader(&[0x30, 0x12, 0x34, 0x12]);
+        assert_eq!(disassemble(0, &r), "PUSH #0x1234");
     }
 }

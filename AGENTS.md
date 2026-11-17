@@ -258,6 +258,8 @@ done
   CALL=3、CALLF=4、`0x90` 前缀 Y 索引=3），替换原先仅解码 7 个操作码的极小反汇编器。
 - `stm8_step_over_and_step_out_use_call_width`：STM8 `call addr16` 为 3 字节，`step-over` 运行调用并停在
   调用者下一条指令（pc+3），`ret` 被 `step-out` 识别。
+- `disasm_msp430_extension_words`：MSP430 双操作数指令的立即数/绝对/索引操作数携带扩展字，
+  反汇编按实际宽度推进（操作码字 + 扩展字），替换固定 2 字节（`MOV #imm16,R5`=4、`MOV Rn,Rn`=2）。
 - `step_source_annotates_lines`：`step --source` 按 DWARF 行表标注 file:line。
 - `step_over_and_step_out_use_code_space`：`step-over` 按实际指令宽度计算返回地址（mcs51 LCALL=3 字节），
   `step-out` 从独立代码 ROM 读取 `RET` 并在返回地址停下（修复哈佛内核代码空间读取）。
@@ -289,11 +291,12 @@ done
   为 4 字节其余 2 字节，C166 的 `MOV Rn,#imm16`/`CALL` 为 3 字节、NOP/RET 为 1 字节其余 2 字节，
   Xtensa 按 24 位取指为 3 字节、MSP430 为 2 字节、V850 按解码变长（2/4/6 字节），其余固定 4 字节。
   STM8 按操作码与前缀变长（NOP/PUSH/RET=1、短跳=2、`CALL`/直接16/`(off8,X)`=3、`CALLF`/`INT`=4、
-  `0x90`/`0x91`/`0x92`/`0x72` 前缀按所修饰操作码累计）。
+  `0x90`/`0x91`/`0x92`/`0x72` 前缀按所修饰操作码累计），MSP430 为 2 字节操作码字加每个立即数/
+  绝对/索引操作数扩展字（`MOV Rn,Rn`=2、`MOV #imm16,R5`=4、`PUSH #imm16`=4）。
   该行为由 ns-sim 单测 `instruction_size_matches_encoding_width` 与 CLI 端到端
   `disasm_mcs51_code_space_width`/`disasm_mcs251_code_space_width`/`disasm_avr_32bit_width`/
   `disasm_c166_imm_width`/`disasm_xtensa_24bit_width`/`disasm_v850_variable_width`/
-  `disasm_stm8_variable_width` 锁定。
+  `disasm_stm8_variable_width`/`disasm_msp430_extension_words` 锁定。
 
 ---
 
