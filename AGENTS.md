@@ -207,7 +207,7 @@ done
 - `mem_overlay_persists_across_step`：ARM（私有内存模型核心）显式内存写在单步后仍持久化（memory_overlay 跨调用重放）。
 - `cycle_get_and_tick`：周期计数读取/推进/指令周期估算。
 - `csr_set_get_roundtrip`：CSR 写读往返与会话持久化。
-- `watchdog_config_feed_status`：看门狗配置/喂狗/状态。
+- `watchdog_config_feed_status`：看门狗配置/喂狗（复位 elapsed 计数并持久化）/状态。
 - `watchdog_force_reset`：`watchdog reset` 记录复位事件并复位核心（持久化）。
 - `interrupt_set_pending_and_take`：中断置线/挂起查询/触发跳转（mtvec/mcause）。
 - `bp_list_shows_hits`：断点命中次数持久化并展示。

@@ -3251,14 +3251,23 @@ fn cmd_watchdog(sub: WatchdogSub) -> Result<()> {
                 .as_ref()
                 .map(|w| w.base)
                 .unwrap_or(0x4000_0000);
-            if sim.peripherals.watchdog.is_none() {
-                sim.peripherals.watchdog = Some(ns_sim::Watchdog::new(base));
+            let elapsed_before = sim.peripherals.watchdog.as_ref().map(|w| w.elapsed).unwrap_or(0);
+            {
+                let w = sim.peripherals.watchdog.get_or_insert_with(|| ns_sim::Watchdog::new(base));
+                w.base = base;
+                // Feeding the watchdog resets its elapsed counter.
+                w.elapsed = 0;
             }
             sim.write_u32(base, 0xAA55);
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
             if json {
-                print_json(&serde_json::json!({ "fed": true, "base": base }))?;
+                print_json(&serde_json::json!({
+                    "fed": true,
+                    "base": base,
+                    "elapsedBefore": elapsed_before,
+                    "elapsed": 0u64,
+                }))?;
             } else {
                 println!("已喂狗 @ 0x{:08x}", base);
             }

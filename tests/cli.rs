@@ -531,6 +531,18 @@ fn watchdog_config_feed_status() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["enabled"], true);
     assert_eq!(json["timeoutCycles"], 500u64);
+    // Advance cycles so the watchdog accumulates elapsed time.
+    Command::new(bin())
+        .args(["cycle", "tick", "--session", sess.to_str().unwrap(), "--cycles", "100"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["watchdog", "status", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["elapsed"], 100u64);
+    // Feeding resets the watchdog elapsed counter to zero.
     let out = Command::new(bin())
         .args(["watchdog", "feed", "--session", sess.to_str().unwrap(), "--json"])
         .output()
@@ -538,6 +550,8 @@ fn watchdog_config_feed_status() {
     assert!(out.status.success());
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["fed"], true);
+    assert_eq!(json["elapsedBefore"], 100u64);
+    assert_eq!(json["elapsed"], 0u64);
     let out = Command::new(bin())
         .args(["watchdog", "status", "--session", sess.to_str().unwrap(), "--json"])
         .output()
@@ -546,6 +560,7 @@ fn watchdog_config_feed_status() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["enabled"], true);
     assert_eq!(json["timeoutCycles"], 500u64);
+    assert_eq!(json["elapsed"], 0u64);
 }
 
 #[test]
