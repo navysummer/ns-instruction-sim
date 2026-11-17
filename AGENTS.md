@@ -311,6 +311,14 @@ done
   `disasm_stm8_variable_width`/`disasm_msp430_extension_words`/`disasm_rl78_variable_width`/
   `disasm_rx_variable_width`/`disasm_rx_decodes_families` 锁定。
 
+- RX 长操作码族（`0xFC`/`0xFD`，寄存器-寄存器与立即数长格式）在核心 `execute_fc`/`execute_fd`
+  中为**部分实现**：若干 `match` 分支已实现（`MOV #imm16, rd`、`MVFC/MVTC`、`SHLL/SHLR/SHAR`、
+  `DIV/DIVU` 等），但其 `hi` 选择子当前从首字节低半字节取值（恒为 `0xC`/`0xD`），导致多数
+  分支实际不可达；反汇编器对这些长格式输出原始 `0xFCxx`/`0xFDxx` 占位符。**完整补齐需要
+  权威 RX 指令集编码参考**（操作数字段布局），在取得参考前不做猜测性改动，以免引入错误语义。
+  当前 CLI `disasm` 对这类指令按 2 字节操作码字推进，`step` 对已实现分支可执行、未实现分支
+  如实停机。后续若取得参考编码，应在此同步更新状态并新增 `disasm`/`step` 端到端用例。
+
 - `step-over`/`step-out` 通过 `is_call_mnemonic`/`is_return_mnemonic` 识别调用与返回，并用
   `instruction_size` 计算返回地址。RX 的 `bsr.w`/`bsr.a` 已纳入调用助记符，`step-over` 在
   `bsr.w`（4 字节）后回到 `pc+4`；核心修正 `BRA.a`/`BSR.a`、`BRA.w`/`BSR.w` 的 link 标志
