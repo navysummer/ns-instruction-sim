@@ -2744,7 +2744,10 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                     if force || !sim.peripherals.external_regs.contains_key(&addr) {
                         sim.peripherals.external_regs.insert(addr, r.reset_value as u32);
                         // 写入后备内存，便于直接 mem read 也能看到值。
-                        sim.write_u32(addr, r.reset_value as u32);
+                        let v = r.reset_value as u32;
+                        for i in 0..4 {
+                            write_mem_byte(&mut sim, addr.wrapping_add(i as u32), (v >> (8 * i)) as u8);
+                        }
                         loaded += 1;
                     }
                 }
