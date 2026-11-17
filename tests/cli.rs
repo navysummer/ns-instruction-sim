@@ -2026,3 +2026,25 @@ fn arch_device_periph_json() {
     assert_eq!(json["pin"], 3u64);
     assert_eq!(json["value"], 1u64);
 }
+
+#[test]
+fn device_codegen_json() {
+    // linker --json
+    let out = Command::new(bin()).args(["device", "linker", "stm32f103c8", "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["kind"], "linker");
+    assert!(json["content"].as_str().unwrap().contains("MEMORY"));
+    // startup --json
+    let out = Command::new(bin()).args(["device", "startup", "stm32f103c8", "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["kind"], "startup");
+    assert!(json["content"].as_str().unwrap().contains("Reset_Handler"));
+    // init --json
+    let out = Command::new(bin()).args(["device", "init", "stm32f103c8", "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["kind"], "init");
+    assert!(json["content"].as_str().unwrap().contains("void"));
+}

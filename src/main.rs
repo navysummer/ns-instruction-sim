@@ -121,6 +121,8 @@ enum DeviceSub {
         /// 写入文件路径（缺省打印到 stdout）。
         #[arg(short, long)]
         out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
     },
     /// 生成最小启动文件（向量表 + 复位处理器，stdout 或 --out）。
     Startup {
@@ -129,6 +131,8 @@ enum DeviceSub {
         /// 写入文件路径（缺省打印到 stdout）。
         #[arg(short, long)]
         out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
     },
     /// 生成外设初始化 C 骨架（时钟使能 + 复位值注释，可指定寄存器值）。
     Init {
@@ -143,6 +147,8 @@ enum DeviceSub {
         /// 写入文件路径（缺省打印到 stdout）。
         #[arg(short, long)]
         out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
     },
     /// 解析并显示一个 CMSIS-SVD 设备描述文件。
     Svd {
@@ -1041,14 +1047,14 @@ fn real_main() -> Result<()> {
         Command::Arch { sub: ArchSub::List { json } } => cmd_arch_list(json),
         Command::Device { sub: DeviceSub::List { json } } => cmd_device_list(json),
         Command::Device { sub: DeviceSub::Info { device, json } } => cmd_device_info(&device, json),
-        Command::Device { sub: DeviceSub::Linker { device, out } } => {
-            cmd_device_codegen(&device, out.as_deref(), CodegenKind::Linker)
+        Command::Device { sub: DeviceSub::Linker { device, out, json } } => {
+            cmd_device_codegen(&device, out.as_deref(), CodegenKind::Linker, json)
         }
-        Command::Device { sub: DeviceSub::Startup { device, out } } => {
-            cmd_device_codegen(&device, out.as_deref(), CodegenKind::Startup)
+        Command::Device { sub: DeviceSub::Startup { device, out, json } } => {
+            cmd_device_codegen(&device, out.as_deref(), CodegenKind::Startup, json)
         }
-        Command::Device { sub: DeviceSub::Init { device, peripheral, register, out } } => {
-            cmd_device_init(&device, &peripheral, &register, out.as_deref())
+        Command::Device { sub: DeviceSub::Init { device, peripheral, register, out, json } } => {
+            cmd_device_init(&device, &peripheral, &register, out.as_deref(), json)
         }
         Command::Device { sub: DeviceSub::Svd { file, device, peripheral, register, json } } => {
             cmd_device_svd(
@@ -1509,7 +1515,7 @@ enum CodegenKind {
     Startup,
 }
 
-fn cmd_device_codegen(device: &str, out: Option<&Path>, kind: CodegenKind) -> Result<()> {
+fn cmd_device_codegen(device: &str, out: Option<&Path>, kind: CodegenKind, json: bool) -> Result<()> {
     if ns_device::catalog_entry(device).is_none() {
         bail!("未知设备: {device}");
     }
@@ -1525,10 +1531,27 @@ fn cmd_device_codegen(device: &str, out: Option<&Path>, kind: CodegenKind) -> Re
     match out {
         Some(path) => {
             std::fs::write(path, &text).with_context(|| format!("写入 {} 失败", path.display()))?;
-            println!("已生成{label} -> {}", path.display());
+            if json {
+                print_json(&serde_json::json!({
+                    "device": device,
+                    "kind": match kind { CodegenKind::Linker => "linker", CodegenKind::Startup => "startup" },
+                    "file": path.to_string_lossy(),
+                    "bytes": text.len(),
+                }))?;
+            } else {
+                println!("已生成{label} -> {}", path.display());
+            }
         }
         None => {
-            print!("{text}");
+            if json {
+                print_json(&serde_json::json!({
+                    "device": device,
+                    "kind": match kind { CodegenKind::Linker => "linker", CodegenKind::Startup => "startup" },
+                    "content": text,
+                }))?;
+            } else {
+                print!("{text}");
+            }
         }
     }
     Ok(())
@@ -1539,6 +1562,7 @@ fn cmd_device_init(
     peripheral_names: &[String],
     register_overrides: &[String],
     out: Option<&Path>,
+    json: bool,
 ) -> Result<()> {
     if ns_device::catalog_entry(device).is_none() {
         bail!("未知设备: {device}");
@@ -1582,10 +1606,27 @@ fn cmd_device_init(
     match out {
         Some(path) => {
             std::fs::write(path, &text).with_context(|| format!("写入 {} 失败", path.display()))?;
-            println!("已生成外设初始化 -> {}", path.display());
+            if json {
+                print_json(&serde_json::json!({
+                    "device": device,
+                    "kind": "init",
+                    "file": path.to_string_lossy(),
+                    "bytes": text.len(),
+                }))?;
+            } else {
+                println!("已生成外设初始化 -> {}", path.display());
+            }
         }
         None => {
-            print!("{text}");
+            if json {
+                print_json(&serde_json::json!({
+                    "device": device,
+                    "kind": "init",
+                    "content": text,
+                }))?;
+            } else {
+                print!("{text}");
+            }
         }
     }
     Ok(())

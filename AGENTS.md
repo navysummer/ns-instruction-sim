@@ -227,6 +227,7 @@ done
 - `mem_write_word_width`：`mem write --width --values` 按字/半字小端写入（含越界错误路径）。
 - `mem_write_fill_json`：`mem write/fill --json` 机器可读确认。
 - `arch_device_periph_json`：`arch/device/periph uart/gpio --json` 机器可读输出。
+- `device_codegen_json`：`device linker/startup/init --json` 包裹生成内容。
 - `state_fields_and_summary`：`state --fields` JSON 字段子集、`state --summary` 单行摘要。
 - `reg_list_filter`：`reg list --filter` 按名称子串筛选寄存器。
 - `reset_json`：`reset --json` 输出 PC/周期/停止 JSON。
