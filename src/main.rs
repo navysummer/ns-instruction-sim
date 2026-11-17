@@ -424,6 +424,9 @@ enum MemSub {
         /// 搜索模式字节（空格分隔，支持 0xNN）。
         #[arg(long, value_delimiter = ' ', num_args = 1..)]
         pattern: Vec<String>,
+        /// 将搜索结果写入文件（缺省打印到 stdout）。
+        #[arg(long)]
+        out: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -2114,7 +2117,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Search { session, arch, addr, addr_flag, len, pattern, json } => {
+        MemSub::Search { session, arch, addr, addr_flag, len, pattern, out, json } => {
             let addr_str = addr_flag
                 .as_deref()
                 .or(addr.as_deref())
@@ -2150,19 +2153,29 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                     }
                 }
             }
-            if json {
-                print_json(&serde_json::json!({
+            let text = if json {
+                let value = serde_json::json!({
                     "address": addr_num,
                     "count": matches.len(),
                     "matches": matches,
-                }))?;
+                });
+                serde_json::to_string_pretty(&value)?
             } else {
+                let mut s = String::new();
                 if matches.is_empty() {
-                    println!("(未找到模式)");
+                    s.push_str("(未找到模式)\n");
                 }
                 for m in &matches {
-                    println!("0x{m:08x}");
+                    s.push_str(&format!("0x{m:08x}\n"));
                 }
+                s
+            };
+            if let Some(out_path) = out {
+                std::fs::write(&out_path, text.as_bytes())
+                    .with_context(|| format!("写入 {} 失败", out_path.display()))?;
+                println!("已搜索 {} 字节，找到 {} 处匹配，结果写入 {}", len, matches.len(), out_path.display());
+            } else {
+                print!("{text}");
             }
             Ok(())
         }

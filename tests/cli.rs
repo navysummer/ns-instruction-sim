@@ -738,6 +738,44 @@ fn mem_search_harvard_data_space() {
 }
 
 #[test]
+fn mem_search_out_writes_file() {
+    let dir = tmpdir();
+    let sess = dir.join("memsearchout.json");
+    bootstrap(&sess);
+    Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000",
+               "--bytes", "0xde", "0xad", "0xbe", "0xef"])
+        .output()
+        .unwrap();
+    // JSON result to a file.
+    let out_file = dir.join("search.json");
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "16",
+               "--pattern", "0xde", "0xad", "--json",
+               "--out", out_file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&out_file).unwrap()).unwrap();
+    assert_eq!(json["count"], 1u64);
+    assert_eq!(json["matches"][0], 0x2000_0000u64);
+    // Text result to a file.
+    let out_file2 = dir.join("search.txt");
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "16",
+               "--pattern", "0xbe", "0xef",
+               "--out", out_file2.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = std::fs::read_to_string(&out_file2).unwrap();
+    assert!(text.contains("0x20000002"), "missing match in file: {text}");
+}
+
+#[test]
 fn device_svd_parse_and_filter() {
     let dir = tmpdir();
     let svd = dir.join("testchip.svd");

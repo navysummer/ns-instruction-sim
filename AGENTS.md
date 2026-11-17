@@ -255,6 +255,7 @@ done
 - `device_init_codegen`：`device init` 生成外设初始化 C 骨架（含 --register 覆盖与格式校验）。
 - `mem_search_finds_pattern`：`mem search` 在内存区域定位字节模式（JSON 匹配数/地址、未找到提示）。
 - `mem_search_harvard_data_space`：Harvard 架构（8051）数据空间搜索使用统一内存助手，与 `mem write` 所见一致。
+- `mem_search_out_writes_file`：`mem search --out` 将 JSON/文本结果写入文件。
 - `state_reports_loaded_firmware`：`state --json` 报告已加载固件（path/base/format）。
 - `state_reports_pc_symbol`：`state --json` 报告 PC 处最近符号（pcSymbol）。
 - `symbol_list_shows_symbols`：`symbol list --json` 列出 ELF 符号（名称/地址）。
