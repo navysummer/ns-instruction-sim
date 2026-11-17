@@ -2577,10 +2577,7 @@ fn cmd_state(args: StateArgs) -> Result<()> {
             print_json(&output)?;
         } else {
             let mut value = serde_json::to_value(&output)?;
-            let obj = value
-                .as_object_mut()
-                .ok_or_else(|| anyhow::anyhow!("状态不是 JSON 对象"))?;
-            obj.retain(|key, _| args.fields.iter().any(|f| f == key));
+            value = select_json_fields(&value, &args.fields)?;
             print_json(&value)?;
         }
     } else {
@@ -2597,6 +2594,41 @@ fn cmd_state(args: StateArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Keep only the requested (possibly dot-nested) fields of a JSON value.
+/// An unknown field path is reported as an error instead of being dropped.
+fn select_json_fields(
+    value: &serde_json::Value,
+    paths: &[String],
+) -> Result<serde_json::Value> {
+    fn insert_path(
+        map: &mut serde_json::Map<String, serde_json::Value>,
+        parts: &[&str],
+        leaf: serde_json::Value,
+    ) {
+        if parts.len() == 1 {
+            map.insert(parts[0].to_string(), leaf);
+        } else if let Some(obj) = map
+            .entry(parts[0].to_string())
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+        {
+            insert_path(obj, &parts[1..], leaf);
+        }
+    }
+    let mut result = serde_json::Map::new();
+    for path in paths {
+        let parts: Vec<&str> = path.split('.').collect();
+        let mut cur = value;
+        for part in &parts {
+            cur = cur
+                .get(*part)
+                .ok_or_else(|| anyhow::anyhow!("未知状态字段: {path}"))?;
+        }
+        insert_path(&mut result, &parts, cur.clone());
+    }
+    Ok(serde_json::Value::Object(result))
 }
 
 /// Resolve a peripheral-register address from either `--addr` or

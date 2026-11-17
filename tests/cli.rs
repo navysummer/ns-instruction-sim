@@ -1986,6 +1986,24 @@ fn state_fields_and_summary() {
     assert!(json.get("pc").is_some());
     assert!(json.get("cycleCount").is_some());
     assert!(json.get("registers").is_none(), "registers must be filtered out");
+    // A dot-nested path selects a sub-object field.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(),
+               "--json", "--fields", "peripherals.uartBase"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["peripherals"]["uartBase"].is_number(), "nested field missing");
+    assert!(json.get("pc").is_none(), "pc must be filtered out");
+    // An unknown field must be an error, not silently dropped.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(),
+               "--json", "--fields", "nosuch"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "unknown field should fail");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("未知状态字段"));
     // --summary prints a one-line summary.
     let out = Command::new(bin())
         .args(["state", "--session", sess.to_str().unwrap(), "--summary"])
