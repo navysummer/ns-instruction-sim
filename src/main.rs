@@ -461,6 +461,9 @@ enum MemSub {
         /// 写入文件路径（缺省打印到 stdout）。
         #[arg(long)]
         out: Option<PathBuf>,
+        /// 以 JSON 输出地址/长度/格式/名称/字节数组。
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -2174,13 +2177,23 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Dump { session, arch, addr, addr_flag, len, name, format, out } => {
+        MemSub::Dump { session, arch, addr, addr_flag, len, name, format, out, json } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let (sim, _fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
             let mut bytes = Vec::with_capacity(len);
             for i in 0..len {
                 bytes.push(read_mem_byte(&sim, addr_num.wrapping_add(i as u32)));
+            }
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr_num,
+                    "len": len,
+                    "format": format,
+                    "name": name,
+                    "bytes": bytes,
+                }))?;
+                return Ok(());
             }
             let text = match format.as_str() {
                 "c" => {

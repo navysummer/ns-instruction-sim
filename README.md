@@ -30,6 +30,7 @@ ns-instruction-sim mem write --session s.json --addr 0x20000000 --width word --v
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 0 --json
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad 0xbe 0xef
 ns-instruction-sim mem dump --session s.json --addr 0x20000000 --len 64 --name bootloader --format c
+ns-instruction-sim mem dump --session s.json --addr 0x20000000 --len 64 --format c --json
 ns-instruction-sim bp set --session s.json --addr 0x80000004
 ns-instruction-sim bp set --session s.json --addr 0x80000008 --once
 ns-instruction-sim bp set --session s.json --symbol main

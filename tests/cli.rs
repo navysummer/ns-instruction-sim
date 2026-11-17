@@ -1512,6 +1512,37 @@ fn mem_dump_c_array() {
 }
 
 #[test]
+fn mem_dump_json() {
+    let dir = tmpdir();
+    let sess = dir.join("dumpjson.json");
+    bootstrap(&sess);
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--bytes", "0xde", "0xad", "0xbe", "0xef"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["mem", "dump", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "4", "--name", "bootloader",
+               "--format", "c", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x2000_0000u64);
+    assert_eq!(json["len"], 4u64);
+    assert_eq!(json["format"], "c");
+    assert_eq!(json["name"], "bootloader");
+    let bytes = json["bytes"].as_array().unwrap();
+    assert_eq!(bytes.len(), 4);
+    assert_eq!(bytes[0], 0xdeu64);
+    assert_eq!(bytes[1], 0xadu64);
+    assert_eq!(bytes[2], 0xbeu64);
+    assert_eq!(bytes[3], 0xefu64);
+}
+
+#[test]
 fn watchdog_force_reset() {
     let dir = tmpdir();
     let sess = dir.join("wdreset.json");
