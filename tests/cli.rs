@@ -713,6 +713,31 @@ fn mem_search_finds_pattern() {
 }
 
 #[test]
+fn mem_search_harvard_data_space() {
+    // On Harvard-architecture cores (8051/80251/C166) the CLI's data-space
+    // helper must be used so a search sees the same memory `mem write` wrote.
+    let dir = tmpdir();
+    let sess = dir.join("memsearch51.json");
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--arch", "mcs51", "--addr", "0x20",
+               "--bytes", "0xca", "0xfe", "0xba", "0xbe"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", sess.to_str().unwrap(),
+               "--arch", "mcs51", "--addr", "0x20", "--len", "16",
+               "--pattern", "0xca", "0xfe", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["count"], 1u64, "harvard data-space search failed: {json}");
+    assert_eq!(json["matches"][0], 0x20u64);
+}
+
+#[test]
 fn device_svd_parse_and_filter() {
     let dir = tmpdir();
     let svd = dir.join("testchip.svd");

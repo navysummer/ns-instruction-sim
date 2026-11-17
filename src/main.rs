@@ -2140,7 +2140,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                 for i in 0..=(len - window) {
                     let mut ok = true;
                     for (j, b) in pat.iter().enumerate() {
-                        if sim.read_u8(addr_num.wrapping_add((i + j) as u32)) != *b {
+                        if read_mem_byte(&sim, addr_num.wrapping_add((i + j) as u32)) != *b {
                             ok = false;
                             break;
                         }
