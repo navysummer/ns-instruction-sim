@@ -2528,17 +2528,7 @@ fn cmd_reset(args: ResetArgs) -> Result<()> {
     let (mut sim, fw, _) = load_or_create(Some(&args.session), None, None, "0")?;
     let entry = match args.entry {
         Some(e) => parse_num(&e)?,
-        None => {
-            // Default to the loaded firmware's entry (or the architecture's
-            // reset entry), not the current PC, per the "PC 回入口" contract.
-            if let Some(fw) = &fw {
-                let mut fresh = Simulator::for_arch(sim.arch)?;
-                load_firmware_into(&mut fresh, Path::new(&fw.path), fw.base)?;
-                fresh.program_counter()
-            } else {
-                sim.entry()
-            }
-        }
+        None => default_reset_entry(&sim, fw.as_ref())?,
     };
     sim.reset(entry);
     let s = Session::capture(&sim, fw);
@@ -2553,6 +2543,18 @@ fn cmd_reset(args: ResetArgs) -> Result<()> {
         println!("已重置 @ 0x{:08x}", sim.program_counter());
     }
     Ok(())
+}
+
+/// Derive the reset entry for a session: the loaded firmware's entry (ELF
+/// entry / BIN base) when present, otherwise the architecture's reset entry.
+fn default_reset_entry(sim: &Simulator, fw: Option<&FirmwareState>) -> Result<u32> {
+    if let Some(fw) = fw {
+        let mut fresh = Simulator::for_arch(sim.arch)?;
+        load_firmware_into(&mut fresh, Path::new(&fw.path), fw.base)?;
+        Ok(fresh.program_counter())
+    } else {
+        Ok(sim.entry())
+    }
 }
 
 fn cmd_state(args: StateArgs) -> Result<()> {
@@ -3353,7 +3355,7 @@ fn cmd_watchdog(sub: WatchdogSub) -> Result<()> {
                 .as_deref()
                 .map(parse_num)
                 .transpose()?
-                .unwrap_or(reset_pc);
+                .unwrap_or(default_reset_entry(&sim, fw.as_ref())?);
             sim.reset(entry_num);
             let s = Session::capture(&sim, fw);
             s.save(&session)?;

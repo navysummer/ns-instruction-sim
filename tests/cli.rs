@@ -1773,6 +1773,30 @@ fn watchdog_force_reset() {
 }
 
 #[test]
+fn watchdog_reset_default_goes_to_entry() {
+    // A watchdog reset without --entry must return to the firmware/arch entry
+    // (not the PC where the watchdog fired), while still recording lastResetPc.
+    let dir = tmpdir();
+    let sess = dir.join("wdreset-entry.json");
+    let elf = dir.join("wdreset-entry.elf");
+    write_riscv_elf(&elf);
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["watchdog", "reset", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8000_0000u64, "watchdog reset should go to entry");
+    assert_ne!(json["lastResetPc"], 0x8000_0000u64, "lastResetPc should be the firing PC");
+}
+
+#[test]
 fn continue_trace_prints_each_instruction() {
     let dir = tmpdir();
     let sess = dir.join("ctrace.json");
