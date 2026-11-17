@@ -2924,7 +2924,8 @@ pub fn instruction_size(
     }
     match arch {
         Arch::C166 => c166_instruction_len(read(pc)),
-        Arch::Msp430 | Arch::Xtensa => 2,
+        Arch::Msp430 => 2,
+        Arch::Xtensa => 3,
         Arch::Avr => avr_instruction_len(read(pc), read(pc + 1)),
         Arch::Mcs51 => mcs51_instruction_len(read(pc)),
         Arch::Mcs251 => mcs251_instruction_len(read(pc)),
@@ -4423,6 +4424,12 @@ mod tests {
             _ => 0,
         };
         assert_eq!(instruction_size(Arch::C166, 0, &read, false), 2);
+        // Xtensa in this simulator is a 24-bit fetch model (3 bytes).
+        let read = |addr: u32| match addr {
+            0 => 0x20,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Xtensa, 0, &read, false), 3);
     }
 
     #[test]

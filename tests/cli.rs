@@ -2539,3 +2539,32 @@ fn disasm_c166_imm_width() {
     assert_eq!(json[1]["address"], 3u64);
     assert_eq!(json[1]["text"], "nop");
 }
+
+#[test]
+fn disasm_xtensa_24bit_width() {
+    // This simulator's Xtensa core fetches a full 24-bit word per instruction,
+    // so disassembly must advance 3 bytes and decode NOP (0x000020) correctly.
+    let dir = tmpdir();
+    let sess = dir.join("xtdis.json");
+    let code = dir.join("xtdis.bin");
+    // Two NOPs (0x000020 little-endian: 0x20 0x00 0x00).
+    std::fs::write(&code, [0x20, 0x00, 0x00, 0x20, 0x00, 0x00]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "xtensa", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0u64);
+    assert_eq!(json[0]["text"], "nop");
+    assert_eq!(json[0]["bytes"], serde_json::json!([0x20, 0, 0]));
+    assert_eq!(json[1]["address"], 3u64);
+    assert_eq!(json[1]["text"], "nop");
+}
