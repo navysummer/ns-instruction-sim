@@ -1866,14 +1866,24 @@ impl Simulator {
     /// Single-step over a call/loop by running until PC returns to the line
     /// after the current one, or until a breakpoint/halt.
     pub fn step_over(&mut self, max_steps: u64) -> StepResult {
-        let return_pc = self.pc.wrapping_add(4);
+        let pc = self.program_counter();
+        let arch = self.arch;
+        let read = |addr: u32| self.read_code(addr);
+        let insn = disassemble_one(arch, pc, &read);
+        // A call runs to the caller's next instruction; anything else is a
+        // single step. The return address is `pc + instruction_size`.
+        if !is_call_mnemonic(&insn) {
+            return self.step();
+        }
+        let width = instruction_size(arch, pc, &read, self.arm_state());
+        let return_pc = pc.wrapping_add(width);
         let mut steps = 0u64;
         while steps < max_steps {
             let result = self.step();
             if result != StepResult::Advanced {
                 return result;
             }
-            if self.pc == return_pc {
+            if self.program_counter() == return_pc {
                 return StepResult::Advanced;
             }
             steps += 1;
@@ -1890,9 +1900,9 @@ impl Simulator {
     pub fn step_out(&mut self, max_steps: u64) -> StepResult {
         let mut steps = 0u64;
         while steps < max_steps {
-            let pc = self.pc;
+            let pc = self.program_counter();
             let arch = self.arch;
-            let read = |addr: u32| self.read_u8(addr);
+            let read = |addr: u32| self.read_code(addr);
             let insn = disassemble_one(arch, pc, &read);
             if is_return_mnemonic(&insn) {
                 // Execute the return so the PC lands on the caller's next
@@ -2127,6 +2137,31 @@ impl Simulator {
         }
         self.memory[(address as usize) % MEMORY_SIZE]
     }
+
+    /// Read a byte from the architecture's **code** space (for disassembly /
+    /// instruction fetching). Cores with a separate program ROM (MCS-51 /
+    /// 80251 / C166 / AVR) do not mirror code into `memory`, so the ROM is read
+    /// directly; every other core routes through the generic byte accessor.
+    pub fn read_code(&self, address: u32) -> u8 {
+        if let Some(core) = &self.mcs51 {
+            let i = address as usize;
+            return if i < core.rom.len() { core.rom[i] } else { 0 };
+        }
+        if let Some(core) = &self.x51 {
+            let i = address as usize;
+            return if i < core.rom.len() { core.rom[i] } else { 0 };
+        }
+        if let Some(core) = &self.c166 {
+            let i = address as usize;
+            return if i < core.rom.len() { core.rom[i] } else { 0 };
+        }
+        if let Some(core) = &self.avr {
+            let i = address as usize;
+            return if i < core.rom.len() { core.rom[i] } else { 0 };
+        }
+        self.read_u8(address)
+    }
+
      pub fn write_u32(&mut self, address: u32, value: u32) {
          if let Some(core) = self.arm.as_mut() {
              core.write_u32(address, value);
@@ -2887,6 +2922,29 @@ pub fn is_return_mnemonic(insn: &str) -> bool {
         return insn.contains("pc") || insn.contains("r15");
     }
     false
+}
+
+/// Whether a disassembled mnemonic is a call-class instruction (used by
+/// `step_over` to decide whether to run to the caller's next instruction).
+/// Covers the mnemonics emitted across all supported architectures.
+pub fn is_call_mnemonic(insn: &str) -> bool {
+    let body = insn
+        .trim_start()
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(',')
+        .to_ascii_lowercase();
+    matches!(
+        body.as_str(),
+        // RISC-V / ARM / Xtensa.
+        "jal" | "jalr" | "bl" | "blx" | "call0" | "call4" | "call8" | "call12"
+        | "callx0" | "callx4" | "callx8" | "callx12"
+        // MCS-51 / 80251 / C166 / AVR / MSP430.
+        | "lcall" | "acall" | "call" | "callf" | "callr" | "callt" | "rcall" | "icall"
+        // V850 / RX.
+        | "jarl" | "bsr" | "jsr" | "bsr.l"
+    )
 }
 
 /// Disassemble one instruction at `pc`, choosing ARM (A32) or Thumb decoding
@@ -3713,6 +3771,42 @@ mod tests {
         let result = sim.step_out(64);
         assert_eq!(result, StepResult::Advanced);
         assert_eq!(sim.program_counter(), 0x8000_0004);
+    }
+
+    #[test]
+    fn step_over_and_step_out_use_mcs51_code_space() {
+        // MCS-51 LCALL is 3 bytes: step-over must resume at the return address
+        // (0x0003), not a hard-coded 4 bytes.
+        let mut sim = Simulator::for_arch(Arch::Mcs51).expect("MCS-51 core");
+        let mut rom = vec![0u8; 0x40];
+        rom[0] = 0x12;
+        rom[1] = 0x00;
+        rom[2] = 0x20; // LCALL 0x0020
+        rom[0x20] = 0x22; // RET
+        sim.load_mcs51(0, &rom).expect("load");
+        sim.set_program_counter(0);
+        assert_eq!(sim.step_over(64), StepResult::Advanced);
+        assert_eq!(sim.program_counter(), 0x0003, "step-over must resume after 3-byte LCALL");
+
+        // A non-call instruction (NOP at 0x30) is a single step, not a run to
+        // pc + width.
+        sim.set_program_counter(0x30);
+        assert_eq!(sim.step_over(64), StepResult::Advanced);
+        assert_eq!(sim.program_counter(), 0x31, "step-over on NOP is one step");
+
+        // step-out on a fresh sub-function reads RET from the separate code ROM
+        // (not data space) and lands on the caller's next instruction.
+        let mut sim = Simulator::for_arch(Arch::Mcs51).expect("MCS-51 core");
+        let mut rom = vec![0u8; 0x40];
+        rom[0x20] = 0x22; // RET
+        sim.load_mcs51(0, &rom).expect("load");
+        sim.set_program_counter(0x20);
+        let core = sim.mcs51.as_mut().unwrap();
+        core.sp = 0x09;
+        core.idram[0x08] = 0x00; // return high
+        core.idram[0x09] = 0x03; // return low
+        assert_eq!(sim.step_out(64), StepResult::Advanced);
+        assert_eq!(sim.program_counter(), 0x0003, "step-out must return after RET");
     }
 
     #[test]

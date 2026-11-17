@@ -255,6 +255,8 @@ done
 - `disasm_xtensa_24bit_width`：本仿真器的 Xtensa 内核按 24 位取指，反汇编按 3 字节推进并解码 NOP。
 - `disasm_v850_variable_width`：V850 变长指令（2/4/6 字节）按解码宽度推进（NOP=2、DISPOSE=4）。
 - `step_source_annotates_lines`：`step --source` 按 DWARF 行表标注 file:line。
+- `step_over_and_step_out_use_code_space`：`step-over` 按实际指令宽度计算返回地址（mcs51 LCALL=3 字节），
+  `step-out` 从独立代码 ROM 读取 `RET` 并在返回地址停下（修复哈佛内核代码空间读取）。
 - `periph_svd_load_populates_registers`：`periph svd-load` 从 SVD 载入复位值并支持直读写/持久化。
 - `periph_svd_load_instruction_write_couples`：`run --session` 在 SVD 加载的会话上运行，指令级 `sw` 直写寄存器并读回。
 - `periph_svd_load_by_device_key`：`periph svd-load --device` 从内置 SVD 加载；缺源报错。
