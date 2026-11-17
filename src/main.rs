@@ -26,7 +26,7 @@ use clap::{Args, Parser, Subcommand};
 
 use ns_sim::{Arch, Simulator, StepResult};
 use session::{FirmwareState, Session};
-use sim::{default_mem_base, detect_format, load_firmware_into, parse_num, read_code_byte, read_mem_byte, read_mem_u32, write_mem_byte};
+use sim::{default_mem_base, detect_format, encode_intel_hex, load_firmware_into, parse_num, read_code_byte, read_mem_byte, read_mem_u32, write_mem_byte};
 
 #[derive(Parser)]
 #[command(
@@ -462,7 +462,7 @@ enum MemSub {
         /// C 数组名（仅 --format c）。
         #[arg(long, default_value = "data")]
         name: String,
-        /// 输出格式：`c`（C 数组）或 `hex`（十六进制文本）。
+        /// 输出格式：`c`（C 数组）、`hex`（Intel HEX，可回载）或 `dump`（十六进制+ASCII 文本）。
         #[arg(long, default_value = "c")]
         format: String,
         /// 写入文件路径（缺省打印到 stdout）。
@@ -2239,8 +2239,9 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                     s.push_str("};\n");
                     s
                 }
-                "hex" => hex_dump(addr_num, &bytes),
-                other => bail!("不支持的内存导出格式: {other}（支持 c/hex）"),
+                "hex" => encode_intel_hex(addr_num, &bytes),
+                "dump" => hex_dump(addr_num, &bytes),
+                other => bail!("不支持的内存导出格式: {other}（支持 c/hex/dump）"),
             };
             if let Some(out_path) = out {
                 std::fs::write(&out_path, text.as_bytes())

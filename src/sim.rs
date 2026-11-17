@@ -133,6 +133,47 @@ pub fn parse_num(text: &str) -> Result<u32> {
     }
 }
 
+/// Encode `bytes` starting at `addr` as Intel HEX records (loadable by
+/// `mem load` / the firmware loader). Addresses above 0xFFFF are split into
+/// 64 KiB banks using extended-linear-address (type 04) records.
+pub fn encode_intel_hex(addr: u32, bytes: &[u8]) -> String {
+    fn record(data: &[u8], address: u16, record_type: u8) -> String {
+        let mut out = String::from(":");
+        out.push_str(&format!("{:02X}{:04X}{:02X}", data.len(), address, record_type));
+        let mut sum = (data.len() as u8)
+            .wrapping_add((address >> 8) as u8)
+            .wrapping_add((address & 0xFF) as u8)
+            .wrapping_add(record_type);
+        for byte in data {
+            out.push_str(&format!("{byte:02X}"));
+            sum = sum.wrapping_add(*byte);
+        }
+        out.push_str(&format!("{:02X}", 0u8.wrapping_sub(sum)));
+        out.push('\n');
+        out
+    }
+
+    let mut out = String::new();
+    let mut index = 0usize;
+    let mut current_bank = u32::MAX;
+    while index < bytes.len() {
+        let current = addr.wrapping_add(index as u32);
+        let bank = current >> 16;
+        if bank != current_bank {
+            out.push_str(&record(&[(bank >> 8) as u8, bank as u8], 0, 0x04));
+            current_bank = bank;
+        }
+        let low = (current & 0xFFFF) as u16;
+        let chunk_len = (16usize)
+            .min(bytes.len() - index)
+            .min((0x10000 - low as usize) as usize);
+        out.push_str(&record(&bytes[index..index + chunk_len], low, 0x00));
+        index += chunk_len;
+    }
+    out.push_str(&record(&[], 0, 0x01));
+    out
+}
+
 /// Decode Intel HEX using an embedded copy of the parser from ns-flash.
 ///
 /// We intentionally avoid a direct dependency on ns-flash (which pulls in
@@ -362,5 +403,23 @@ pub fn write_mem_byte(sim: &mut Simulator, addr: u32, value: u8) {
         entry.1 = value;
     } else {
         sim.memory_overlay.push((addr, value));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_intel_hex;
+
+    #[test]
+    fn intel_hex_encodes_and_decodes_roundtrip() {
+        // The encoder's own output must decode back to the same bytes via the
+        // embedded parser, including addresses above the 64 KiB bank.
+        let bytes: Vec<u8> = (0u8..32).collect();
+        for (addr, data) in [(0u32, &bytes[..]), (0x1000_0000u32, &bytes[..])] {
+            let text = encode_intel_hex(addr, data);
+            let decoded = super::ns_flash_hex::decode(&text).unwrap();
+            assert_eq!(decoded.base as u32, addr, "base mismatch for {addr:#x}");
+            assert_eq!(&decoded.bytes, data, "payload mismatch for {addr:#x}");
+        }
     }
 }

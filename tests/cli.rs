@@ -1739,6 +1739,64 @@ fn mem_dump_json() {
 }
 
 #[test]
+fn mem_dump_hex_roundtrip() {
+    // `mem dump --format hex` must emit valid Intel HEX that `mem load` can
+    // load back, including addresses above the 64 KiB bank boundary.
+    let dir = tmpdir();
+    let sess = dir.join("hexrt.json");
+    let hex = dir.join("hexrt.hex");
+    let sess2 = dir.join("hexrt2.json");
+    let addr = 0x1000_0000u64;
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--arch", "riscv", "--addr", &format!("{addr:#x}"),
+               "--bytes", "0xde", "0xad", "0xbe", "0xef", "0x00", "0x01", "0x02", "0x03"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["mem", "dump", "--session", sess.to_str().unwrap(),
+               "--addr", &format!("{addr:#x}"), "--len", "8",
+               "--format", "hex", "--out", hex.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = std::fs::read_to_string(&hex).unwrap();
+    assert!(text.contains(":00000001FF"), "missing EOF record: {text}");
+    // Load the HEX back into a fresh session and compare.
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess2.to_str().unwrap(),
+               "--arch", "riscv", "--firmware", hex.to_str().unwrap(),
+               "--base", &format!("{addr:#x}")])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess2.to_str().unwrap(),
+               "--addr", &format!("{addr:#x}"), "--len", "8", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"], serde_json::json!([0xde, 0xad, 0xbe, 0xef, 0, 1, 2, 3]));
+    // `--format dump` is the human-readable hex+ASCII view (not loadable).
+    let out = Command::new(bin())
+        .args(["mem", "dump", "--session", sess.to_str().unwrap(),
+               "--addr", &format!("{addr:#x}"), "--len", "8", "--format", "dump"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("|........|"));
+    // Unknown format is rejected.
+    let out = Command::new(bin())
+        .args(["mem", "dump", "--session", sess.to_str().unwrap(),
+               "--addr", &format!("{addr:#x}"), "--len", "8", "--format", "bogus"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
 fn watchdog_force_reset() {
     let dir = tmpdir();
     let sess = dir.join("wdreset.json");
