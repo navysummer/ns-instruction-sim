@@ -842,6 +842,15 @@ impl Simulator {
             last_instruction_cycles: 0,
         }
     }
+    /// Largest program-counter address this architecture can execute at.
+    /// 16-bit-PC cores (MCS-51 / C166) and the AVR byte-addressed program
+    /// space top out at `0xFFFF`; all others use the full 32-bit range.
+    pub fn pc_limit(&self) -> u32 {
+        match self.arch {
+            Arch::Mcs51 | Arch::C166 | Arch::Avr => 0xFFFF,
+            _ => u32::MAX,
+        }
+    }
     /// Create a simulator for a target architecture. RISC-V, 8051, ARM,
     /// 80251, C166, Xtensa, AVR, MSP430 and V850 are implemented.
     pub fn for_arch(arch: Arch) -> anyhow::Result<Self> {

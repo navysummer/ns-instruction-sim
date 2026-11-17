@@ -2196,6 +2196,44 @@ fn bp_management_json() {
 }
 
 #[test]
+fn bp_set_out_of_range_rejected() {
+    // 16-bit-PC cores (MCS-51 / C166) and AVR top out at 0xFFFF; an
+    // out-of-range address must be rejected instead of silently wrapping
+    // (e.g. 0x80000000 & 0xFFFF == 0 would match the reset vector).
+    let dir = tmpdir();
+    for arch in ["mcs51", "c166", "avr"] {
+        let sess = dir.join(format!("bprange-{arch}.json"));
+        let out = Command::new(bin())
+            .args(["mem", "write", "--session", sess.to_str().unwrap(),
+                   "--arch", arch, "--addr", "0x20", "--bytes", "0xaa"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new(bin())
+            .args(["bp", "set", "--session", sess.to_str().unwrap(),
+                   "--addr", "0x80000000", "--json"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "bp set should fail for {arch}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("可寻址范围"), "no range msg for {arch}");
+        // An in-range address is accepted.
+        let out = Command::new(bin())
+            .args(["bp", "set", "--session", sess.to_str().unwrap(),
+                   "--addr", "0x100", "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "in-range bp failed for {arch}: {}", String::from_utf8_lossy(&out.stderr));
+        // --until out of range must also be rejected.
+        let out = Command::new(bin())
+            .args(["continue", "--session", sess.to_str().unwrap(),
+                   "--until", "0x80000000"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "continue --until should fail for {arch}");
+    }
+}
+
+#[test]
 fn mem_write_fill_json() {
     let dir = tmpdir();
     let sess = dir.join("mwj.json");

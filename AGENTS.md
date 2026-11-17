@@ -216,6 +216,7 @@ done
 - `bp_set_by_symbol`：`bp set --symbol` 按符号名解析地址设置断点（含未找到错误路径）。
 - `bp_set_by_line`：`bp set --line file:line` 按源码行号设置断点（含非法行号错误路径）。
 - `bp_management_json`：`bp set/clear/clear-all/enable/disable --json` 机器可读确认。
+- `bp_set_out_of_range_rejected`：16 位 PC 架构（mcs51/c166/avr）越界断点地址被拒绝，不静默回绕；`--until` 同校验。
 - `periph_timer_config_and_uart_write`：定时器配置与 UART 寄存器写输出。
 - `device_svd_parse_and_filter`：SVD 文件解析、外设/寄存器过滤与错误路径。
 - `run_steps_runs_exactly_n_instructions`：`--steps N` 精确运行 N 条指令并停住。

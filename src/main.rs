@@ -1760,6 +1760,11 @@ fn cmd_run(args: RunArgs) -> Result<()> {
 
     // `--until ADDR` installs a temporary breakpoint removed before saving.
     let until_addr = args.until.as_deref().map(parse_num).transpose()?;
+    if let Some(addr) = until_addr {
+        if addr > sim.pc_limit() {
+            bail!("--until 地址 0x{addr:08x} 超出 {} 的 PC 可寻址范围", sim.arch.label());
+        }
+    }
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
     // `--steps N` is a bounded "run exactly N instructions" mode; otherwise
     // run to completion with the `--max-steps` upper bound.
@@ -1883,6 +1888,11 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
     // `--until ADDR` installs a temporary breakpoint that is removed before
     // the session is saved (unless the address was already a breakpoint).
     let until_addr = args.until.as_deref().map(parse_num).transpose()?;
+    if let Some(addr) = until_addr {
+        if addr > sim.pc_limit() {
+            bail!("--until 地址 0x{addr:08x} 超出 {} 的 PC 可寻址范围", sim.arch.label());
+        }
+    }
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
     let result = if args.trace {
         trace_run(&mut sim, None, args.max_steps)
@@ -2333,6 +2343,13 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
                 parse_num(&addr)?
             };
+            if addr_num > sim.pc_limit() {
+                bail!(
+                    "断点地址 0x{addr_num:08x} 超出 {} 的 PC 可寻址范围（0x{:08x}）",
+                    sim.arch.label(),
+                    sim.pc_limit()
+                );
+            }
             let cond = condition.unwrap_or_default();
             if once {
                 sim.set_breakpoint_ex_once(addr_num, cond.clone(), hit_count);
