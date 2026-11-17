@@ -108,7 +108,7 @@ ns-instruction-sim/
 
 | 命令 | 子命令 | 功能 | 关键参数 | 输出 |
 |---|---|---|---|---|
-| `version` | — | 显示版本号 | — | 文本 |
+| `version` | — | 显示版本号 | `--json` | 文本/JSON |
 | `arch` | `list` | 列出支持的架构与示例设备 | `--json` | 表/JSON |
 | `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析（文件或内置）/链接脚本/启动文件/外设初始化 C 骨架 | `--file --device --peripheral --register --out --json` | 表/文本/JSON |
 | `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址（可指定会话保留外设/SVD 寄存器） | `--firmware --session --arch --base --max-steps --steps --until --cycle-accurate --save-session --json --trace --source` | 状态 |
@@ -233,7 +233,7 @@ done
 - `reg_list_filter`：`reg list --filter` 按名称子串筛选寄存器。
 - `reset_json`：`reset --json` 输出 PC/周期/停止 JSON。
 - `state_includes_peripherals_and_csr`：`state --json` 含外设与 CSR 完整快照。
-- `version_command_and_flag`：`version` 子命令与 `--version` 均输出版本号。
+- `version_command_and_flag`：`version` 子命令（含 `--json`）与 `--version` 均输出版本号。
 - `mem_write_read_arm_roundtrip`：非 RISC-V（ARM）内存写跨会话持久化。
 - `periph_config_relocates_bases`：外设 UART/GPIO 基址重定位并持久化。
 - `mem_write_with_arch_creates_session`：`mem write --arch` 直接创建指定架构会话。

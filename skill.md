@@ -63,6 +63,7 @@ cargo test --offline
 ```bash
 # 版本
 ns-instruction-sim version
+ns-instruction-sim version --json
 
 # 列出架构 / 设备
 ns-instruction-sim arch list

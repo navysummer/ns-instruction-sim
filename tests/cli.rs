@@ -1283,6 +1283,11 @@ fn version_command_and_flag() {
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains(env!("CARGO_PKG_VERSION")));
+    let out = Command::new(bin()).args(["version", "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["name"], "ns-instruction-sim");
+    assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
     let out = Command::new(bin()).arg("--version").output().unwrap();
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains(env!("CARGO_PKG_VERSION")));

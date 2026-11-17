@@ -45,7 +45,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// 显示版本号。
-    Version,
+    Version {
+        /// 以 JSON 输出名称与版本号。
+        #[arg(long)]
+        json: bool,
+    },
     /// 列出支持的架构。
     Arch {
         #[command(subcommand)]
@@ -1043,8 +1047,15 @@ fn main() {
 fn real_main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Version => {
-            println!("ns-instruction-sim {}", env!("CARGO_PKG_VERSION"));
+        Command::Version { json } => {
+            if json {
+                print_json(&serde_json::json!({
+                    "name": "ns-instruction-sim",
+                    "version": env!("CARGO_PKG_VERSION"),
+                }))?;
+            } else {
+                println!("ns-instruction-sim {}", env!("CARGO_PKG_VERSION"));
+            }
             Ok(())
         }
         Command::Arch { sub: ArchSub::List { json } } => cmd_arch_list(json),
