@@ -1797,6 +1797,28 @@ fn mem_dump_hex_roundtrip() {
 }
 
 #[test]
+fn state_bootstraps_persistent_session() {
+    // `state --arch --session` on a missing path must materialize the session
+    // so a subsequent `cycle estimate`/`run` can operate on it.
+    let dir = tmpdir();
+    let sess = dir.join("boot.json");
+    let out = Command::new(bin())
+        .args(["state", "--arch", "riscv", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(sess.exists(), "state --session must create the session file");
+    let out = Command::new(bin())
+        .args(["cycle", "estimate", "--session", sess.to_str().unwrap(),
+               "--addr", "0x0", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["cycles"].as_u64().unwrap() >= 1);
+}
+
+#[test]
 fn watchdog_force_reset() {
     let dir = tmpdir();
     let sess = dir.join("wdreset.json");

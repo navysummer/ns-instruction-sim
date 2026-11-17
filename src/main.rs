@@ -1197,6 +1197,12 @@ fn load_or_create(
             format: detect_format(path).label().to_string(),
         });
     }
+    // Persist a freshly-created session so subsequent commands can operate on
+    // it (e.g. `state --arch riscv --session s.json` then `run --session s.json`).
+    if let Some(sp) = session_path {
+        let s = Session::capture(&sim, fw.clone());
+        s.save(sp)?;
+    }
     Ok((sim, fw, session_path.map(|p| p.to_path_buf())))
 }
 
