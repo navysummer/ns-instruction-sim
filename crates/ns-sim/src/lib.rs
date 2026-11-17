@@ -2929,6 +2929,7 @@ pub fn instruction_size(
         Arch::Avr => avr_instruction_len(read(pc), read(pc + 1)),
         Arch::Mcs51 => mcs51_instruction_len(read(pc)),
         Arch::Mcs251 => mcs251_instruction_len(read(pc)),
+        Arch::V850 => v850::instruction_len(pc, read),
         _ => 4,
     }
 }
@@ -4430,6 +4431,21 @@ mod tests {
             _ => 0,
         };
         assert_eq!(instruction_size(Arch::Xtensa, 0, &read, false), 3);
+        // V850 is variable-length: NOP (0x0000) is 2 bytes, DISPOSE 4 bytes.
+        let read = |addr: u32| match addr {
+            0 => 0x00,
+            1 => 0x00,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::V850, 0, &read, false), 2);
+        let read = |addr: u32| match addr {
+            0 => 0x40,
+            1 => 0x06,
+            2 => 0x00,
+            3 => 0x00,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::V850, 0, &read, false), 4);
     }
 
     #[test]

@@ -1432,6 +1432,16 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     }
 }
 
+/// Number of code bytes consumed by the V850 instruction at `pc`. V850 is
+/// variable-length (2/4/6 bytes); this matches the execution core's `decode`.
+pub fn instruction_len(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
+    let read16 = |addr: u32| -> u16 {
+        read(addr) as u16 | ((read(addr.wrapping_add(1)) as u16) << 8)
+    };
+    let (_insn, len) = decode_at(pc, &read16);
+    len
+}
+
 fn cond_suffix(cond: u8) -> &'static str {
     match cond & 0xF {
         0x0 => "v",

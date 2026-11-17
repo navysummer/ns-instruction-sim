@@ -2568,3 +2568,34 @@ fn disasm_xtensa_24bit_width() {
     assert_eq!(json[1]["address"], 3u64);
     assert_eq!(json[1]["text"], "nop");
 }
+
+#[test]
+fn disasm_v850_variable_width() {
+    // V850 is variable-length (2/4/6 bytes): NOP is 2 bytes, DISPOSE is 4.
+    // Disassembly must advance by the decoded width, not a fixed 4.
+    let dir = tmpdir();
+    let sess = dir.join("v850dis.json");
+    let code = dir.join("v850dis.bin");
+    // NOP (0x0000), DISPOSE (top 0x19), NOP.
+    std::fs::write(&code, [0x00, 0x00, 0x40, 0x06, 0x00, 0x00, 0x00, 0x00]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "v850", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "3", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0u64);
+    assert_eq!(json[0]["text"], "nop");
+    assert_eq!(json[1]["address"], 2u64);
+    assert!(json[1]["text"].as_str().unwrap().starts_with("dispose"),
+            "expected dispose, got {}", json[1]["text"]);
+    assert_eq!(json[2]["address"], 6u64);
+    assert_eq!(json[2]["text"], "nop");
+}
