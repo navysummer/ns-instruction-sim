@@ -3605,6 +3605,18 @@ fn disassemble_c166(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         }
         n if (0x30..=0x3F).contains(&n) => format!("add r{}, r{}", n & 0x0F, read(pc + 1) & 0x0F),
         n if (0x40..=0x4F).contains(&n) => format!("sub r{}, r{}", n & 0x0F, read(pc + 1) & 0x0F),
+        n if (0x50..=0x5F).contains(&n) => {
+            // AND/OR/XOR Rn, Rm: bits 3:2 select the operation (00=AND,
+            // 01=OR, 1x=XOR), matching the execution core's 0x50-0x5F family.
+            let rn = n & 0x0F;
+            let rm = read(pc + 1) & 0x0F;
+            let name = match n & 0x0C {
+                0x00 => "and",
+                0x04 => "or",
+                _ => "xor",
+            };
+            format!("{name} r{rn}, r{rm}")
+        }
         n if (0x60..=0x6F).contains(&n) => format!("mul r{}, r{}", n & 0x0F, read(pc + 1) & 0x0F),
         n if (0x70..=0x7F).contains(&n) => format!("div r{}, r{}", n & 0x0F, read(pc + 1) & 0x0F),
         n if (0x80..=0x8F).contains(&n) => format!("load r{}, [r{}]", n & 0x0F, read(pc + 1) & 0x0F),
@@ -4510,6 +4522,26 @@ mod tests {
             if i < 2 { bytes[i] } else { 0 }
         };
         assert_eq!(disassemble_one(Arch::C166, 0, &read), "mov r0, r2");
+    }
+
+    #[test]
+    fn disassembles_c166_logic_register_forms() {
+        // The 0x50-0x5F family decodes AND/OR/XOR by bits 3:2 (00=AND,
+        // 01=OR, 1x=XOR); the low nibble is the destination and the second
+        // byte's low nibble is the source.
+        for (op, expected) in [
+            (0x50, "and r0, r1"),
+            (0x54, "or r4, r1"),
+            (0x58, "xor r8, r1"),
+            (0x5C, "xor r12, r1"),
+        ] {
+            let bytes = [op, 0x01];
+            let read = |addr: u32| {
+                let i = addr as usize;
+                if i < 2 { bytes[i] } else { 0 }
+            };
+            assert_eq!(disassemble_one(Arch::C166, 0, &read), expected);
+        }
     }
 
     #[test]

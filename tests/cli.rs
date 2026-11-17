@@ -2621,6 +2621,37 @@ fn disasm_c166_imm_width() {
 }
 
 #[test]
+fn disasm_c166_logic_register_forms() {
+    // C166 0x50-0x5F decodes AND/OR/XOR Rn, Rm (bits 3:2 select the
+    // operation) and advances 2 bytes per instruction.
+    let dir = tmpdir();
+    let sess = dir.join("c166logic.json");
+    let code = dir.join("c166logic.bin");
+    std::fs::write(&code, [0x50, 0x01, 0x54, 0x02, 0x58, 0x03, 0x5C, 0x04]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "c166", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0u64);
+    assert_eq!(json[0]["text"], "and r0, r1");
+    assert_eq!(json[1]["address"], 2u64);
+    assert_eq!(json[1]["text"], "or r4, r2");
+    assert_eq!(json[2]["address"], 4u64);
+    assert_eq!(json[2]["text"], "xor r8, r3");
+    assert_eq!(json[3]["address"], 6u64);
+    assert_eq!(json[3]["text"], "xor r12, r4");
+}
+
+#[test]
 fn disasm_xtensa_24bit_width() {
     // This simulator's Xtensa core fetches a full 24-bit word per instruction,
     // so disassembly must advance 3 bytes and decode NOP (0x000020) correctly.

@@ -254,6 +254,9 @@ done
 - `disasm_mcs251_code_space_width`：80251 变长指令按实际宽度推进（NOP=1、MOV Rn,#imm16=3）。
 - `disasm_avr_32bit_width`：AVR LDS/STS/JMP/CALL 32 位指令按 4 字节推进并正确解码（此前守卫隐藏了这些分支）。
 - `disasm_c166_imm_width`：C166 `MOV Rn,#imm16`/`CALL` 按 3 字节推进并解码小端立即数（与执行内核一致）。
+- `disasm_c166_logic_register_forms`：C166 `0x50-0x5F` 按 `bits 3:2` 解码
+  `AND`/`OR`/`XOR Rn, Rm`（00=AND、01=OR、1x=XOR；低半字节为目的寄存器，
+  故 `0x54` 目标 R4），与执行内核一致并按 2 字节推进。
 - `disasm_xtensa_24bit_width`：本仿真器的 Xtensa 内核按 24 位取指，反汇编按 3 字节推进并解码 NOP。
 - `disasm_v850_variable_width`：V850 变长指令（2/4/6 字节）按解码宽度推进（NOP=2、DISPOSE=4）。
 - `disasm_stm8_variable_width`：STM8 变长指令按实际宽度推进并解码内核主流操作码族（NOP=1、JRA=2、

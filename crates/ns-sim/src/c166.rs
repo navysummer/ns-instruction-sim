@@ -216,11 +216,18 @@ impl C166Core {
                 self.set_nz(result);
                 self.regs[rn] = result;
             }
-            // AND/OR/XOR Rn, Rm (0x50-0x5F)
+            // AND/OR/XOR Rn, Rm (0x50-0x5F). In this simulator's simplified
+            // encoding, bits 3:2 select the operation: 00=AND, 01=OR, 1x=XOR;
+            // the low nibble is the destination and the second byte's low
+            // nibble is the source register.
             0x50..=0x5F => {
                 let rn = (op & 0x0F) as usize;
                 let rm = (self.fetch() & 0x0F) as usize;
-                self.regs[rn] &= self.regs[rm];
+                match op & 0x0C {
+                    0x00 => self.regs[rn] &= self.regs[rm],
+                    0x04 => self.regs[rn] |= self.regs[rm],
+                    _ => self.regs[rn] ^= self.regs[rm],
+                }
                 self.set_nz(self.regs[rn]);
             }
             // MUL Rn, Rm (0x60-0x6F): result in rn (low), next register high
@@ -371,6 +378,39 @@ mod tests {
         assert_eq!(c.regs[0], 0xFFFF);
         assert!(c.carry(), "borrow set");
         assert!(c.negative());
+    }
+
+    #[test]
+    fn and_or_xor_register_forms() {
+        // In the simplified 0x50-0x5F family, bits 3:2 select the operation:
+        // 00=AND, 01=OR, 1x=XOR; the low nibble is the destination register.
+        let mut c = core();
+        c.regs[0] = 0xFF00;
+        c.regs[1] = 0x0FF0;
+        // AND R0, R1 (0x50, 0x01)
+        run(&mut c, &[0x50, 0x01], 1);
+        assert_eq!(c.regs[0], 0x0F00);
+        assert!(!c.zero());
+        assert!(!c.negative());
+
+        // OR R4, R1 (0x54, 0x01): the low nibble of the opcode is the
+        // destination register index, so 0x54 targets R4.
+        c.regs[4] = 0xFF00;
+        c.regs[1] = 0x0FF0;
+        run(&mut c, &[0x54, 0x01], 1);
+        assert_eq!(c.regs[4], 0xFFF0);
+
+        // XOR R8, R1 (0x58, 0x01)
+        c.regs[8] = 0xFF00;
+        c.regs[1] = 0x0FF0;
+        run(&mut c, &[0x58, 0x01], 1);
+        assert_eq!(c.regs[8], 0xF0F0);
+
+        // 0x5C-0x5F also select XOR (bits 3:2 = 0xC), targeting R12-R15.
+        c.regs[12] = 0xFF00;
+        c.regs[1] = 0x0FF0;
+        run(&mut c, &[0x5C, 0x01], 1);
+        assert_eq!(c.regs[12], 0xF0F0);
     }
 
     #[test]
