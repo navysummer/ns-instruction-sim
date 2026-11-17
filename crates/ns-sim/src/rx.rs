@@ -1548,19 +1548,10 @@ pub fn instruction_len(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
         };
         return base + disp(lds) + disp(ldd);
     }
-    // BSET/BCLR/BTST #imm, dsp[rd] and PUSH dsp[rs]: displacement width.
-    if matches!(op & 0xFC, 0xF0 | 0xF4) {
-        let ld = ((insn >> 8) & 0x03) as u32;
-        return base + match ld {
-            1 => 1,
-            2 | 3 => 2,
-            _ => 0,
-        };
-    }
-    // MOV [ri+rb], rd / MOV rd, [ri+rb]: no extra operand.
-    if matches!(op & 0xFC, 0xF8 | 0xFA | 0xFC) {
-        return base;
-    }
+    // Note: the core's `(op & 0xE0) == 0xE0` MOV dsp[lds], dsp[ldd] family
+    // covers op 0xE0-0xFF, so the bit-operation (0xF0/0xF4), register-indexed
+    // (0xF8/0xFA) and long-opcode (0xFC) families are unreachable in the core
+    // and fall through to this default.
     // Unknown: the core fetches the opcode word then halts.
     base
 }
@@ -1579,6 +1570,17 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     if insn == 0x0002 { return "rts".to_string(); }
     if insn == 0x0003 { return "nop".to_string(); }
     if insn == 0x7996 { return "wait".to_string(); }
+    if insn == 0x0004 || insn == 0x0005 {
+        let dsp = (((read(pc + 2) as u32) << 24)
+            | ((read(pc + 3) as u32) << 16)
+            | ((read(pc + 4) as u32) << 8)
+            | read(pc + 5) as u32) as i32;
+        return if insn == 0x0004 {
+            format!("bra.a {:+}", dsp)
+        } else {
+            format!("bsr.a {:+}", dsp)
+        };
+    }
     if (insn & 0xF800) == 0x0800 {
         // BRA.s is a 1-byte instruction: displacement is the low 7 bits of the
         // first byte.
@@ -1649,6 +1651,47 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let dsp = ((insn >> 1) & 0x1E) as i32;
         return format!("movu.{} {}[r{}], r{}", sz_name(sz), dsp, rs, rd);
     }
+    // SUB/CMP/ADD/MUL/AND/OR dsp[rs], rd (register, dsp8 or dsp16 source).
+    if matches!(op & 0xFC, 0x40 | 0x44 | 0x48 | 0x4C | 0x50 | 0x54) {
+        let name = match op & 0xFC {
+            0x40 => "sub",
+            0x44 => "cmp",
+            0x48 => "add",
+            0x4C => "mul",
+            0x50 => "and",
+            _ => "or",
+        };
+        let ld = op & 0x03;
+        let rs = ((low >> 4) & 0x0F) as usize;
+        let rd = (low & 0x0F) as usize;
+        return match ld {
+            1 => format!("{} {:+}[r{}], r{}", name, read(pc + 2) as i8, rs, rd),
+            2 => {
+                let dsp = ((read(pc + 2) as i16) << 8) | read(pc + 3) as i16;
+                format!("{} {:+}[r{}], r{}", name, dsp, rs, rd)
+            }
+            _ => format!("{} r{}, r{}", name, rs, rd),
+        };
+    }
+    // MOVU.b/w: register, dsp8, dsp16 or #imm16 source.
+    if (op & 0xF8) == 0x58 {
+        let sz = ((op >> 2) & 0x01) as u8;
+        let kind = op & 0x03;
+        let rs = ((low >> 4) & 0x0F) as usize;
+        let rd = (low & 0x0F) as usize;
+        return match kind {
+            0 => format!("movu.{} r{}, r{}", sz_name(sz), rs, rd),
+            1 => format!("movu.{} {:+}[r{}], r{}", sz_name(sz), read(pc + 2) as i8, rs, rd),
+            2 => {
+                let dsp = ((read(pc + 2) as i16) << 8) | read(pc + 3) as i16;
+                format!("movu.{} {:+}[r{}], r{}", sz_name(sz), dsp, rs, rd)
+            }
+            _ => {
+                let imm = ((read(pc + 2) as u16) << 8) | read(pc + 3) as u16;
+                format!("movu.{} #0x{:04x}, r{}", sz_name(sz), imm, rd)
+            }
+        };
+    }
     if (op & 0xFC) == 0x60 {
         let sub = (op >> 2) & 0x03;
         let imm = ((insn >> 4) & 0x0F) as u32;
@@ -1710,6 +1753,34 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let rs = (low & 0x0F) as usize;
         let m = match kind { 0 => "jmp", 1 => "jsr", 4 => "bra.l", 5 => "bsr.l", _ => "?" };
         return format!("{} r{}", m, rs);
+    }
+    // MOV.b/w/l dsp[lds], dsp[ldd].
+    if matches!(op & 0xE0, 0xC0 | 0xE0) {
+        let sz = ((op >> 5) & 0x03) as u8;
+        let ldd = (b0 & 0x03) as usize;
+        let lds = ((low >> 4) & 0x03) as usize;
+        let rd = ((b0 >> 4) & 0x0F) as usize;
+        let rs = (low & 0x0F) as usize;
+        let mut p = pc + 2;
+        let src = match lds {
+            2 => {
+                let d = read(p) as i8;
+                p += 1;
+                format!("{:+}[r{}]", d, rs)
+            }
+            3 => {
+                let d = ((read(p) as i16) << 8) | read(p + 1) as i16;
+                p += 2;
+                format!("{:+}[r{}]", d, rs)
+            }
+            _ => format!("[r{}]", rs),
+        };
+        let dst = match ldd {
+            2 => format!("{:+}[r{}]", read(p) as i8, rd),
+            3 => format!("{:+}[r{}]", ((read(p) as i16) << 8) | read(p + 1) as i16, rd),
+            _ => format!("[r{}]", rd),
+        };
+        return format!("mov.{} {}, {}", sz_name(sz), src, dst);
     }
     format!("0x{:04x}", insn)
 }

@@ -2870,3 +2870,39 @@ fn disasm_rx_variable_width() {
     assert_eq!(json[3]["text"], "add #0x3412, r0, r0");
     assert_eq!(json[4]["address"], 0x8009u64);
 }
+
+#[test]
+fn disasm_rx_decodes_families() {
+    // RX disassembly decodes the register/dsp/immediate families the core
+    // executes, advancing by the actual width and reading big-endian operands.
+    let dir = tmpdir();
+    let sess = dir.join("rxfam.json");
+    let code = dir.join("rxfam.bin");
+    std::fs::write(&code, [
+        0x48, 0x00,             // add r0, r0
+        0x41, 0x20, 0x10,       // sub +16[r2], r0
+        0x5A, 0x30, 0x34, 0x12, // movu.b +0x3412[r3], r0
+        0xC2, 0x20, 0x10, 0x20, // mov.l +16[r0], +32[r12]
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "rx", "--firmware", code.to_str().unwrap(), "--base", "0x8000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0x8000", "--count", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000u64);
+    assert_eq!(json[0]["text"], "add r0, r0");
+    assert_eq!(json[1]["address"], 0x8002u64);
+    assert_eq!(json[1]["text"], "sub +16[r2], r0");
+    assert_eq!(json[2]["address"], 0x8005u64);
+    assert_eq!(json[2]["text"], "movu.b +13330[r3], r0");
+    assert_eq!(json[3]["address"], 0x8009u64);
+    assert_eq!(json[3]["text"], "mov.l +16[r0], +32[r12]");
+}

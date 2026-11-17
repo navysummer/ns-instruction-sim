@@ -303,7 +303,7 @@ done
   `disasm_mcs51_code_space_width`/`disasm_mcs251_code_space_width`/`disasm_avr_32bit_width`/
   `disasm_c166_imm_width`/`disasm_xtensa_24bit_width`/`disasm_v850_variable_width`/
   `disasm_stm8_variable_width`/`disasm_msp430_extension_words`/`disasm_rl78_variable_width`/
-  `disasm_rx_variable_width` 锁定。
+  `disasm_rx_variable_width`/`disasm_rx_decodes_families` 锁定。
 
 ---
 
