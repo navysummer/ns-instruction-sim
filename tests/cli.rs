@@ -2573,6 +2573,33 @@ fn disasm_mcs51_core_forms() {
 }
 
 #[test]
+fn disasm_mcs51_alu_acc_register() {
+    // ORL/ANL/XRL A, Rn (0x48-0x4F/0x58-0x5F/0x68-0x6F) decode with the
+    // source register in the low nibble and advance 1 byte each.
+    let dir = tmpdir();
+    let sess = dir.join("m51alu.json");
+    let code = dir.join("m51alu.bin");
+    std::fs::write(&code, [0x48, 0x59, 0x6A]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "mcs51", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "3", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["text"], "orl a, r0");
+    assert_eq!(json[1]["text"], "anl a, r1");
+    assert_eq!(json[2]["text"], "xrl a, r2");
+    assert_eq!(json[2]["address"], 2u64);
+}
+
+#[test]
 fn disasm_mcs251_code_space_width() {
     // The 80251 is variable-length: disassembly must advance by the width of
     // each instruction (NOP=1, MOV Rn,#imm16=3).

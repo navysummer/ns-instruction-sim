@@ -630,6 +630,19 @@ impl Mc51Core {
                 let value = self.read_direct(addr);
                 self.subb(value);
             }
+            // ORL A,Rn (0x48-0x4F) / ANL A,Rn (0x58-0x5F) / XRL A,Rn (0x68-0x6F)
+            (0x4, n) if n >= 8 => {
+                let value = self.read_register(n - 8);
+                self.acc |= value;
+            }
+            (0x5, n) if n >= 8 => {
+                let value = self.read_register(n - 8);
+                self.acc &= value;
+            }
+            (0x6, n) if n >= 8 => {
+                let value = self.read_register(n - 8);
+                self.acc ^= value;
+            }
             // ANL/ORL/XRL direct,#imm / direct,A / A,direct
             (0x5, 0x3) => {
                 let addr = self.fetch();
@@ -1000,6 +1013,28 @@ mod tests {
         core.write_direct(0x30, 0x0F);
         core.step(&[]);
         assert_eq!(core.acc, 0xF0, "XRL A,0x30");
+    }
+
+    #[test]
+    fn anl_orl_xrl_acc_register() {
+        // 0x48-0x4F/0x58-0x5F/0x68-0x6F are ORL/ANL/XRL A, Rn.
+        let mut core = core_with(&[0x48]);
+        core.acc = 0xF0;
+        core.write_register(0, 0x0F);
+        core.step(&[]);
+        assert_eq!(core.acc, 0xFF, "ORL A, R0");
+
+        let mut core = core_with(&[0x59]);
+        core.acc = 0xFF;
+        core.write_register(1, 0x0F);
+        core.step(&[]);
+        assert_eq!(core.acc, 0x0F, "ANL A, R1");
+
+        let mut core = core_with(&[0x6A]);
+        core.acc = 0xFF;
+        core.write_register(2, 0x0F);
+        core.step(&[]);
+        assert_eq!(core.acc, 0xF0, "XRL A, R2");
     }
 
     #[test]
