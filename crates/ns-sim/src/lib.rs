@@ -2923,10 +2923,22 @@ pub fn instruction_size(
         return if half & 0xE000 == 0xE000 { 4 } else { 2 };
     }
     match arch {
-        Arch::C166 | Arch::Avr | Arch::Msp430 | Arch::Xtensa => 2,
+        Arch::C166 | Arch::Msp430 | Arch::Xtensa => 2,
+        Arch::Avr => avr_instruction_len(read(pc), read(pc + 1)),
         Arch::Mcs51 => mcs51_instruction_len(read(pc)),
         Arch::Mcs251 => mcs251_instruction_len(read(pc)),
         _ => 4,
+    }
+}
+
+/// Number of code bytes consumed by an AVR instruction. AVR is 16-bit-fixed
+/// except the 32-bit LDS/STS/JMP/CALL forms (matching the core's own
+/// `current_instruction_size`).
+fn avr_instruction_len(lo: u8, hi: u8) -> u32 {
+    let word = ((hi as u16) << 8) | lo as u16;
+    match word & 0xFE0F {
+        0x9000 | 0x9200 | 0x940C | 0x940E => 4,
+        _ => 2,
     }
 }
 
@@ -4362,6 +4374,20 @@ mod tests {
         assert_eq!(instruction_size(Arch::Mcs251, 0, &read, false), 2);
         let read = |addr: u32| if addr == 0 { 0xE8 } else { 0 };
         assert_eq!(instruction_size(Arch::Mcs251, 0, &read, false), 1);
+        // AVR is 16-bit except the 32-bit LDS/STS/JMP/CALL forms (big-endian
+        // word: low byte first, high byte second).
+        let read = |addr: u32| match addr {
+            0 => 0x00,
+            1 => 0x00,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Avr, 0, &read, false), 2);
+        let read = |addr: u32| match addr {
+            0 => 0x00,
+            1 => 0x90, // LDS word 0x9000
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Avr, 0, &read, false), 4);
     }
 
     #[test]

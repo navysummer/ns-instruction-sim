@@ -249,6 +249,7 @@ done
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
 - `disasm_mcs51_code_space_width`：mcs51 独立代码 ROM 被 `disasm` 读取，且按实际指令宽度推进（NOP=1、LJMP addr16=3）。
 - `disasm_mcs251_code_space_width`：80251 变长指令按实际宽度推进（NOP=1、MOV Rn,#imm16=3）。
+- `disasm_avr_32bit_width`：AVR LDS/STS/JMP/CALL 32 位指令按 4 字节推进并正确解码（此前守卫隐藏了这些分支）。
 - `step_source_annotates_lines`：`step --source` 按 DWARF 行表标注 file:line。
 - `periph_svd_load_populates_registers`：`periph svd-load` 从 SVD 载入复位值并支持直读写/持久化。
 - `periph_svd_load_instruction_write_couples`：`run --session` 在 SVD 加载的会话上运行，指令级 `sw` 直写寄存器并读回。
@@ -273,9 +274,10 @@ done
 - `disasm` 通过 `ns_sim::instruction_size` 按编码实际宽度推进 PC：ARM A32 恒 4 字节，Thumb-1
   16 位为 2 字节、Thumb-2 32 位（`0xE000` 前缀半字）为 4 字节；C166/AVR/MSP430/Xtensa 为 2 字节，
   MCS-51 按操作码变长（NOP=1、立即/相对/直接=2、LJMP/LCALL/DPTR=3），80251 按操作码变长
-  （寄存器/累加器=1、相对/直接=2、`MOV Rn,#imm16`=3、24 位绝对跳转/DPTR=4），其余固定 4 字节。
+  （寄存器/累加器=1、相对/直接=2、`MOV Rn,#imm16`=3、24 位绝对跳转/DPTR=4），AVR 的 LDS/STS/JMP/CALL
+  为 4 字节其余 2 字节，其余固定 4 字节。
   该行为由 ns-sim 单测 `instruction_size_matches_encoding_width` 与 CLI 端到端
-  `disasm_mcs51_code_space_width`/`disasm_mcs251_code_space_width` 锁定。
+  `disasm_mcs51_code_space_width`/`disasm_mcs251_code_space_width`/`disasm_avr_32bit_width` 锁定。
 
 ---
 

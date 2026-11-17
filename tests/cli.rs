@@ -2464,3 +2464,40 @@ fn disasm_mcs251_code_space_width() {
     assert_eq!(json[1]["address"], 1u64);
     assert_eq!(json[1]["bytes"], serde_json::json!([0x74, 0x12, 0x34]));
 }
+
+#[test]
+fn disasm_avr_32bit_width() {
+    // AVR's LDS/STS/JMP/CALL are 32-bit; disassembly must advance 4 bytes for
+    // them and decode the mnemonic (previously the guard hid these arms).
+    let dir = tmpdir();
+    let sess = dir.join("avrdis.json");
+    let code = dir.join("avrdis.bin");
+    // LDS r0, 0x1234 (4 bytes), NOP, NOP.
+    std::fs::write(&code, [0x00, 0x90, 0x34, 0x12, 0x00, 0x00]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "avr", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "2", "--raw"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("0x00000000: lds r0, 0x1234"), "missing lds: {text}");
+    assert!(text.contains("0x00000004: nop"), "missing nop at 4: {text}");
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["text"], "lds r0, 0x1234");
+    assert_eq!(json[0]["bytes"], serde_json::json!([0, 0x90, 0x34, 0x12]));
+    assert_eq!(json[1]["address"], 4u64);
+    assert_eq!(json[1]["text"], "nop");
+}
