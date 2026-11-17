@@ -2509,6 +2509,70 @@ fn disasm_mcs51_code_space_width() {
 }
 
 #[test]
+fn disasm_mcs51_core_forms() {
+    // The 8051 disassembler mirrors the execution core: rotate/ALU direct and
+    // immediate forms, MOV/MOVX/MOVC, XCH, bit operations and relative
+    // branches, advancing by the actual decoded width.
+    let dir = tmpdir();
+    let sess = dir.join("m51forms.json");
+    let code = dir.join("m51forms.bin");
+    std::fs::write(&code, [
+        0x03,             // rr a
+        0x23,             // rl a
+        0x55, 0x30,       // anl a, 0x30
+        0x45, 0x30,       // orl a, 0x30
+        0x65, 0x30,       // xrl a, 0x30
+        0x75, 0x31, 0x12, // mov 0x31, #0x12
+        0xE5, 0x31,       // mov a, 0x31
+        0x86, 0x32,       // mov 0x32, @r0
+        0xE2,             // movx a, @r0
+        0x93,             // movc a, @a+dptr
+        0xC5, 0x33,       // xch a, 0x33
+        0x10, 0x20, 0xFE, // jbc 0x20, +0x20
+        0xD8, 0xFE,       // djnz r0, +0x22
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "mcs51", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "13", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0u64);
+    assert_eq!(json[0]["text"], "rr a");
+    assert_eq!(json[1]["address"], 1u64);
+    assert_eq!(json[1]["text"], "rl a");
+    assert_eq!(json[2]["address"], 2u64);
+    assert_eq!(json[2]["text"], "anl a, 0x30");
+    assert_eq!(json[3]["address"], 4u64);
+    assert_eq!(json[3]["text"], "orl a, 0x30");
+    assert_eq!(json[4]["address"], 6u64);
+    assert_eq!(json[4]["text"], "xrl a, 0x30");
+    assert_eq!(json[5]["address"], 8u64);
+    assert_eq!(json[5]["text"], "mov 0x31, #0x12");
+    assert_eq!(json[6]["address"], 11u64);
+    assert_eq!(json[6]["text"], "mov a, 0x31");
+    assert_eq!(json[7]["address"], 13u64);
+    assert_eq!(json[7]["text"], "mov 0x32, @r0");
+    assert_eq!(json[8]["address"], 15u64);
+    assert_eq!(json[8]["text"], "movx a, @r0");
+    assert_eq!(json[9]["address"], 16u64);
+    assert_eq!(json[9]["text"], "movc a, @a+dptr");
+    assert_eq!(json[10]["address"], 17u64);
+    assert_eq!(json[10]["text"], "xch a, 0x33");
+    assert_eq!(json[11]["address"], 19u64);
+    assert_eq!(json[11]["text"], "jbc 0x20, 0x14");
+    assert_eq!(json[12]["address"], 22u64);
+    assert_eq!(json[12]["text"], "djnz r0, 0x16");
+}
+
+#[test]
 fn disasm_mcs251_code_space_width() {
     // The 80251 is variable-length: disassembly must advance by the width of
     // each instruction (NOP=1, MOV Rn,#imm16=3).

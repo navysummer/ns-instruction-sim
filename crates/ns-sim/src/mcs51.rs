@@ -347,9 +347,12 @@ impl Mc51Core {
             0xD4 => self.da(),
             0xE4 => self.acc = 0,
             0xF4 => self.acc = !self.acc,
-            // MOV A,#imm handled in 0x74; RLC/RRC
-            0x23 => self.rlc(),
+            // Rotate family: RR A (0x03), RRC A (0x13), RL A (0x23),
+            // RLC A (0x33).
+            0x03 => self.rr(),
             0x13 => self.rrc(),
+            0x23 => self.rl(),
+            0x33 => self.rlc(),
             // Direct-address MOV group (0xE5/0x85/0x86-0x87/0x75/0x88-0x8F etc.)
             // handled below via helper for compactness.
             _ => self.execute_rest(op),
@@ -410,6 +413,16 @@ impl Mc51Core {
         let new = (self.acc >> 1) | ((carry as u8) << 7);
         self.set_carry(self.acc & 1 != 0);
         self.acc = new;
+    }
+
+    fn rl(&mut self) {
+        let carry_out = self.acc & 0x80 != 0;
+        self.acc = (self.acc << 1) | (carry_out as u8);
+    }
+
+    fn rr(&mut self) {
+        let carry_out = self.acc & 1 != 0;
+        self.acc = (self.acc >> 1) | ((carry_out as u8) << 7);
     }
 
     fn execute_rest(&mut self, op: u8) {
@@ -629,7 +642,7 @@ impl Mc51Core {
                 let value = self.read_direct(addr) & self.acc;
                 self.write_direct(addr, value);
             }
-            (0x5, 0x4) => {
+            (0x5, 0x5) => {
                 let addr = self.fetch();
                 let value = self.acc & self.read_direct(addr);
                 self.acc = value;
@@ -645,7 +658,7 @@ impl Mc51Core {
                 let value = self.read_direct(addr) | self.acc;
                 self.write_direct(addr, value);
             }
-            (0x4, 0x4) => {
+            (0x4, 0x5) => {
                 let addr = self.fetch();
                 let value = self.acc | self.read_direct(addr);
                 self.acc = value;
@@ -661,7 +674,7 @@ impl Mc51Core {
                 let value = self.read_direct(addr) ^ self.acc;
                 self.write_direct(addr, value);
             }
-            (0x6, 0x4) => {
+            (0x6, 0x5) => {
                 let addr = self.fetch();
                 let value = self.acc ^ self.read_direct(addr);
                 self.acc = value;
@@ -933,6 +946,60 @@ mod tests {
         core.step(&[]);
         assert_eq!(core.acc, 0x00);
         assert!(core.carry(), "0xFF + 1 must set carry");
+    }
+
+    #[test]
+    fn rotate_family() {
+        // RL A (0x23) and RR A (0x03) rotate without touching carry; RLC
+        // (0x33) and RRC (0x13) rotate through carry.
+        let mut core = core_with(&[0x23]);
+        core.acc = 0x81;
+        core.step(&[]);
+        assert_eq!(core.acc, 0x03, "RL A 0x81 -> 0x03");
+        assert!(!core.carry(), "RL A leaves carry unchanged");
+
+        let mut core = core_with(&[0x03]);
+        core.acc = 0x81;
+        core.step(&[]);
+        assert_eq!(core.acc, 0xC0, "RR A 0x81 -> 0xC0");
+        assert!(!core.carry(), "RR A leaves carry unchanged");
+
+        let mut core = core_with(&[0x33]);
+        core.acc = 0x80;
+        core.psw |= 0x80; // C=1 (PSW bit 7)
+        core.step(&[]);
+        assert_eq!(core.acc, 0x01, "RLC A 0x80 with C=1 -> 0x01");
+        assert!(core.carry(), "RLC A sets carry from old bit 7");
+
+        let mut core = core_with(&[0x13]);
+        core.acc = 0x01;
+        core.psw |= 0x80; // C=1 (PSW bit 7)
+        core.step(&[]);
+        assert_eq!(core.acc, 0x80, "RRC A 0x01 with C=1 -> 0x80");
+        assert!(core.carry(), "RRC A sets carry from old bit 0");
+    }
+
+    #[test]
+    fn anl_orl_xrl_acc_direct() {
+        // 0x55/0x45/0x65 are ANL/ORL/XRL A, direct (previously mis-decoded as
+        // the immediate forms 0x54/0x44/0x64 and therefore unreachable).
+        let mut core = core_with(&[0x55, 0x30]);
+        core.acc = 0xFF;
+        core.write_direct(0x30, 0x0F);
+        core.step(&[]);
+        assert_eq!(core.acc, 0x0F, "ANL A,0x30");
+
+        let mut core = core_with(&[0x45, 0x30]);
+        core.acc = 0xF0;
+        core.write_direct(0x30, 0x0F);
+        core.step(&[]);
+        assert_eq!(core.acc, 0xFF, "ORL A,0x30");
+
+        let mut core = core_with(&[0x65, 0x30]);
+        core.acc = 0xFF;
+        core.write_direct(0x30, 0x0F);
+        core.step(&[]);
+        assert_eq!(core.acc, 0xF0, "XRL A,0x30");
     }
 
     #[test]

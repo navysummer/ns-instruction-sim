@@ -251,6 +251,10 @@ done
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
 - `disasm_mcs51_code_space_width`：mcs51 独立代码 ROM 被 `disasm` 读取，且按实际指令宽度推进（NOP=1、LJMP addr16=3）。
+- `disasm_mcs51_core_forms`：mcs51 反汇编镜像执行内核的旋转（RR/RLC/RL/RRC）、
+  ALU 立即/直接（ADD/ADDC/SUBB/ANL/ORL/XRL）、MOV/MOVX/MOVC、XCH/XCHD、位操作、
+  相对分支（JB/JNB/JBC/CJNE/DJNZ）等家族；内核同时修复 `RR A`/`RLC A` 缺失与
+  `ANL/ORL/XRL A,direct` 编码（`0x55`/`0x45`/`0x65`，原 `0x54`/`0x44`/`0x64` 误用）。
 - `disasm_mcs251_code_space_width`：80251 变长指令按实际宽度推进（NOP=1、MOV Rn,#imm16=3）。
 - `disasm_mcs251_core_forms`：80251 反汇编镜像执行内核的 RET/INC/DEC/JC/JNC/MOV A,direct/
   MOVX @Ri/CLR/CPL/RL/RR/JMP @A+DPTR 家族，按实际宽度推进（相对跳转=2、MOV A,direct=2）。
