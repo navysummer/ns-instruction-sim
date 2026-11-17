@@ -1132,16 +1132,480 @@ impl Stm8Core {
 }
 
 /// Disassemble one STM8 instruction at `pc` using `read` for bytes.
-pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
-    let opcode = read(pc);
-    match opcode {
-        0x9D => "nop".to_string(),
-        0x81 => "ret".to_string(),
-        0x8E => "halt".to_string(),
-        0x88 => "push a".to_string(),
-        0x84 => "pop a".to_string(),
-        0x20 => "jra".to_string(),
-        0x21 => "jrf".to_string(),
+/// Effective prefix key, mirroring the core's `execute` prefix resolution:
+/// `0x72`+`0x90` becomes the combined `0xF2` key, otherwise the single prefix
+/// wins, and no prefix is `0x00`.
+fn prefix_key(has_72: bool, has_90: bool, has_91: bool, has_92: bool) -> u8 {
+    if has_72 && has_90 {
+        0xF2
+    } else if has_72 {
+        0x72
+    } else if has_90 {
+        0x90
+    } else if has_91 {
+        0x91
+    } else if has_92 {
+        0x92
+    } else {
+        0x00
+    }
+}
+
+/// Decode the ALU addressing mode selected by the high nibble and prefix,
+/// matching `Stm8Core::decode_alu_target`.
+fn alu_target(pk: u8, high: u8) -> Target {
+    match (pk, high & 0x0F) {
+        (0x00, 0xA) => Target::Imm,
+        (0x00, 0xB) => Target::Direct8,
+        (0x00, 0xC) => Target::Direct16,
+        (0x00, 0xD) => Target::IndexX16,
+        (0x00, 0xE) => Target::IndexX8,
+        (0x00, 0xF) => Target::IndexX,
+        (0x90, 0xD) => Target::IndexY16,
+        (0x90, 0xE) => Target::IndexY8,
+        (0x90, 0xF) => Target::IndexY,
+        (0x91, 0xB) => Target::IndexSp16,
+        (0x92, 0xC) => Target::Indirect,
+        (0x72, 0xC) => Target::Direct16,
+        (0x72, 0xD) => Target::IndirectX,
+        (0xF2, 0xD) => Target::IndirectY,
+        _ => Target::Direct8,
+    }
+}
+
+/// Number of operand bytes consumed by a target. Word operations read a
+/// 16-bit immediate while byte operations read an 8-bit immediate; all other
+/// addressing modes consume the same number of bytes either way.
+fn target_len(target: Target, word: bool) -> u32 {
+    match target {
+        Target::Imm => {
+            if word {
+                2
+            } else {
+                1
+            }
+        }
+        Target::Direct8 => 1,
+        Target::Direct16 => 2,
+        Target::IndexX | Target::IndexY => 0,
+        Target::IndexX8 | Target::IndexY8 => 1,
+        Target::IndexX16 | Target::IndexY16 => 2,
+        Target::IndexSp16 => 2,
+        Target::Indirect | Target::IndirectX | Target::IndirectY => 2,
+    }
+}
+
+/// Number of operand bytes consumed by an unary-family instruction.
+fn unary_operand_len(opcode: u8, pk: u8) -> u32 {
+    let high = (opcode >> 4) & 0x0F;
+    match (pk, high) {
+        (0x00, 0x3) | (0x00, 0x6) | (0x90, 0x6) => 1,
+        (0x00, 0x5) | (0x92, 0x3) | (0x72, 0x3) | (0xF2, 0x3) => 2,
+        (0x00, 0x4) | (0x00, 0x7) | (0x90, 0x7) => 0,
+        _ => 0,
+    }
+}
+
+/// Number of operand bytes consumed by an instruction's opcode under the
+/// effective prefix `pk`.
+fn operand_len(opcode: u8, pk: u8) -> u32 {
+    if opcode <= 0x1F {
+        return if pk == 0x00 {
+            if opcode <= 0x0F {
+                2 // BTJT/BTJF bit, addr8, rel
+            } else {
+                1 // SP-relative ALU off8
+            }
+        } else {
+            0
+        };
+    }
+    if opcode <= 0x2F {
+        return if pk == 0x00 { 1 } else { 0 }; // short jump rel
+    }
+    if opcode <= 0x7F {
+        return unary_operand_len(opcode, pk);
+    }
+    if opcode <= 0x9F {
+        return if opcode == 0x82 || opcode == 0x8D { 3 } else { 0 }; // INT/CALLF addr24
+    }
+    let high = (opcode >> 4) & 0x0F;
+    let low = opcode & 0x0F;
+    let word = low == 0x3 || low >= 0xC;
+    target_len(alu_target(pk, high), word)
+}
+
+/// Number of code bytes consumed by the STM8 instruction at `pc`, including
+/// any `0x90`/`0x91`/`0x92`/`0x72` prefixes. Matches the core's fetch model.
+pub fn instruction_len(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
+    let mut off = 0u32;
+    let (mut has_72, mut has_90, mut has_91, mut has_92) = (false, false, false, false);
+    loop {
+        match read(pc.wrapping_add(off)) {
+            0x72 => has_72 = true,
+            0x90 => has_90 = true,
+            0x91 => has_91 = true,
+            0x92 => has_92 = true,
+            opcode => {
+                let pk = prefix_key(has_72, has_90, has_91, has_92);
+                return off + 1 + operand_len(opcode, pk);
+            }
+        }
+        off += 1;
+    }
+}
+
+fn rd16(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
+    read(pc) as u32 | ((read(pc + 1) as u32) << 8)
+}
+
+fn rd24(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
+    read(pc) as u32 | ((read(pc + 1) as u32) << 8) | ((read(pc + 2) as u32) << 16)
+}
+
+fn render_target(target: Target, word: bool, base: u32, read: &dyn Fn(u32) -> u8) -> String {
+    match target {
+        Target::Imm => {
+            if word {
+                format!("#0x{:04x}", rd16(base, read))
+            } else {
+                format!("#0x{:02x}", read(base))
+            }
+        }
+        Target::Direct8 => format!("0x{:02x}", read(base)),
+        Target::Direct16 => format!("0x{:04x}", rd16(base, read)),
+        Target::IndexX => "(x)".to_string(),
+        Target::IndexX8 => format!("(0x{:02x}, x)", read(base)),
+        Target::IndexX16 => format!("(0x{:04x}, x)", rd16(base, read)),
+        Target::IndexY => "(y)".to_string(),
+        Target::IndexY8 => format!("(0x{:02x}, y)", read(base)),
+        Target::IndexY16 => format!("(0x{:04x}, y)", rd16(base, read)),
+        Target::IndexSp16 => format!("(0x{:04x}, sp)", rd16(base, read)),
+        Target::Indirect => format!("[0x{:04x}]", rd16(base, read)),
+        Target::IndirectX => format!("([0x{:04x}], x)", rd16(base, read)),
+        Target::IndirectY => format!("([0x{:04x}], y)", rd16(base, read)),
+    }
+}
+
+fn decode_alu(opcode: u8, pk: u8, base: u32, read: &dyn Fn(u32) -> u8) -> String {
+    let high = (opcode >> 4) & 0x0F;
+    let low = opcode & 0x0F;
+    let word = low == 0x3 || low >= 0xC;
+    let operand = render_target(alu_target(pk, high), word, base, read);
+    match low {
+        0x0 => format!("sub a, {operand}"),
+        0x1 => format!("cp a, {operand}"),
+        0x2 => format!("sbc a, {operand}"),
+        0x3 => {
+            let dst = if high == 0xA || pk == 0x90 { "y" } else { "x" };
+            format!("cpw {dst}, {operand}")
+        }
+        0x4 => format!("and a, {operand}"),
+        0x5 => format!("bcp a, {operand}"),
+        0x6 => format!("ld a, {operand}"),
+        0x7 => format!("ld {operand}, a"),
+        0x8 => format!("xor a, {operand}"),
+        0x9 => format!("adc a, {operand}"),
+        0xA => format!("or a, {operand}"),
+        0xB => format!("add a, {operand}"),
+        0xC => format!("jp {operand}"),
+        0xD => format!("call {operand}"),
+        0xE => format!("ldw x, {operand}"),
+        0xF => format!("ldw {operand}, x"),
         _ => format!("0x{opcode:02x}"),
+    }
+}
+
+fn decode_unary(opcode: u8, pk: u8, base: u32, read: &dyn Fn(u32) -> u8) -> String {
+    let high = (opcode >> 4) & 0x0F;
+    let low = opcode & 0x0F;
+    let op = match low {
+        0x0 => "neg",
+        0x1 => "cpl",
+        0x2 => "srl",
+        0x3 => "sra",
+        0x4 => "sla",
+        0x5 => "rlc",
+        0x6 => "rrc",
+        0x7 => "swap",
+        0x8 => "inc",
+        0x9 => "dec",
+        0xA => "clr",
+        0xB => "tnz",
+        _ => "?",
+    };
+    let operand = match (pk, high) {
+        (0x00, 0x3) => format!("0x{:02x}", read(base)),
+        (0x00, 0x4) => "a".to_string(),
+        (0x00, 0x5) => format!("0x{:04x}", rd16(base, read)),
+        (0x00, 0x6) => format!("(0x{:02x}, x)", read(base)),
+        (0x00, 0x7) => "(x)".to_string(),
+        (0x90, 0x6) => format!("(0x{:02x}, y)", read(base)),
+        (0x90, 0x7) => "(y)".to_string(),
+        (0x92, 0x3) => format!("[0x{:04x}]", rd16(base, read)),
+        (0x72, 0x3) => format!("([0x{:04x}], x)", rd16(base, read)),
+        (0xF2, 0x3) => format!("([0x{:04x}], y)", rd16(base, read)),
+        _ => return format!("0x{opcode:02x}"),
+    };
+    format!("{op} {operand}")
+}
+
+fn decode_inherent(opcode: u8, pk: u8, base: u32, read: &dyn Fn(u32) -> u8) -> String {
+    let has_90 = pk == 0x90 || pk == 0xF2;
+    match opcode {
+        0x80 => "iret".to_string(),
+        0x81 => "ret".to_string(),
+        0x82 => format!("int 0x{:06x}", rd24(base, read)),
+        0x83 => "trap".to_string(),
+        0x84 => "pop a".to_string(),
+        0x85 => "popw x, y".to_string(),
+        0x86 => "pop cc".to_string(),
+        0x87 => "retf".to_string(),
+        0x88 => "push a".to_string(),
+        0x89 => "pushw x, y".to_string(),
+        0x8A => "push cc".to_string(),
+        0x8B => "break".to_string(),
+        0x8C => "ccf".to_string(),
+        0x8D => format!("callf 0x{:06x}", rd24(base, read)),
+        0x8E => "halt".to_string(),
+        0x8F => "wfi".to_string(),
+        0x93 => "ldw x, y".to_string(),
+        0x94 => {
+            if has_90 {
+                "ldw sp, y".to_string()
+            } else {
+                "ldw sp, x".to_string()
+            }
+        }
+        0x95 => {
+            if has_90 {
+                "ld yh, a".to_string()
+            } else {
+                "ld xh, a".to_string()
+            }
+        }
+        0x96 => {
+            if has_90 {
+                "ldw y, sp".to_string()
+            } else {
+                "ldw x, sp".to_string()
+            }
+        }
+        0x97 => {
+            if has_90 {
+                "ld yl, a".to_string()
+            } else {
+                "ld xl, a".to_string()
+            }
+        }
+        0x98 => "rcf".to_string(),
+        0x99 => "scf".to_string(),
+        0x9A => "rim".to_string(),
+        0x9B => "sim".to_string(),
+        0x9C => "rvf".to_string(),
+        0x9D => "nop".to_string(),
+        0x9E => {
+            if has_90 {
+                "ld a, yh".to_string()
+            } else {
+                "ld a, xh".to_string()
+            }
+        }
+        0x9F => {
+            if has_90 {
+                "ld a, yl".to_string()
+            } else {
+                "ld a, xl".to_string()
+            }
+        }
+        _ => format!("0x{opcode:02x}"),
+    }
+}
+
+fn decode_bit_sp(opcode: u8, base: u32, read: &dyn Fn(u32) -> u8) -> String {
+    let low = opcode & 0x0F;
+    let bit = (opcode >> 4) & 0x07;
+    if opcode >= 0x10 {
+        let op = match low {
+            0x0 => "sub",
+            0x1 => "cp",
+            0x2 => "sbc",
+            0x4 => "and",
+            0x5 => "bcp",
+            0x6 => "ld",
+            0x7 => "ld",
+            0x8 => "xor",
+            0x9 => "adc",
+            0xA => "or",
+            0xB => "add",
+            _ => "?",
+        };
+        if low == 0x7 {
+            format!("ld (0x{:02x}, sp), a", read(base))
+        } else {
+            format!("{op} a, (0x{:02x}, sp)", read(base))
+        }
+    } else {
+        let addr = read(base);
+        let rel = read(base + 1) as i8 as i32;
+        let m = if low & 1 == 0 { "btjt" } else { "btjf" };
+        format!("{m} #{bit}, 0x{addr:02x}, {rel:+}")
+    }
+}
+
+fn decode_short_jump(
+    opcode: u8,
+    base: u32,
+    start: u32,
+    off: u32,
+    read: &dyn Fn(u32) -> u8,
+) -> String {
+    let rel = read(base) as i8 as i32;
+    let names = [
+        "jra", "jrf", "jrugt", "jrule", "jruge", "jrult", "jrne", "jreq", "jrpl", "jrmi",
+        "jrsgt", "jrsle", "jrsge", "jrslt",
+    ];
+    let name = names
+        .get(opcode as usize - 0x20)
+        .copied()
+        .unwrap_or("jr?");
+    let target = start
+        .wrapping_add(off)
+        .wrapping_add(2)
+        .wrapping_add(rel as u32)
+        & 0xFF_FFFF;
+    format!("{name} 0x{target:x}")
+}
+
+fn decode_opcode(
+    opcode: u8,
+    pk: u8,
+    base: u32,
+    start: u32,
+    off: u32,
+    read: &dyn Fn(u32) -> u8,
+) -> String {
+    if opcode <= 0x1F {
+        if pk == 0x00 {
+            return decode_bit_sp(opcode, base, read);
+        }
+        return format!("0x{opcode:02x}");
+    }
+    if opcode <= 0x2F {
+        if pk == 0x00 {
+            return decode_short_jump(opcode, base, start, off, read);
+        }
+        return format!("0x{opcode:02x}");
+    }
+    if opcode <= 0x7F {
+        return decode_unary(opcode, pk, base, read);
+    }
+    if opcode <= 0x9F {
+        return decode_inherent(opcode, pk, base, read);
+    }
+    decode_alu(opcode, pk, base, read)
+}
+
+pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
+    let mut off = 0u32;
+    let (mut has_72, mut has_90, mut has_91, mut has_92) = (false, false, false, false);
+    loop {
+        match read(pc.wrapping_add(off)) {
+            0x72 => has_72 = true,
+            0x90 => has_90 = true,
+            0x91 => has_91 = true,
+            0x92 => has_92 = true,
+            opcode => {
+                let pk = prefix_key(has_72, has_90, has_91, has_92);
+                let base = pc.wrapping_add(off + 1);
+                return decode_opcode(opcode, pk, base, pc, off, read);
+            }
+        }
+        off += 1;
+    }
+}
+
+#[cfg(test)]
+mod disasm_tests {
+    use super::*;
+
+    fn reader(bytes: &[u8]) -> impl Fn(u32) -> u8 {
+        let bytes = bytes.to_vec();
+        move |addr: u32| {
+            bytes
+                .get(addr as usize)
+                .copied()
+                .unwrap_or(0)
+        }
+    }
+
+    #[test]
+    fn instruction_len_matches_core_fetch() {
+        // nop (1), ret (1), halt (1).
+        let r = reader(&[0x9D]);
+        assert_eq!(instruction_len(0, &r), 1);
+        let r = reader(&[0x81]);
+        assert_eq!(instruction_len(0, &r), 1);
+        // jra rel: 1 + 1.
+        let r = reader(&[0x20, 0x02]);
+        assert_eq!(instruction_len(0, &r), 2);
+        // BTJT bit, addr8, rel: 1 + 2.
+        let r = reader(&[0x00, 0x10, 0x02]);
+        assert_eq!(instruction_len(0, &r), 3);
+        // SP-relative ALU: 1 + 1.
+        let r = reader(&[0x12, 0x34]);
+        assert_eq!(instruction_len(0, &r), 2);
+        // Unary direct8: 1 + 1.
+        let r = reader(&[0x34, 0x12]);
+        assert_eq!(instruction_len(0, &r), 2);
+        // Unary direct16: 1 + 2.
+        let r = reader(&[0x56, 0x34, 0x12]);
+        assert_eq!(instruction_len(0, &r), 3);
+        // CALLF addr24: 1 + 3.
+        let r = reader(&[0x8D, 0x78, 0x56, 0x34]);
+        assert_eq!(instruction_len(0, &r), 4);
+        // CALL direct16: 1 + 2.
+        let r = reader(&[0xCD, 0x56, 0x34]);
+        assert_eq!(instruction_len(0, &r), 3);
+        // ALU immediate byte: 1 + 1.
+        let r = reader(&[0xA0, 0x05]);
+        assert_eq!(instruction_len(0, &r), 2);
+        // ALU immediate word (LDW X, #imm16): 1 + 2.
+        let r = reader(&[0xAE, 0x34, 0x12]);
+        assert_eq!(instruction_len(0, &r), 3);
+        // Prefixed Y-indexed (0x90 + (off8,Y)): 1 + 1 + 1.
+        let r = reader(&[0x90, 0x65, 0x10]);
+        assert_eq!(instruction_len(0, &r), 3);
+        // 0x72+0x90 combined key on indirect-Y CPW: 2 + 1 + 2.
+        let r = reader(&[0x72, 0x90, 0xD3, 0x34, 0x12]);
+        assert_eq!(instruction_len(0, &r), 5);
+    }
+
+    #[test]
+    fn disassembles_common_forms() {
+        let r = reader(&[0x9D]);
+        assert_eq!(disassemble(0, &r), "nop");
+        let r = reader(&[0x81]);
+        assert_eq!(disassemble(0, &r), "ret");
+        let r = reader(&[0x8E]);
+        assert_eq!(disassemble(0, &r), "halt");
+        // jra target = start + 2 + rel (rel +2) = 0x4.
+        let r = reader(&[0x20, 0x02]);
+        assert_eq!(disassemble(0, &r), "jra 0x4");
+        // CALL direct16.
+        let r = reader(&[0xCD, 0x56, 0x34]);
+        assert_eq!(disassemble(0, &r), "call 0x3456");
+        // CALLF addr24.
+        let r = reader(&[0x8D, 0x78, 0x56, 0x34]);
+        assert_eq!(disassemble(0, &r), "callf 0x345678");
+        // ADD A, #imm8.
+        let r = reader(&[0xAB, 0x05]);
+        assert_eq!(disassemble(0, &r), "add a, #0x05");
+        // LDW X, #imm16.
+        let r = reader(&[0xAE, 0x34, 0x12]);
+        assert_eq!(disassemble(0, &r), "ldw x, #0x1234");
+        // RLC (off8, Y) with 0x90 prefix.
+        let r = reader(&[0x90, 0x65, 0x10]);
+        assert_eq!(disassemble(0, &r), "rlc (0x10, y)");
     }
 }

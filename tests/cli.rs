@@ -2679,3 +2679,45 @@ fn disasm_v850_variable_width() {
     assert_eq!(json[2]["address"], 6u64);
     assert_eq!(json[2]["text"], "nop");
 }
+
+#[test]
+fn disasm_stm8_variable_width() {
+    // STM8 is variable-length (1/2/3/4 bytes with optional prefixes). The
+    // disassembler must advance by the decoded width and recognize the core's
+    // main opcode families rather than printing raw hex.
+    let dir = tmpdir();
+    let sess = dir.join("stm8dis.json");
+    let code = dir.join("stm8dis.bin");
+    // nop (1), jra rel (2), call direct16 (3), callf addr24 (4),
+    // prefixed Y-indexed rlc (3).
+    std::fs::write(&code, [
+        0x9D,             // nop
+        0x20, 0x02,       // jra +2
+        0xCD, 0x56, 0x34, // call 0x3456
+        0x8D, 0x78, 0x56, 0x34, // callf 0x345678
+        0x90, 0x65, 0x10, // rlc (0x10, y)
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "stm8", "--firmware", code.to_str().unwrap(), "--base", "0x8000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0x8000", "--count", "5", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000u64);
+    assert_eq!(json[0]["text"], "nop");
+    assert_eq!(json[1]["address"], 0x8001u64);
+    assert_eq!(json[1]["text"], "jra 0x8005");
+    assert_eq!(json[2]["address"], 0x8003u64);
+    assert_eq!(json[2]["text"], "call 0x3456");
+    assert_eq!(json[3]["address"], 0x8006u64);
+    assert_eq!(json[3]["text"], "callf 0x345678");
+    assert_eq!(json[4]["address"], 0x800Au64);
+    assert_eq!(json[4]["text"], "rlc (0x10, y)");
+}

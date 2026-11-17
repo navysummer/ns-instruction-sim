@@ -254,6 +254,8 @@ done
 - `disasm_c166_imm_width`：C166 `MOV Rn,#imm16`/`CALL` 按 3 字节推进并解码小端立即数（与执行内核一致）。
 - `disasm_xtensa_24bit_width`：本仿真器的 Xtensa 内核按 24 位取指，反汇编按 3 字节推进并解码 NOP。
 - `disasm_v850_variable_width`：V850 变长指令（2/4/6 字节）按解码宽度推进（NOP=2、DISPOSE=4）。
+- `disasm_stm8_variable_width`：STM8 变长指令按实际宽度推进并解码内核主流操作码族（NOP=1、JRA=2、
+  CALL=3、CALLF=4、`0x90` 前缀 Y 索引=3），替换原先仅解码 7 个操作码的极小反汇编器。
 - `step_source_annotates_lines`：`step --source` 按 DWARF 行表标注 file:line。
 - `step_over_and_step_out_use_code_space`：`step-over` 按实际指令宽度计算返回地址（mcs51 LCALL=3 字节），
   `step-out` 从独立代码 ROM 读取 `RET` 并在返回地址停下（修复哈佛内核代码空间读取）。
@@ -284,9 +286,12 @@ done
   （寄存器/累加器=1、相对/直接=2、`MOV Rn,#imm16`=3、24 位绝对跳转/DPTR=4），AVR 的 LDS/STS/JMP/CALL
   为 4 字节其余 2 字节，C166 的 `MOV Rn,#imm16`/`CALL` 为 3 字节、NOP/RET 为 1 字节其余 2 字节，
   Xtensa 按 24 位取指为 3 字节、MSP430 为 2 字节、V850 按解码变长（2/4/6 字节），其余固定 4 字节。
+  STM8 按操作码与前缀变长（NOP/PUSH/RET=1、短跳=2、`CALL`/直接16/`(off8,X)`=3、`CALLF`/`INT`=4、
+  `0x90`/`0x91`/`0x92`/`0x72` 前缀按所修饰操作码累计）。
   该行为由 ns-sim 单测 `instruction_size_matches_encoding_width` 与 CLI 端到端
   `disasm_mcs51_code_space_width`/`disasm_mcs251_code_space_width`/`disasm_avr_32bit_width`/
-  `disasm_c166_imm_width`/`disasm_xtensa_24bit_width`/`disasm_v850_variable_width` 锁定。
+  `disasm_c166_imm_width`/`disasm_xtensa_24bit_width`/`disasm_v850_variable_width`/
+  `disasm_stm8_variable_width` 锁定。
 
 ---
 

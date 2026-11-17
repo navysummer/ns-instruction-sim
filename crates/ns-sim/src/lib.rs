@@ -2894,7 +2894,7 @@ pub fn disassemble_one(arch: Arch, pc: u32, read: &dyn Fn(u32) -> u8) -> String 
 /// across all supported architectures.
 pub fn is_return_mnemonic(insn: &str) -> bool {
     let insn = insn.trim_start();
-    for prefix in ["ret", "reti", "rts", "rti", "rfe", "rte", "retf", "mret"] {
+    for prefix in ["ret", "reti", "iret", "rts", "rti", "rfe", "rte", "retf", "mret"] {
         if insn == prefix
             || insn
                 .strip_prefix(prefix)
@@ -2988,6 +2988,7 @@ pub fn instruction_size(
         Arch::Mcs51 => mcs51_instruction_len(read(pc)),
         Arch::Mcs251 => mcs251_instruction_len(read(pc)),
         Arch::V850 => v850::instruction_len(pc, read),
+        Arch::Stm8 => stm8::instruction_len(pc, read),
         _ => 4,
     }
 }
@@ -4540,6 +4541,41 @@ mod tests {
             _ => 0,
         };
         assert_eq!(instruction_size(Arch::V850, 0, &read, false), 4);
+        // STM8 is variable-length: NOP (1), JRA rel (2), CALL direct16 (3),
+        // CALLF addr24 (4), prefixed Y-indexed (3).
+        let read = |addr: u32| match addr {
+            0 => 0x9D,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Stm8, 0, &read, false), 1);
+        let read = |addr: u32| match addr {
+            0 => 0x20,
+            1 => 0x02,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Stm8, 0, &read, false), 2);
+        let read = |addr: u32| match addr {
+            0 => 0xCD,
+            1 => 0x56,
+            2 => 0x34,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Stm8, 0, &read, false), 3);
+        let read = |addr: u32| match addr {
+            0 => 0x8D,
+            1 => 0x78,
+            2 => 0x56,
+            3 => 0x34,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Stm8, 0, &read, false), 4);
+        let read = |addr: u32| match addr {
+            0 => 0x90,
+            1 => 0x65,
+            2 => 0x10,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Stm8, 0, &read, false), 3);
     }
 
     #[test]
