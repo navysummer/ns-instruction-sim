@@ -2091,6 +2091,37 @@ fn reset_json() {
 }
 
 #[test]
+fn reset_default_goes_to_entry() {
+    let dir = tmpdir();
+    let sess = dir.join("rj-entry.json");
+    let elf = dir.join("rj-entry.elf");
+    write_riscv_elf(&elf);
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // PC has advanced past the entry after a step.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_ne!(json["pc"], 0x8000_0000u64, "pc should have advanced");
+    // Reset without --entry must return to the firmware entry (0x80000000),
+    // not the current PC.
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8000_0000u64);
+    assert_eq!(json["cycleCount"], 0u64);
+}
+
+#[test]
 fn mem_write_word_width() {
     let dir = tmpdir();
     let sess = dir.join("mww.json");

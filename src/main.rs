@@ -2528,7 +2528,17 @@ fn cmd_reset(args: ResetArgs) -> Result<()> {
     let (mut sim, fw, _) = load_or_create(Some(&args.session), None, None, "0")?;
     let entry = match args.entry {
         Some(e) => parse_num(&e)?,
-        None => sim.program_counter(),
+        None => {
+            // Default to the loaded firmware's entry (or the architecture's
+            // reset entry), not the current PC, per the "PC 回入口" contract.
+            if let Some(fw) = &fw {
+                let mut fresh = Simulator::for_arch(sim.arch)?;
+                load_firmware_into(&mut fresh, Path::new(&fw.path), fw.base)?;
+                fresh.program_counter()
+            } else {
+                sim.entry()
+            }
+        }
     };
     sim.reset(entry);
     let s = Session::capture(&sim, fw);

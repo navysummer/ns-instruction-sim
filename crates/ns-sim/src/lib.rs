@@ -851,6 +851,14 @@ impl Simulator {
             _ => u32::MAX,
         }
     }
+    /// Default reset entry point for the architecture (a fresh core starts
+    /// here). Loaded firmware may override this with its own entry / base.
+    pub fn entry(&self) -> u32 {
+        match self.arch {
+            Arch::RiscV | Arch::Arm | Arch::Xtensa => 0x8000_0000,
+            _ => 0,
+        }
+    }
     /// Create a simulator for a target architecture. RISC-V, 8051, ARM,
     /// 80251, C166, Xtensa, AVR, MSP430 and V850 are implemented.
     pub fn for_arch(arch: Arch) -> anyhow::Result<Self> {

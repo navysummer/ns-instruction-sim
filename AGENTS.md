@@ -237,6 +237,7 @@ done
 - `state_fields_and_summary`：`state --fields` JSON 字段子集、`state --summary` 单行摘要。
 - `reg_list_filter`：`reg list --filter` 按名称子串筛选寄存器。
 - `reset_json`：`reset --json` 输出 PC/周期/停止 JSON。
+- `reset_default_goes_to_entry`：`reset` 不带 `--entry` 回固件/架构入口（非当前 PC）。
 - `state_includes_peripherals_and_csr`：`state --json` 含外设与 CSR 完整快照。
 - `version_command_and_flag`：`version` 子命令（含 `--json`）与 `--version` 均输出版本号。
 - `mem_write_read_arm_roundtrip`：非 RISC-V（ARM）内存写跨会话持久化。
