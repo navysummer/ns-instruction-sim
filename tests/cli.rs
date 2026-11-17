@@ -1194,6 +1194,45 @@ fn periph_field_access() {
 }
 
 #[test]
+fn periph_reg_write_data_space_avr() {
+    // On AVR the I/O space (0x20-0x5F) is part of the data space; a
+    // peripheral-register write must land there (not program memory) so both
+    // `periph reg-read` and `mem read` observe the value.
+    let dir = tmpdir();
+    let sess = dir.join("avr-periph.json");
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--arch", "avr", "--addr", "0x20", "--bytes", "0", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["periph", "reg-write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20", "--bytes", "0xaa", "0xbb", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["periph", "reg-read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20", "--len", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"][0], 0xaau64);
+    assert_eq!(json["bytes"][1], 0xbbu64);
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20", "--len", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"][0], 0xaau64);
+    assert_eq!(json["bytes"][1], 0xbbu64);
+}
+
+#[test]
 fn periph_svd_load_instruction_write_couples() {
     let dir = tmpdir();
     let sess = dir.join("svd_exec.json");

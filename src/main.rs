@@ -26,7 +26,7 @@ use clap::{Args, Parser, Subcommand};
 
 use ns_sim::{Arch, Simulator, StepResult};
 use session::{FirmwareState, Session};
-use sim::{default_mem_base, detect_format, load_firmware_into, parse_num, read_mem_byte, write_mem_byte};
+use sim::{default_mem_base, detect_format, load_firmware_into, parse_num, read_mem_byte, read_mem_u32, write_mem_byte};
 
 #[derive(Parser)]
 #[command(
@@ -2873,7 +2873,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 }
             } else {
                 for i in 0..len {
-                    bytes.push(sim.read_u8(addr_num.wrapping_add(i as u32)));
+                    bytes.push(read_mem_byte(&sim, addr_num.wrapping_add(i as u32)));
                 }
             }
             if json {
@@ -2941,7 +2941,9 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             // Write the byte sequence to backing memory, then route each byte
             // through the peripheral handler. GPIO/timer/watchdog only act on
             // the base offset (0), while UART emits every byte.
-            sim.write_bytes(addr_num, &data);
+            for (i, b) in data.iter().enumerate() {
+                write_mem_byte(&mut sim, addr_num.wrapping_add(i as u32), *b);
+            }
             for (i, b) in data.iter().enumerate() {
                 sim.peripheral_write_reg(addr_num.wrapping_add(i as u32), *b);
             }
@@ -2959,7 +2961,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 resolve_reg_field(&device, &peripheral, &register, &field)?;
             let (sim, _, _) = load_or_create(Some(&session), None, None, "0")?;
             let mask = if bit_width >= 32 { u32::MAX } else { (1u32 << bit_width) - 1 };
-            let reg_value = sim.peripheral_read_reg(addr).unwrap_or_else(|| sim.read_u32(addr));
+            let reg_value = sim.peripheral_read_reg(addr).unwrap_or_else(|| read_mem_u32(&sim, addr));
             let field_value = (reg_value >> bit_offset) & mask;
             if json {
                 print_json(&serde_json::json!({
@@ -2988,11 +2990,13 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 bail!("字段值超出 {} 位: {}", bit_width, value);
             }
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
-            let cur = sim.peripheral_read_reg(addr).unwrap_or_else(|| sim.read_u32(addr));
+            let cur = sim.peripheral_read_reg(addr).unwrap_or_else(|| read_mem_u32(&sim, addr));
             let new_reg =
                 (cur & !(mask << bit_offset)) | ((new_bits << bit_offset) & (mask << bit_offset));
             let bytes = new_reg.to_le_bytes();
-            sim.write_bytes(addr, &bytes);
+            for (i, b) in bytes.iter().enumerate() {
+                write_mem_byte(&mut sim, addr.wrapping_add(i as u32), *b);
+            }
             for (i, b) in bytes.iter().enumerate() {
                 sim.peripheral_write_reg(addr.wrapping_add(i as u32), *b);
             }

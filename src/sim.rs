@@ -280,6 +280,14 @@ pub fn read_mem_byte(sim: &Simulator, addr: u32) -> u8 {
     sim.read_u8(addr)
 }
 
+/// Read a little-endian 32-bit word through the data-space byte accessor
+/// (so Harvard/AVR cores see the same memory `mem write`/`read` uses).
+pub fn read_mem_u32(sim: &Simulator, addr: u32) -> u32 {
+    (0..4).fold(0u32, |acc, i| {
+        acc | ((read_mem_byte(sim, addr.wrapping_add(i)) as u32) << (8 * i))
+    })
+}
+
 /// Write a single byte into the simulator's data space (mirrors read_mem_byte).
 pub fn write_mem_byte(sim: &mut Simulator, addr: u32, value: u8) {
     if let Some(core) = &mut sim.mcs51 {

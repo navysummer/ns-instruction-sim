@@ -253,6 +253,7 @@ done
 - `periph_status_reports_svd_registers`：`periph status --json` 含 `externalRegs` 快照。
 - `periph_reg_name_access`：`periph reg-read/reg-write --name PERIPH.REG` 按名读写（未知寄存器/缺源报错）。
 - `periph_field_access`：`periph field-get/field-set` 按 SVD 位域读写并保留其他位。
+- `periph_reg_write_data_space_avr`：AVR I/O 空间外设寄存器写入落在数据空间（`periph reg-read`/`mem read` 均可见）。
 - `device_codegen_linker_and_startup`：`device linker/startup` 生成链接脚本与启动文件（stdout/--out/未知设备错误）。
 - `device_init_codegen`：`device init` 生成外设初始化 C 骨架（含 --register 覆盖与格式校验）。
 - `mem_search_finds_pattern`：`mem search` 在内存区域定位字节模式（JSON 匹配数/地址、未找到提示）。
