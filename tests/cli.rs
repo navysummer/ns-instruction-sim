@@ -2721,3 +2721,32 @@ fn disasm_stm8_variable_width() {
     assert_eq!(json[4]["address"], 0x800Au64);
     assert_eq!(json[4]["text"], "rlc (0x10, y)");
 }
+
+#[test]
+fn stm8_step_over_and_step_out_use_call_width() {
+    // STM8 `call addr16` is 3 bytes: step-over runs the call and stops at the
+    // caller's next instruction (pc+3). `ret` is recognized by step-out.
+    let dir = tmpdir();
+    let sess = dir.join("stm8step.json");
+    let code = dir.join("stm8step.bin");
+    // 0x8000: call 0x8010 (3 bytes) -> return 0x8003.
+    // 0x8010: ret (pops the return address, landing on 0x8003).
+    let mut buf = vec![0u8; 0x18];
+    buf[0..3].copy_from_slice(&[0xCD, 0x10, 0x80]);
+    buf[0x10] = 0x81;
+    std::fs::write(&code, buf).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "stm8", "--firmware", code.to_str().unwrap(), "--base", "0x8000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // step-over from the `call` returns to pc == 0x8003.
+    let out = Command::new(bin())
+        .args(["step-over", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8003u64);
+}

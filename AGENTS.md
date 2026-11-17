@@ -256,6 +256,8 @@ done
 - `disasm_v850_variable_width`：V850 变长指令（2/4/6 字节）按解码宽度推进（NOP=2、DISPOSE=4）。
 - `disasm_stm8_variable_width`：STM8 变长指令按实际宽度推进并解码内核主流操作码族（NOP=1、JRA=2、
   CALL=3、CALLF=4、`0x90` 前缀 Y 索引=3），替换原先仅解码 7 个操作码的极小反汇编器。
+- `stm8_step_over_and_step_out_use_call_width`：STM8 `call addr16` 为 3 字节，`step-over` 运行调用并停在
+  调用者下一条指令（pc+3），`ret` 被 `step-out` 识别。
 - `step_source_annotates_lines`：`step --source` 按 DWARF 行表标注 file:line。
 - `step_over_and_step_out_use_code_space`：`step-over` 按实际指令宽度计算返回地址（mcs51 LCALL=3 字节），
   `step-out` 从独立代码 ROM 读取 `RET` 并在返回地址停下（修复哈佛内核代码空间读取）。
