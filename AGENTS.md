@@ -252,6 +252,8 @@ done
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
 - `disasm_mcs51_code_space_width`：mcs51 独立代码 ROM 被 `disasm` 读取，且按实际指令宽度推进（NOP=1、LJMP addr16=3）。
 - `disasm_mcs251_code_space_width`：80251 变长指令按实际宽度推进（NOP=1、MOV Rn,#imm16=3）。
+- `disasm_mcs251_core_forms`：80251 反汇编镜像执行内核的 RET/INC/DEC/JC/JNC/MOV A,direct/
+  MOVX @Ri/CLR/CPL/RL/RR/JMP @A+DPTR 家族，按实际宽度推进（相对跳转=2、MOV A,direct=2）。
 - `disasm_avr_32bit_width`：AVR LDS/STS/JMP/CALL 32 位指令按 4 字节推进并正确解码（此前守卫隐藏了这些分支）。
 - `disasm_c166_imm_width`：C166 `MOV Rn,#imm16`/`CALL` 按 3 字节推进并解码小端立即数（与执行内核一致）。
 - `disasm_c166_logic_register_forms`：C166 `0x50-0x5F` 按 `bits 3:2` 解码

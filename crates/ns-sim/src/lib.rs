@@ -3568,6 +3568,16 @@ fn disassemble_mcs251(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     let op = read(pc);
     match op {
         0x00 => "nop".to_string(),
+        0x03 => "rr a".to_string(),
+        0x04 => "inc a".to_string(),
+        0x14 => "dec a".to_string(),
+        0x22 => "ret".to_string(),
+        0x23 => "rl a".to_string(),
+        0x73 => "jmp @a+dptr".to_string(),
+        0xE4 => "clr a".to_string(),
+        0xF4 => "cpl a".to_string(),
+        n if (0x08..=0x0F).contains(&n) => format!("inc r{}", n & 7),
+        n if (0x18..=0x1F).contains(&n) => format!("dec r{}", n & 7),
         n if (0x74..=0x7F).contains(&n) => {
             let hi = read(pc + 1) as u16;
             let lo = read(pc + 2) as u16;
@@ -3582,11 +3592,18 @@ fn disassemble_mcs251(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         0x90 => format!("mov dptr, #0x{:02x}{:02x}{:02x}", read(pc + 1), read(pc + 2), read(pc + 3)),
         0x02 => format!("ljmp 0x{:02x}{:02x}{:02x}", read(pc + 1), read(pc + 2), read(pc + 3)),
         0x12 => format!("lcall 0x{:02x}{:02x}{:02x}", read(pc + 1), read(pc + 2), read(pc + 3)),
-        0x80 => format!("sjmp {:#x}", pc.wrapping_add(3).wrapping_add((read(pc + 1) as i8) as u32)),
-        0x60 => format!("jz {:#x}", pc.wrapping_add(3).wrapping_add((read(pc + 1) as i8) as u32)),
-        0x70 => format!("jnz {:#x}", pc.wrapping_add(3).wrapping_add((read(pc + 1) as i8) as u32)),
+        // 80251 relative branches are 2 bytes (opcode + rel8), so the target
+        // is pc + 2 + rel, matching the core's `fetch_s8` post-increment.
+        0x80 => format!("sjmp {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
+        0x40 => format!("jc {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
+        0x50 => format!("jnc {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
+        0x60 => format!("jz {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
+        0x70 => format!("jnz {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
         0xE0 => "movx a, @dptr".to_string(),
         0xF0 => "movx @dptr, a".to_string(),
+        0xE5 => format!("mov a, 0x{:02x}", read(pc + 1)),
+        0xE2 | 0xE3 => format!("movx a, @r{}", op & 1),
+        0xF2 | 0xF3 => format!("movx @r{}, a", op & 1),
         _ => format!(".byte 0x{op:02x}"),
     }
 }
@@ -4541,6 +4558,52 @@ mod tests {
                 if i < 2 { bytes[i] } else { 0 }
             };
             assert_eq!(disassemble_one(Arch::C166, 0, &read), expected);
+        }
+    }
+
+    #[test]
+    fn disassembles_mcs251_core_forms() {
+        // Mirror the 80251 execution core: single-byte register/accumulator
+        // ops, 16-bit immediate moves, 24-bit absolute jumps/calls and DPTR,
+        // relative branches, direct/indirect MOVX and MOV A,direct.
+        for (bytes, expected) in [
+            (&[0x00][..], "nop"),
+            (&[0x03][..], "rr a"),
+            (&[0x04][..], "inc a"),
+            (&[0x14][..], "dec a"),
+            (&[0x22][..], "ret"),
+            (&[0x23][..], "rl a"),
+            (&[0x73][..], "jmp @a+dptr"),
+            (&[0xE4][..], "clr a"),
+            (&[0xF4][..], "cpl a"),
+            (&[0x0F][..], "inc r7"),
+            (&[0x1F][..], "dec r7"),
+            (&[0x74, 0x12, 0x34][..], "mov r4, #0x1234"),
+            (&[0xE8][..], "mov a, r0"),
+            (&[0xF8][..], "mov r0, a"),
+            (&[0x28][..], "add a, r0"),
+            (&[0x98][..], "subb a, r0"),
+            (&[0xA4][..], "mul ab"),
+            (&[0x84][..], "div ab"),
+            (&[0x90, 0x12, 0x34, 0x56][..], "mov dptr, #0x123456"),
+            (&[0x02, 0x12, 0x34, 0x56][..], "ljmp 0x123456"),
+            (&[0x12, 0x12, 0x34, 0x56][..], "lcall 0x123456"),
+            (&[0x80, 0xFE][..], "sjmp 0x0"),
+            (&[0x40, 0xFE][..], "jc 0x0"),
+            (&[0x50, 0xFE][..], "jnc 0x0"),
+            (&[0x60, 0xFE][..], "jz 0x0"),
+            (&[0x70, 0xFE][..], "jnz 0x0"),
+            (&[0xE0][..], "movx a, @dptr"),
+            (&[0xF0][..], "movx @dptr, a"),
+            (&[0xE5, 0x30][..], "mov a, 0x30"),
+            (&[0xE2][..], "movx a, @r0"),
+            (&[0xF3][..], "movx @r1, a"),
+        ] {
+            let read = |addr: u32| {
+                let i = addr as usize;
+                if i < bytes.len() { bytes[i] } else { 0 }
+            };
+            assert_eq!(disassemble_one(Arch::Mcs251, 0, &read), expected);
         }
     }
 

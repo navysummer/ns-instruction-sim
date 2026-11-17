@@ -2546,6 +2546,62 @@ fn disasm_mcs251_code_space_width() {
 }
 
 #[test]
+fn disasm_mcs251_core_forms() {
+    // The 80251 disassembler mirrors the execution core: single-byte
+    // register/accumulator ops, relative branches, MOV A,direct, MOVX @Ri
+    // and JMP @A+DPTR, advancing by the actual decoded width.
+    let dir = tmpdir();
+    let sess = dir.join("x51forms.json");
+    let code = dir.join("x51forms.bin");
+    std::fs::write(&code, [
+        0x22,             // ret
+        0x04,             // inc a
+        0x14,             // dec a
+        0x0F,             // inc r7
+        0x1F,             // dec r7
+        0x73,             // jmp @a+dptr
+        0x40, 0xFE,       // jc 0x1
+        0x50, 0xFE,       // jnc 0x1
+        0xE5, 0x30,       // mov a, 0x30
+        0xE2,             // movx a, @r0
+        0xF3,             // movx @r1, a
+        0xE4,             // clr a
+        0xF4,             // cpl a
+        0x23,             // rl a
+        0x03,             // rr a
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "mcs251", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "15", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["text"], "ret");
+    assert_eq!(json[1]["text"], "inc a");
+    assert_eq!(json[2]["text"], "dec a");
+    assert_eq!(json[3]["text"], "inc r7");
+    assert_eq!(json[4]["text"], "dec r7");
+    assert_eq!(json[5]["text"], "jmp @a+dptr");
+    assert_eq!(json[6]["text"], "jc 0x6");
+    assert_eq!(json[7]["text"], "jnc 0x8");
+    assert_eq!(json[8]["text"], "mov a, 0x30");
+    assert_eq!(json[9]["text"], "movx a, @r0");
+    assert_eq!(json[10]["text"], "movx @r1, a");
+    assert_eq!(json[11]["text"], "clr a");
+    assert_eq!(json[12]["text"], "cpl a");
+    assert_eq!(json[13]["text"], "rl a");
+    assert_eq!(json[14]["text"], "rr a");
+    assert_eq!(json[14]["address"], 17u64);
+}
+
+#[test]
 fn disasm_avr_32bit_width() {
     // AVR's LDS/STS/JMP/CALL are 32-bit; disassembly must advance 4 bytes for
     // them and decode the mnemonic (previously the guard hid these arms).
