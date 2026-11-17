@@ -303,14 +303,32 @@ impl Mc51Core {
                 self.acc = imm;
             }
             0x84 => {
-                let imm = self.fetch();
-                self.acc = self.acc.wrapping_add(imm.wrapping_mul(self.b));
+                // DIV AB: A = A / B (quotient), B = A % B (remainder), C = 0,
+                // OV = 1 on division by zero. Single-byte instruction.
+                if self.b == 0 {
+                    self.set_carry(false);
+                    self.set_overflow(true);
+                } else {
+                    let quotient = self.acc / self.b;
+                    let remainder = self.acc % self.b;
+                    self.acc = quotient;
+                    self.b = remainder;
+                    self.set_carry(false);
+                    self.set_overflow(false);
+                }
             }
             0x94 => {
                 let imm = self.fetch();
                 self.subb(imm);
             }
-            0xA4 => self.acc = self.acc.wrapping_mul(self.b),
+            0xA4 => {
+                // MUL AB: A = low(A*B), B = high(A*B), C = 0, OV = 0.
+                let product = (self.acc as u16).wrapping_mul(self.b as u16);
+                self.acc = product as u8;
+                self.b = (product >> 8) as u8;
+                self.set_carry(false);
+                self.set_overflow(false);
+            }
             0xB4 => {
                 // CJNE A,#imm,rel
                 let imm = self.fetch();
@@ -915,6 +933,50 @@ mod tests {
         core.step(&[]);
         assert_eq!(core.acc, 0x00);
         assert!(core.carry(), "0xFF + 1 must set carry");
+    }
+
+    #[test]
+    fn mul_ab_and_div_ab() {
+        // MUL AB: 0x12 * 0x34 = 0x03A8 -> A=0xA8, B=0x03.
+        let mut core = core_with(&[
+            0x74, 0x12, // MOV A,#0x12
+            0x75, 0xF0, 0x34, // MOV B,#0x34
+            0xA4, // MUL AB
+        ]);
+        core.step(&[]);
+        core.step(&[]);
+        core.step(&[]);
+        assert_eq!(core.acc, 0xA8, "MUL AB low byte");
+        assert_eq!(core.b, 0x03, "MUL AB high byte");
+        assert!(!core.carry(), "MUL AB clears carry");
+        assert!(!core.overflow(), "MUL AB clears overflow");
+
+        // DIV AB: 0x3C / 0x0A = 6 remainder 0 -> A=6, B=0.
+        let mut core = core_with(&[
+            0x74, 0x3C, // MOV A,#0x3C
+            0x75, 0xF0, 0x0A, // MOV B,#0x0A
+            0x84, // DIV AB
+        ]);
+        core.step(&[]);
+        core.step(&[]);
+        core.step(&[]);
+        assert_eq!(core.acc, 0x06, "DIV AB quotient");
+        assert_eq!(core.b, 0x00, "DIV AB remainder");
+        assert!(!core.carry(), "DIV AB clears carry");
+        assert!(!core.overflow(), "DIV AB clears overflow");
+
+        // DIV AB by zero sets overflow and leaves A unchanged.
+        let mut core = core_with(&[
+            0x74, 0x3C, // MOV A,#0x3C
+            0x75, 0xF0, 0x00, // MOV B,#0x00
+            0x84, // DIV AB
+        ]);
+        core.step(&[]);
+        core.step(&[]);
+        core.step(&[]);
+        assert_eq!(core.acc, 0x3C, "DIV AB by zero leaves A");
+        assert!(core.overflow(), "DIV AB by zero sets overflow");
+        assert!(!core.carry(), "DIV AB by zero clears carry");
     }
 
     #[test]
