@@ -2830,3 +2830,43 @@ fn disasm_rl78_variable_width() {
     assert_eq!(json[6]["address"], 0x8010u64);
     assert_eq!(json[6]["text"], "and a, A");
 }
+
+#[test]
+fn disasm_rx_variable_width() {
+    // RX is variable-length (1/2/4/6 bytes). Disassembly must advance by the
+    // actual decoded width, not a fixed 4 bytes, and decode the short-branch
+    // and immediate families consistently with the core's big-endian fetch.
+    let dir = tmpdir();
+    let sess = dir.join("rxdis.json");
+    let code = dir.join("rxdis.bin");
+    // nop (2), bra.s (1), beq.s (2), add #imm16 (4), bra.a (6).
+    std::fs::write(&code, [
+        0x00, 0x03,             // nop
+        0x08,                   // bra.s +8
+        0x10, 0x00,             // beq.s +0
+        0x70, 0x00, 0x34, 0x12, // add #0x3412, r0, r0
+        0x00, 0x04, 0x00, 0x00, 0x00, 0x00, // bra.a (32-bit displacement)
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "rx", "--firmware", code.to_str().unwrap(), "--base", "0x8000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0x8000", "--count", "5", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000u64);
+    assert_eq!(json[0]["text"], "nop");
+    assert_eq!(json[1]["address"], 0x8002u64);
+    assert_eq!(json[1]["text"], "bra.s +8");
+    assert_eq!(json[2]["address"], 0x8003u64);
+    assert_eq!(json[2]["text"], "beq.s +0");
+    assert_eq!(json[3]["address"], 0x8005u64);
+    assert_eq!(json[3]["text"], "add #0x3412, r0, r0");
+    assert_eq!(json[4]["address"], 0x8009u64);
+}

@@ -1461,11 +1461,117 @@ fn sign7(value: u16) -> i32 {
     ((value & 0x7F) as i8) as i32
 }
 
+/// Number of code bytes consumed by the RX instruction at `pc`. Mirrors the
+/// core's byte-fetch model: short branches are 1 byte (BRA.s) or 2 bytes
+/// (BCnd.s), all other instructions start with a big-endian opcode word and
+/// add one operand byte per immediate/displacement field the family fetches.
+pub fn instruction_len(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
+    let b0 = read(pc) as u16;
+    let b1 = read(pc + 1) as u16;
+    let insn = (b0 << 8) | b1;
+    let op = b0 as u8;
+    let low = b1 as u8;
+
+    // 1-byte short branch BRA.s (0x08..=0x0F) and 2-byte BCnd.s (0x10..=0x1F).
+    if (0x08..=0x0F).contains(&b0) {
+        return 1;
+    }
+    if (0x10..=0x1F).contains(&b0) {
+        return 2;
+    }
+
+    // All remaining forms start with a 2-byte opcode word.
+    let base = 2u32;
+
+    // Special opcode words with 32-bit branch displacements.
+    if insn == 0x0004 || insn == 0x0005 {
+        return base + 4;
+    }
+    // Short branch encodings are unreachable here (handled above), but keep the
+    // dispatch in the same order as the core for clarity.
+    if (op & 0xF0) == 0x20 {
+        return base;
+    }
+    // BRA.w / BSR.w: 16-bit displacement.
+    if insn == 0x3800 || insn == 0x3900 {
+        return base + 2;
+    }
+    // BCnd.w: 8-bit displacement.
+    if (op & 0xF8) == 0x3A {
+        return base + 1;
+    }
+    // MOV.b/w/l #imm8, dsp5[rd] and RTSD #imm, rd-rd2: one 8-bit immediate.
+    if (op & 0xFC) == 0x3C || op == 0x3F {
+        return base + 1;
+    }
+    // SUB/CMP/ADD/MUL/AND/OR dsp[rs], rd: source addressing selects the width.
+    if matches!(op & 0xFC, 0x40 | 0x44 | 0x48 | 0x4C | 0x50 | 0x54) {
+        return base + match op & 0x03 {
+            1 => 1,
+            2 => 2,
+            _ => 0,
+        };
+    }
+    // MOVU.b/w: register-indirect (0), dsp8 (1), dsp16/#imm16 (2/3).
+    if (op & 0xF8) == 0x58 {
+        return base + match op & 0x03 {
+            1 => 1,
+            2 | 3 => 2,
+            _ => 0,
+        };
+    }
+    // Immediate-always (imm in the opcode word): SUB/CMP/ADD/MUL #uimm4,
+    // AND/OR/MOV #uimm4, SHLR/SHLL #imm5, BSET/BCLR/BTST #imm5.
+    if matches!(op & 0xFC, 0x60 | 0x64 | 0x68 | 0x6C) || (0x78..=0x7D).contains(&op) {
+        return base;
+    }
+    // PUSHM/POPM and the register-only 0x7E/0x7F families.
+    if op == 0x6E || op == 0x6F || op == 0x7E || op == 0x7F {
+        return base;
+    }
+    // ADD #imm, rs, rd and CMP/MUL/AND/OR #imm, rd: 16-bit immediate.
+    if matches!(op & 0xFC, 0x70 | 0x74) {
+        return base + 2;
+    }
+    // MOV.b/w/l store/load dsp5[reg] and MOVU dsp5: displacement in the word.
+    if matches!(op & 0xF8, 0x80 | 0x88 | 0x90 | 0x98 | 0xA0 | 0xA8) || (op & 0xF0) == 0xB0 {
+        return base;
+    }
+    // MOV.b/w/l dsp[lds], dsp[ldd]: sum of src/dst displacement widths.
+    if matches!(op & 0xE0, 0xC0 | 0xE0) {
+        let lds = ((low >> 4) & 0x03) as u32;
+        let ldd = ((insn >> 8) & 0x03) as u32;
+        let disp = |ld: u32| match ld {
+            2 => 1,
+            3 => 2,
+            _ => 0,
+        };
+        return base + disp(lds) + disp(ldd);
+    }
+    // BSET/BCLR/BTST #imm, dsp[rd] and PUSH dsp[rs]: displacement width.
+    if matches!(op & 0xFC, 0xF0 | 0xF4) {
+        let ld = ((insn >> 8) & 0x03) as u32;
+        return base + match ld {
+            1 => 1,
+            2 | 3 => 2,
+            _ => 0,
+        };
+    }
+    // MOV [ri+rb], rd / MOV rd, [ri+rb]: no extra operand.
+    if matches!(op & 0xFC, 0xF8 | 0xFA | 0xFC) {
+        return base;
+    }
+    // Unknown: the core fetches the opcode word then halts.
+    base
+}
+
 /// Disassemble one RX instruction at `pc` using `read` for bytes.
 pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     let b0 = read(pc) as u16;
     let b1 = read(pc + 1) as u16;
-    let insn = b0 | (b1 << 8);
+    // The core fetches a big-endian opcode word (`(b0 << 8) | b1`), so decode
+    // the same way: `op` is the first byte and `low` the second.
+    let insn = (b0 << 8) | b1;
     let op = ((insn >> 8) & 0xFF) as u8;
     let low = (insn & 0xFF) as u8;
 
@@ -1474,12 +1580,17 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     if insn == 0x0003 { return "nop".to_string(); }
     if insn == 0x7996 { return "wait".to_string(); }
     if (insn & 0xF800) == 0x0800 {
-        let dsp = sign7(insn & 0x7F);
+        // BRA.s is a 1-byte instruction: displacement is the low 7 bits of the
+        // first byte.
+        let dsp = sign7(b0 & 0x7F);
         return format!("bra.s {:+}", dsp);
     }
     if (op & 0xF0) == 0x10 {
-        let cond = ((insn >> 8) & 0x0F) as u8;
-        let dsp = sign7(insn & 0x7F);
+        // BCnd.s is a 2-byte instruction: condition is the low nibble of the
+        // first byte, displacement spans bits 5-3 of the first byte and the low
+        // 7 bits of the second byte.
+        let cond = (b0 & 0x0F) as u8;
+        let dsp = sign7(((b0 & 0x07) << 3) | (b1 & 0x7F));
         return format!("b{}.s {:+}", cond_name(cond), dsp);
     }
     if (op & 0xF0) == 0x20 {
@@ -1492,11 +1603,11 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("b{}.b {:+}", cond_name(cond), dsp);
     }
     if insn == 0x3800 {
-        let dsp = read(pc + 2) as i16 | ((read(pc + 3) as i16) << 8);
+        let dsp = ((read(pc + 2) as i16) << 8) | read(pc + 3) as i16;
         return format!("bra.w {:+}", dsp);
     }
     if insn == 0x3900 {
-        let dsp = read(pc + 2) as i16 | ((read(pc + 3) as i16) << 8);
+        let dsp = ((read(pc + 2) as i16) << 8) | read(pc + 3) as i16;
         return format!("bsr.w {:+}", dsp);
     }
     if (op & 0xF8) == 0x3A {
@@ -1572,14 +1683,14 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     if (op & 0xFC) == 0x70 {
         let rs = ((insn >> 4) & 0x0F) as usize;
         let rd = (low & 0x0F) as usize;
-        let imm = read(pc + 2) as u16 | ((read(pc + 3) as u16) << 8);
+        let imm = ((read(pc + 2) as u16) << 8) | read(pc + 3) as u16;
         return format!("add #0x{:04x}, r{}, r{}", imm, rs, rd);
     }
     if (op & 0xFC) == 0x74 {
         let kind = op & 0x03;
         let rd = (low & 0x0F) as usize;
         let m = match kind { 0 => "cmp", 1 => "mul", 2 => "and", _ => "or" };
-        return format!("{} #0x{:04x}, r{}", m, read(pc + 2) as u16 | ((read(pc + 3) as u16) << 8), rd);
+        return format!("{} #0x{:04x}, r{}", m, ((read(pc + 2) as u16) << 8) | read(pc + 3) as u16, rd);
     }
     if (op & 0xFE) == 0x78 {
         let kind = (op >> 1) & 0x03;
@@ -1650,6 +1761,73 @@ mod tests {
         let r = c.step(&[]);
         assert_eq!(r, RxStep::Advanced);
         assert_eq!(c.pc, 0x1002);
+    }
+
+    /// Assert that the static decoder width matches the core's actual byte
+    /// consumption for a straight-line (non-branching) instruction.
+    fn assert_step_width(code: &[u8]) {
+        let mut c = core_with(code);
+        let pc = c.pc;
+        let expected = instruction_len(pc, &|addr| c.read_u8(addr));
+        let r = c.step(&[]);
+        assert!(
+            matches!(r, RxStep::Advanced | RxStep::Halted),
+            "unexpected step result for opcodes: {code:02x?}"
+        );
+        assert_eq!(
+            c.pc.wrapping_sub(pc),
+            expected,
+            "PC advance mismatch for opcodes: {code:02x?}"
+        );
+    }
+
+    #[test]
+    fn instruction_len_matches_core_width() {
+        // 2-byte opcode words with no operand.
+        assert_step_width(&[0x00, 0x03]); // nop
+        assert_step_width(&[0x79, 0x96]); // wait
+        assert_step_width(&[0x00, 0x00]); // brk (halts after 2 bytes)
+        assert_step_width(&[0x60, 0x0F]); // sub #0, r15
+        assert_step_width(&[0x64, 0x0F]); // and #0, r15
+        assert_step_width(&[0x68, 0x0F]); // shlr #0, r15
+        assert_step_width(&[0x78, 0x0F]); // bset #0, r15
+        assert_step_width(&[0x7E, 0x00]); // not r0
+        assert_step_width(&[0x7E, 0x08]); // push r0
+        assert_step_width(&[0x6E, 0x0F]); // pushm r0-r15
+        assert_step_width(&[0x6F, 0x0F]); // popm r0-r15
+        assert_step_width(&[0x80, 0x00]); // mov.b r0, 0[r0]
+        assert_step_width(&[0x98, 0x00]); // mov.w 0[r0], r0
+        assert_step_width(&[0xB0, 0x00]); // movu.b 0[r0], r0
+        assert_step_width(&[0xF8, 0x00]); // mov [r0+r0], r0
+        assert_step_width(&[0x40, 0x00]); // sub r0, r0 (register source)
+        assert_step_width(&[0x43, 0x00]); // sub r0, r0 (ld=3 register)
+        assert_step_width(&[0xFC, 0x00]); // divu r0, r0 (execute_fc)
+        // 3-byte: one 8-bit displacement/immediate.
+        assert_step_width(&[0x3C, 0x00, 0x10]); // mov.b #0x10, 0[r4]
+        assert_step_width(&[0x41, 0x00, 0x10]); // sub dsp8[r0], r0
+        assert_step_width(&[0x59, 0x00, 0x10]); // movu.b dsp8[r0], r0
+        assert_step_width(&[0x5B, 0x00, 0x34, 0x12]); // movu.b #0x1234, r0 (4 bytes)
+        assert_step_width(&[0xF1, 0x00, 0x10]); // bset #0, dsp8[r0]
+        assert_step_width(&[0xC0, 0x20, 0x10]); // mov.b dsp8[r2], dsp0[r0] (3 bytes)
+        // 4-byte: one 16-bit displacement/immediate.
+        assert_step_width(&[0x42, 0x00, 0x34, 0x12]); // sub dsp16[r0], r0
+        assert_step_width(&[0x5A, 0x00, 0x34, 0x12]); // movu.b dsp16[r0], r0
+        assert_step_width(&[0xF2, 0x00, 0x34, 0x12]); // bset #0, dsp16[r0]
+        assert_step_width(&[0x70, 0x00, 0x34, 0x12]); // add #0x1234, r0, r0
+        assert_step_width(&[0x74, 0x00, 0x34, 0x12]); // cmp #0x1234, r0
+        assert_step_width(&[0xC0, 0x30, 0x34, 0x12]); // mov.b dsp16[r3], dsp0[r0]
+        assert_step_width(&[0xC1, 0x20, 0x10]); // mov.b dsp8[r2], dsp8[r0] (3 bytes)
+        // Short branches: BRA.s is 1 byte, BCnd.s is 2 bytes.
+        assert_eq!(instruction_len(0, &|a| if a == 0 { 0x08 } else { 0 }), 1);
+        assert_eq!(instruction_len(0, &|a| if a == 0 { 0x10 } else { 0 }), 2);
+        assert_eq!(instruction_len(0, &|a| if a == 0 { 0x0F } else { 0 }), 1);
+        assert_eq!(instruction_len(0, &|a| if a == 0 { 0x1F } else { 0 }), 2);
+        // BRA.w/BSR.w (0x3800/0x3900) are 4 bytes, BRA.a/BSR.a (0x0004/0x0005)
+        // are 6 bytes.
+        let read = |a: u32| if a == 0 { 0x38 } else if a == 1 { 0x00 } else { 0 };
+        assert_eq!(instruction_len(0, &read), 4);
+        let read = |a: u32| if a == 0 { 0x00 } else if a == 1 { 0x04 } else { 0 };
+        assert_eq!(instruction_len(0, &read), 6);
     }
 
 
