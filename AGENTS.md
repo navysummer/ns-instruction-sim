@@ -223,6 +223,8 @@ done
 - `continue_source_annotates_stop`：`continue --source` 在停止点标注 file:line。
 - `mem_dump_c_array`：`mem dump --format c` 生成 C 数组（含非法格式错误路径）。
 - `mem_dump_json`：`mem dump --json` 输出地址/长度/格式/名称/字节数组（机器可读导出）。
+- `mem_write_read_roundtrip_persists`：内存写读跨进程往返并持久化。
+- `mem_fill_hex_value`：`mem fill --value` 十六进制值填充并可读回。
 - `mem_read_word_width`：`mem read --width` 按字节/半字/字/双字读取（含非法宽度错误路径）。
 - `mem_read_json`：`mem read --json` 输出地址/宽度/字节数组。
 - `mem_write_word_width`：`mem write --width --values` 按字/半字小端写入（含越界错误路径）。
