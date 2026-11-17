@@ -1147,6 +1147,45 @@ impl Rl78Core {
     }
 }
 
+/// Number of code bytes consumed by the RL78 instruction at `pc`. Mirrors the
+/// core's byte-fetch model: most single-byte opcodes are 1 byte, immediate/
+/// direct forms carry one operand byte (2), and `ES:[imm16]`/word forms and
+/// the `0x61` prefix forms consume 3-4 bytes.
+pub fn instruction_len(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
+    let b0 = read(pc);
+    if b0 == 0x61 {
+        let op = read(pc + 1);
+        return 2 + match op {
+            // 0x61 + op + imm16. The core's `op & 0xF8` dispatcher routes 0xA8/
+            // 0xA9 and anything masked to them (0xAA/0xAB) to the `mov A, ES:
+            // [imm16]`-style arms, which fetch a 16-bit operand.
+            0xA8 | 0xA9 | 0xAA | 0xAB => 2,
+            // 0x61 + op + imm8. Only 0xB8/0xB9/0xCE reach the `_ => match op`
+            // fallback handlers that fetch one operand byte; the rest of that
+            // fallback group is shadowed by the `op & 0xF8` register-register
+            // families and stays 2 bytes wide.
+            0xB8 | 0xB9 | 0xCE => 1,
+            _ => 0,
+        };
+    }
+    match b0 {
+        // Single-byte opcodes with no operand.
+        0x00 | 0x01 | 0x03 | 0x05 | 0x07 | 0x0D | 0x11 | 0x12 | 0x13 | 0x14 | 0x15 | 0x16
+        | 0x17 | 0x1D | 0x5D | 0x6D | 0x60..=0x67 | 0x80..=0x87 | 0x89 | 0x8B | 0x90..=0x97
+        | 0x99 | 0x9B | 0xC0..=0xC7 | 0xD7 | 0xFF => 1,
+        // Opcode + 16-bit operand.
+        0x02 | 0x04 | 0x09 | 0x0F | 0x1F | 0x29 | 0x30 | 0x32 | 0x34 | 0x36 | 0x49 | 0x5F
+        | 0x6F | 0x8F | 0x9F => 3,
+        // Opcode + two 8-bit operands (saddr, #imm8).
+        0x0A | 0x1A => 3,
+        // Opcode + one 8-bit operand.
+        0x06 | 0x0B | 0x0C | 0x0E | 0x10 | 0x1B | 0x1C | 0x1E | 0x41 | 0x50..=0x57 | 0x5C
+        | 0x5E | 0x6C | 0x6E | 0x88 | 0x8A | 0x8C | 0x8D | 0x9D => 2,
+        // Unknown opcode: the core fetches one byte then halts.
+        _ => 1,
+    }
+}
+
 /// Disassemble one RL78 instruction at `pc` using `read` for bytes.
 /// Produces a readable one-line rendering; unknown bytes print as `.byte 0xXX`.
 pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
@@ -1198,6 +1237,106 @@ mod tests {
         c.write_bytes(0x1000, code);
         c.pc = 0x1000;
         c
+    }
+
+    /// Assert that the static decoder width matches the core's actual byte
+    /// consumption for a straight-line (non-branching) instruction.
+    fn assert_step_width(code: &[u8]) {
+        let mut c = core_with(code);
+        let pc = c.pc;
+        let expected = instruction_len(pc, &|addr| c.read_u8(addr));
+        let r = c.step(&[]);
+        assert!(
+            matches!(r, Rl78Step::Advanced | Rl78Step::Halted),
+            "unexpected step result for opcodes: {code:02x?}"
+        );
+        assert_eq!(
+            c.pc.wrapping_sub(pc),
+            expected,
+            "PC advance mismatch for opcodes: {code:02x?}"
+        );
+    }
+
+    #[test]
+    fn instruction_len_matches_core_width() {
+        // Single-byte no-operand forms.
+        assert_step_width(&[0x00]); // nop
+        assert_step_width(&[0x01]); // addw ax, bc
+        assert_step_width(&[0x0D]); // add a, [hl]
+        assert_step_width(&[0x11]); // movw ax, bc
+        assert_step_width(&[0x12]); // movw bc, ax
+        assert_step_width(&[0x5D]); // and a, [hl]
+        assert_step_width(&[0x60]); // mov a, rba
+        assert_step_width(&[0x80]); // inc rba
+        assert_step_width(&[0x89]); // mov a, [de]
+        assert_step_width(&[0x8B]); // mov a, [hl]
+        assert_step_width(&[0x90]); // dec rba
+        assert_step_width(&[0x99]); // mov [de], a
+        assert_step_width(&[0x9B]); // mov [hl], a
+        assert_step_width(&[0xC0]); // pop rp
+        assert_step_width(&[0xC1]); // push rp
+        assert_step_width(&[0xFF]); // brk1
+        // Opcode + one 8-bit operand.
+        assert_step_width(&[0x06, 0x30]); // addw ax, saddr
+        assert_step_width(&[0x0B, 0x30]); // add a, saddr
+        assert_step_width(&[0x0C, 0x2A]); // add a, #imm8
+        assert_step_width(&[0x0E, 0x05]); // add a, [hl+imm8]
+        assert_step_width(&[0x10, 0x08]); // addw sp, #imm8
+        assert_step_width(&[0x1B, 0x30]); // addc a, saddr
+        assert_step_width(&[0x1C, 0x2A]); // addc a, #imm8
+        assert_step_width(&[0x1E, 0x05]); // addc a, [hl+imm8]
+        assert_step_width(&[0x41, 0x2A]); // mov a, #imm8
+        assert_step_width(&[0x50, 0x42]); // mov x, #imm8
+        assert_step_width(&[0x51, 0x42]); // mov a, #imm8
+        assert_step_width(&[0x5C, 0x2A]); // and a, #imm8
+        assert_step_width(&[0x5E, 0x05]); // and a, [hl+imm8]
+        assert_step_width(&[0x6C, 0x2A]); // or a, #imm8
+        assert_step_width(&[0x6E, 0x05]); // or a, [hl+imm8]
+        assert_step_width(&[0x88, 0x08]); // mov a, [sp+imm8]
+        assert_step_width(&[0x8A, 0x05]); // mov a, [de+imm8]
+        assert_step_width(&[0x8C, 0x05]); // mov a, [hl+imm8]
+        assert_step_width(&[0x8D, 0x30]); // mov a, saddr
+        assert_step_width(&[0x9D, 0x30]); // mov saddr, a
+        // Opcode + 16-bit operand.
+        assert_step_width(&[0x02, 0x78, 0x56]); // addw ax, es:[imm16]
+        assert_step_width(&[0x04, 0x34, 0x12]); // addw ax, #imm16
+        assert_step_width(&[0x09, 0x78, 0x56]); // mov a, [b+imm16]
+        assert_step_width(&[0x0F, 0x78, 0x56]); // add a, es:[imm16]
+        assert_step_width(&[0x1F, 0x78, 0x56]); // addc a, es:[imm16]
+        assert_step_width(&[0x29, 0x78, 0x56]); // mov a, [c+imm16]
+        assert_step_width(&[0x30, 0x34, 0x12]); // movw ax, #imm16
+        assert_step_width(&[0x49, 0x78, 0x56]); // mov a, [bc+imm16]
+        assert_step_width(&[0x5F, 0x78, 0x56]); // and a, es:[imm16]
+        assert_step_width(&[0x6F, 0x78, 0x56]); // or a, es:[imm16]
+        assert_step_width(&[0x8F, 0x78, 0x56]); // mov a, es:[imm16]
+        assert_step_width(&[0x9F, 0x78, 0x56]); // mov es:[imm16], a
+        // Opcode + two 8-bit operands.
+        assert_step_width(&[0x0A, 0x30, 0x55]); // add saddr, #imm8
+        assert_step_width(&[0x1A, 0x30, 0x55]); // addc saddr, #imm8
+        // 0x61 prefix: reg-reg (2 bytes).
+        assert_step_width(&[0x61, 0x08]); // add a, x
+        assert_step_width(&[0x61, 0x28]); // sub a, x
+        assert_step_width(&[0x61, 0x48]); // cmp a, x
+        assert_step_width(&[0x61, 0x88]); // xch a, x
+        // The core decodes the low group first, so 0x61 + {0x59,0x69,0x79,0x89,
+        // 0x09,0x49,0x29} are treated as reg-reg forms and consume 2 bytes.
+        assert_step_width(&[0x61, 0x59]); // and a, a (core view)
+        assert_step_width(&[0x61, 0x69]); // or a, a
+        assert_step_width(&[0x61, 0x79]); // xor a, a
+        assert_step_width(&[0x61, 0x89]); // xch a, a
+        assert_step_width(&[0x61, 0x09]); // add a, a
+        assert_step_width(&[0x61, 0x49]); // cmp a, a
+        assert_step_width(&[0x61, 0x29]); // sub a, a
+        // 0x61 prefix: [HL+imm8] (3 bytes).
+        assert_step_width(&[0x61, 0xB8, 0x10]); // mov a, es:[hl+imm8]
+        assert_step_width(&[0x61, 0xB9, 0x10]); // mov es:[hl+imm8], a
+        assert_step_width(&[0x61, 0xCE, 0x10]); // movs es:[hl+imm8], x
+        // 0x61 prefix: ES:[imm16] (4 bytes). 0xAA/0xAB route through the
+        // `op & 0xF8` 0xA8 family, so they also consume a 16-bit operand.
+        assert_step_width(&[0x61, 0xA8, 0x78, 0x56]); // mov a, es:[imm16]
+        assert_step_width(&[0x61, 0xA9, 0x78, 0x56]); // mov es:[imm16], a
+        assert_step_width(&[0x61, 0xAA, 0x78, 0x56]); // xch a, es:[imm16]
+        assert_step_width(&[0x61, 0xAB, 0x78, 0x56]); // xch a, es:[saddr] (core view)
     }
 
     #[test]

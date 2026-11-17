@@ -292,11 +292,14 @@ done
   Xtensa 按 24 位取指为 3 字节、MSP430 为 2 字节、V850 按解码变长（2/4/6 字节），其余固定 4 字节。
   STM8 按操作码与前缀变长（NOP/PUSH/RET=1、短跳=2、`CALL`/直接16/`(off8,X)`=3、`CALLF`/`INT`=4、
   `0x90`/`0x91`/`0x92`/`0x72` 前缀按所修饰操作码累计），MSP430 为 2 字节操作码字加每个立即数/
-  绝对/索引操作数扩展字（`MOV Rn,Rn`=2、`MOV #imm16,R5`=4、`PUSH #imm16`=4）。
+  绝对/索引操作数扩展字（`MOV Rn,Rn`=2、`MOV #imm16,R5`=4、`PUSH #imm16`=4）；RL78 按操作码
+  与前缀变长（无操作数=1、`#imm8`/`saddr`/`[HL+imm8]`=2、`#imm16`/`ES:[imm16]`/`saddr,#imm8`=3、
+  `0x61` 前缀寄存器-寄存器=2、`0x61`+`#imm8` 型=3、`0x61`+`ES:[imm16]` 型=4，且与核心的
+  `op & 0xF8` 分发行为一致——`0x61 0x59` 等按寄存器-寄存器家族解码为 2 字节）。
   该行为由 ns-sim 单测 `instruction_size_matches_encoding_width` 与 CLI 端到端
   `disasm_mcs51_code_space_width`/`disasm_mcs251_code_space_width`/`disasm_avr_32bit_width`/
   `disasm_c166_imm_width`/`disasm_xtensa_24bit_width`/`disasm_v850_variable_width`/
-  `disasm_stm8_variable_width`/`disasm_msp430_extension_words` 锁定。
+  `disasm_stm8_variable_width`/`disasm_msp430_extension_words`/`disasm_rl78_variable_width` 锁定。
 
 ---
 

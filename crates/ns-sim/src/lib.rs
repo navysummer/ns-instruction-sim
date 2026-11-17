@@ -2989,6 +2989,7 @@ pub fn instruction_size(
         Arch::Mcs251 => mcs251_instruction_len(read(pc)),
         Arch::V850 => v850::instruction_len(pc, read),
         Arch::Stm8 => stm8::instruction_len(pc, read),
+        Arch::Rl78 => rl78::instruction_len(pc, read),
         _ => 4,
     }
 }
@@ -4600,6 +4601,76 @@ mod tests {
             _ => 0,
         };
         assert_eq!(instruction_size(Arch::Msp430, 0, &read, false), 4);
+        // RL78 is variable-length: NOP (1), add A,#imm8 (2), add saddr,#imm8 (3),
+        // addw AX,#imm16 (3), add A,ES:[imm16] (3), and 0x61-prefixed forms
+        // (2 for reg-reg, 3 for [HL+imm8], 4 for ES:[imm16]).
+        let read = |addr: u32| match addr {
+            0 => 0x00,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Rl78, 0, &read, false), 1);
+        let read = |addr: u32| match addr {
+            0 => 0x0C,
+            1 => 0x2A,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Rl78, 0, &read, false), 2);
+        let read = |addr: u32| match addr {
+            0 => 0x0A,
+            1 => 0x30,
+            2 => 0x55,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Rl78, 0, &read, false), 3);
+        let read = |addr: u32| match addr {
+            0 => 0x04,
+            1 => 0x34,
+            2 => 0x12,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Rl78, 0, &read, false), 3);
+        let read = |addr: u32| match addr {
+            0 => 0x0F,
+            1 => 0x78,
+            2 => 0x56,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Rl78, 0, &read, false), 3);
+        let read = |addr: u32| match addr {
+            0 => 0x61,
+            1 => 0x08,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Rl78, 0, &read, false), 2);
+        let read = |addr: u32| match addr {
+            0 => 0x61,
+            1 => 0x59,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Rl78, 0, &read, false), 2);
+        let read = |addr: u32| match addr {
+            0 => 0x61,
+            1 => 0xB8,
+            2 => 0x10,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Rl78, 0, &read, false), 3);
+        let read = |addr: u32| match addr {
+            0 => 0x61,
+            1 => 0xA8,
+            2 => 0x78,
+            3 => 0x56,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Rl78, 0, &read, false), 4);
+        let read = |addr: u32| match addr {
+            0 => 0x61,
+            1 => 0xAB,
+            2 => 0x30,
+            3 => 0x00,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::Rl78, 0, &read, false), 4);
     }
 
     #[test]

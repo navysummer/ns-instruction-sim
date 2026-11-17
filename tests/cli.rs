@@ -2783,3 +2783,50 @@ fn disasm_msp430_extension_words() {
     assert_eq!(json[1]["address"], 4u64);
     assert_eq!(json[2]["address"], 6u64);
 }
+
+#[test]
+fn disasm_rl78_variable_width() {
+    // RL78 is variable-length (1/2/3/4 bytes). Disassembly must advance by the
+    // actual decoded width, not a fixed 4 bytes, including the 0x61-prefixed
+    // forms that carry a 16-bit or 8-bit operand.
+    let dir = tmpdir();
+    let sess = dir.join("rl78dis.json");
+    let code = dir.join("rl78dis.bin");
+    // nop (1), add A,#imm8 (2), add saddr,#imm8 (3), addw AX,#imm16 (3),
+    // add A,ES:[imm16] (3), 0x61 mov A,ES:[imm16] (4), 0x61 and A,rba (2).
+    std::fs::write(&code, [
+        0x00,                   // nop
+        0x0C, 0x2A,             // add a, #0x2a
+        0x0A, 0x30, 0x55,       // add saddr, #imm8
+        0x04, 0x34, 0x12,       // addw ax, #0x1234
+        0x0F, 0x78, 0x56,       // add a, es:[0x5678]
+        0x61, 0xA8, 0x78, 0x56, // mov a, es:[0x5678]
+        0x61, 0x59,             // and a, a (core's register-register view)
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "rl78", "--firmware", code.to_str().unwrap(), "--base", "0x8000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0x8000", "--count", "7", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000u64);
+    assert_eq!(json[0]["text"], "nop");
+    assert_eq!(json[1]["address"], 0x8001u64);
+    assert_eq!(json[1]["text"], "add a, #0x2a");
+    assert_eq!(json[2]["address"], 0x8003u64);
+    assert_eq!(json[3]["address"], 0x8006u64);
+    assert_eq!(json[3]["text"], "addw ax, #0x1234");
+    assert_eq!(json[4]["address"], 0x8009u64);
+    assert_eq!(json[4]["text"], "add a, es:[0x5678]");
+    assert_eq!(json[5]["address"], 0x800Cu64);
+    assert_eq!(json[5]["text"], "prefix 0x61: 0xa8 0x78");
+    assert_eq!(json[6]["address"], 0x8010u64);
+    assert_eq!(json[6]["text"], "and a, A");
+}
