@@ -2501,3 +2501,41 @@ fn disasm_avr_32bit_width() {
     assert_eq!(json[1]["address"], 4u64);
     assert_eq!(json[1]["text"], "nop");
 }
+
+#[test]
+fn disasm_c166_imm_width() {
+    // C166 MOV Rn,#imm16 and CALL carry a 16-bit operand (3 bytes); the rest
+    // are 2 bytes (NOP/RET are 1). Disassembly must advance accordingly and
+    // decode the little-endian immediate consistent with the execution core.
+    let dir = tmpdir();
+    let sess = dir.join("c166dis.json");
+    let code = dir.join("c166dis.bin");
+    // MOV R0,#0x1234 (3 bytes: 0x20 0x34 0x12), NOP.
+    std::fs::write(&code, [0x20, 0x34, 0x12, 0x00, 0x00]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "c166", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "2", "--raw"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("0x00000000: mov r0, #0x1234"), "missing mov: {text}");
+    assert!(text.contains("0x00000003: nop"), "missing nop at 3: {text}");
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["text"], "mov r0, #0x1234");
+    assert_eq!(json[0]["bytes"], serde_json::json!([0x20, 0x34, 0x12]));
+    assert_eq!(json[1]["address"], 3u64);
+    assert_eq!(json[1]["text"], "nop");
+}

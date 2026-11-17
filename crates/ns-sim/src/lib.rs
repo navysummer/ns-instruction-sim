@@ -2923,11 +2923,23 @@ pub fn instruction_size(
         return if half & 0xE000 == 0xE000 { 4 } else { 2 };
     }
     match arch {
-        Arch::C166 | Arch::Msp430 | Arch::Xtensa => 2,
+        Arch::C166 => c166_instruction_len(read(pc)),
+        Arch::Msp430 | Arch::Xtensa => 2,
         Arch::Avr => avr_instruction_len(read(pc), read(pc + 1)),
         Arch::Mcs51 => mcs51_instruction_len(read(pc)),
         Arch::Mcs251 => mcs251_instruction_len(read(pc)),
         _ => 4,
+    }
+}
+
+/// Number of code bytes consumed by a C166 instruction in this simulator's
+/// byte-fetch model. Most forms are 2 bytes; `MOV Rn,#imm16` and `CALL` carry
+/// a 16-bit operand (3 bytes) and `NOP`/`RET` are 1 byte.
+fn c166_instruction_len(op: u8) -> u32 {
+    match op {
+        0x00 | 0xC1 => 1, // NOP / RET
+        0x20..=0x2F | 0xC0 => 3, // MOV Rn,#imm16 / CALL
+        _ => 2,
     }
 }
 
@@ -3511,8 +3523,10 @@ fn disassemble_c166(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         0x00 => "nop".to_string(),
         n if (0x10..=0x1F).contains(&n) => format!("mov r{}, r{}", n & 0x0F, read(pc + 1) & 0x0F),
         n if (0x20..=0x2F).contains(&n) => {
-            let hi = read(pc + 1) as u16;
-            let lo = read(pc + 2) as u16;
+            // C166 16-bit immediates are little-endian (low byte first), as the
+            // core's `fetch_u16` reads them.
+            let lo = read(pc + 1) as u16;
+            let hi = read(pc + 2) as u16;
             format!("mov r{}, #0x{:04x}", n & 0x0F, (hi << 8) | lo)
         }
         n if (0x30..=0x3F).contains(&n) => format!("add r{}, r{}", n & 0x0F, read(pc + 1) & 0x0F),
@@ -3524,7 +3538,7 @@ fn disassemble_c166(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         0xA0 => format!("jmp {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
         0xB0 => format!("jz {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
         0xB1 => format!("jnz {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
-        0xC0 => format!("call 0x{:02x}{:02x}", read(pc + 1), read(pc + 2)),
+        0xC0 => format!("call 0x{:02x}{:02x}", read(pc + 2), read(pc + 1)),
         0xC1 => "ret".to_string(),
         _ => format!(".byte 0x{op:02x}"),
     }
@@ -4388,6 +4402,27 @@ mod tests {
             _ => 0,
         };
         assert_eq!(instruction_size(Arch::Avr, 0, &read, false), 4);
+        // C166: NOP/RET are 1 byte, MOV Rn,#imm16 and CALL are 3, the rest 2.
+        let read = |addr: u32| match addr {
+            0 => 0x00,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::C166, 0, &read, false), 1);
+        let read = |addr: u32| match addr {
+            0 => 0x20,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::C166, 0, &read, false), 3);
+        let read = |addr: u32| match addr {
+            0 => 0xC0,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::C166, 0, &read, false), 3);
+        let read = |addr: u32| match addr {
+            0 => 0x10,
+            _ => 0,
+        };
+        assert_eq!(instruction_size(Arch::C166, 0, &read, false), 2);
     }
 
     #[test]
