@@ -1668,6 +1668,68 @@ fn disasm_thumb_full_families() {
 }
 
 #[test]
+fn run_arm_thumb1_field_extraction() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-fields.json");
+    // Cortex-M vector table at 0x08000000 (SP=0x20000000, reset PC=0x08000011).
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Thumb-1 code: lsls r0,r1,#5; subs r0,r2,r1; subs r0,r2,#3.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes", "0x48", "0x01", "0x50", "0x1A", "0xD0", "0x1E"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0010u64);
+    for (name, value) in [("r1", "0x20"), ("r2", "5")] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    // Step 1: lsls r0, r1, #5 → r0 = 0x20 << 5 = 1024.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0012u64);
+    assert_eq!(json["registers"]["r0"], 1024);
+    // Step 2: subs r0, r2, r1 → r0 = 5 - 32 (wraps).
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0014u64);
+    assert_eq!(json["registers"]["r0"], 5u32.wrapping_sub(32) as u64);
+    // Step 3: subs r0, r2, #3 → r0 = 5 - 3 = 2.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0016u64);
+    assert_eq!(json["registers"]["r0"], 2);
+}
+
+#[test]
 fn disasm_source_annotates_lines() {
     let dir = tmpdir();
     let sess = dir.join("dsrc.json");

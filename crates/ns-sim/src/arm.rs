@@ -350,8 +350,6 @@ impl ArmCore {
     /// Decode and execute a 16-bit Thumb-1 instruction.
     fn execute_thumb1(&mut self, insn: u16) {
         let top = insn >> 12; // bits 15-12: the Thumb-1 major group
-        let rm = ((insn >> 3) & 0x0F) as usize;
-        let rn = ((insn >> 6) & 0x07) as usize;
         let rd = (insn & 0x07) as usize;
         let imm8 = (insn & 0xFF) as u32;
         let imm3 = ((insn >> 6) & 0x07) as u32;
@@ -361,6 +359,7 @@ impl ArmCore {
             0x0 => {
                 let shift_op = (insn >> 11) & 0x03;
                 let shift = imm5;
+                let rm = ((insn >> 3) & 0x07) as usize;
                 let value = self.regs[rm];
                 let r = match shift_op {
                     0 => {
@@ -394,10 +393,17 @@ impl ArmCore {
             }
             // 0x1: ADD/SUB (bit 10 = sub, bit 9 = immediate)
             0x1 => {
-                let sub = (insn >> 10) & 1 != 0;
-                let immediate = (insn >> 9) & 1 != 0;
+                // bits 11-9: 100 ADD reg, 101 SUB reg, 110 ADD imm3,
+                // 111 SUB imm3 → bit 9 selects SUB, bit 10 selects immediate.
+                let sub = (insn >> 9) & 1 != 0;
+                let immediate = (insn >> 10) & 1 != 0;
+                let rn = ((insn >> 3) & 0x07) as usize;
                 let value = self.regs[rn];
-                let operand = if immediate { imm3 } else { self.regs[rm] };
+                let operand = if immediate {
+                    imm3
+                } else {
+                    self.regs[((insn >> 6) & 0x07) as usize]
+                };
                 let r = if sub {
                     self.set_add_carry(value, operand, true);
                     value.wrapping_sub(operand)
@@ -448,7 +454,7 @@ impl ArmCore {
                 } else if insn & 0x0400 != 0 {
                     // High-register ops / BX (op = bits 9-8)
                     let rd_high = rd | (((insn >> 4) & 0x08) as usize);
-                    let rm_high = rm | (((insn >> 3) & 0x08) as usize);
+                    let rm_high = ((insn >> 3) & 0x0F) as usize;
                     let opcode = (insn >> 8) & 0x03;
                     match opcode {
                         0 => {
@@ -472,12 +478,14 @@ impl ArmCore {
                 } else {
                     // ALU
                     let alu = (insn >> 6) & 0x0F;
-                    self.execute_alu(alu as u32, rd, rm);
+                    self.execute_alu(alu as u32, rd, ((insn >> 3) & 0x07) as usize);
                 }
             }
             // 0x5: load/store register offset (opcode = bits 11-9)
             0x5 => {
                 let opcode = (insn >> 9) & 0x07;
+                let rn = ((insn >> 3) & 0x07) as usize;
+                let rm = ((insn >> 6) & 0x07) as usize;
                 let addr = self.regs[rn].wrapping_add(self.regs[rm]);
                 match opcode {
                     0 => self.write_u32(addr, self.regs[rd]),
@@ -539,6 +547,7 @@ impl ArmCore {
             // 0x9: SP-relative load/store word (bit 11 = load)
             0x9 => {
                 let load = (insn >> 11) & 1 != 0;
+                let rd = ((insn >> 8) & 0x07) as usize;
                 let addr = self.regs[SP].wrapping_add(imm8.wrapping_mul(4));
                 if load {
                     self.regs[rd] = self.read_u32(addr);
@@ -549,6 +558,7 @@ impl ArmCore {
             // 0xA: load address (bit 11 = SP-relative)
             0xA => {
                 let sp_relative = (insn >> 11) & 1 != 0;
+                let rd = ((insn >> 8) & 0x07) as usize;
                 let base = if sp_relative {
                     self.regs[SP]
                 } else {
@@ -605,6 +615,7 @@ impl ArmCore {
             0xC => {
                 let load = (insn >> 11) & 1 != 0;
                 let rlist = (insn & 0xFF) as u32;
+                let rn = ((insn >> 8) & 0x07) as usize;
                 let base = self.regs[rn];
                 let mut addr = base;
                 for i in 0..8 {
@@ -1526,6 +1537,78 @@ mod tests {
         assert_eq!(c.regs[0], 0);
         assert!(c.flag_z(), "zero flag set");
         assert!(c.flag_c(), "borrow sets carry (no borrow => carry)");
+    }
+
+    #[test]
+    fn thumb1_field_extraction_matches_encoding() {
+        // Format 0: LSL reads Rm=bits5-3 (bit 6 belongs to the shift amount).
+        let mut c = core();
+        c.regs[1] = 0x20;
+        c.regs[9] = 0xDEAD_BEEF; // sentinel: bit 6 of 0x0148 is set.
+        run(&mut c, &[0x0148], 1); // lsls r0, r1, #5
+        assert_eq!(c.regs[0], 0x400);
+        assert_eq!(c.regs[9], 0xDEAD_BEEF);
+
+        // Format 1 register: SUB reads Rn=bits5-3, Rm=bits8-6; bit 9 selects
+        // SUB (not bit 10) and bit 10 selects the immediate form.
+        let mut c = core();
+        c.regs[2] = 5;
+        c.regs[1] = 3;
+        run(&mut c, &[0x1A50], 1); // subs r0, r2, r1
+        assert_eq!(c.regs[0], 2);
+
+        // Format 1 immediate: SUBS r0, r2, #3 (0x1ED0).
+        let mut c = core();
+        c.regs[2] = 10;
+        run(&mut c, &[0x1ED0], 1);
+        assert_eq!(c.regs[0], 7);
+
+        // Format 4 ALU: ANDS reads Rm=bits5-3 (bit 6 belongs to the opcode).
+        let mut c = core();
+        c.regs[0] = 0b1100;
+        c.regs[1] = 0b1010;
+        c.regs[9] = 0xDEAD_BEEF;
+        run(&mut c, &[0x4148], 1); // ADCS r0, r1 (op=5, bit 6 set)
+        assert_eq!(c.regs[9], 0xDEAD_BEEF);
+        assert_eq!(c.regs[0], 0b1100 + 0b1010);
+    }
+
+    #[test]
+    fn thumb1_high_register_and_sp_relative_fields() {
+        // Format 9: SP-relative STR uses Rt=bits10-8 (0x9201: str r2, [sp,#4]).
+        let mut c = core();
+        c.regs[2] = 0x1234_5678;
+        c.regs[SP] = 0x1000;
+        run(&mut c, &[0x9201], 1);
+        assert_eq!(c.read_u32(0x1004), 0x1234_5678);
+        assert_eq!(c.read_u32(0x1000), 0); // bit 0-2 reg (r1) must not be used.
+
+        // Format A: ADD Rd, PC, #imm uses Rd=bits10-8 (0xA201: add r2, pc, #4).
+        let mut c = core();
+        run(&mut c, &[0xA201], 1);
+        assert_eq!(c.regs[2], 8); // PC aligned to 4, +4 (imm8=1*4).
+        assert_eq!(c.regs[1], 0); // bits 0-2 reg must not be written.
+
+        // Format C: LDMIA uses Rn=bits10-8 (0xC801: ldmia r0!, {r0}).
+        let mut c = core();
+        c.regs[0] = 0x1000;
+        c.regs[2] = 0xDEAD_BEEF; // sentinel base register.
+        c.write_u32(0x1000, 0x1111_2222);
+        run(&mut c, &[0xC801], 1);
+        assert_eq!(c.regs[0], 0x1111_2222);
+        assert_eq!(c.regs[2], 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn thumb1_register_offset_addressing() {
+        // Format 5: LDRH r0, [r1, r2] (0x5A88) sums Rn+Rm regardless of which
+        // operand is named first; both must be read from the encoded fields.
+        let mut c = core();
+        c.regs[1] = 0x1000;
+        c.regs[2] = 4;
+        c.write_u16(0x1004, 0xABCD);
+        run(&mut c, &[0x5A88], 1);
+        assert_eq!(c.regs[0], 0xABCD);
     }
 
     #[test]

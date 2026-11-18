@@ -250,6 +250,9 @@ done
 - `disasm_thumb_full_families`：Thumb-1/Thumb-2 全家族反汇编镜像执行内核（LSL/ADD/MOV/CMP/SUB
   imm、PC-rel LDR、寄存器偏移 LDRH、字/字节/半字立即、SP 相对、PUSH/POP、LDMIA、SVC、条件/无条件分支、
   BL、MOVW、ADDW、LDR/STR/LDRB/STRB 立即），并校验按编码实际宽度推进。
+- `run_arm_thumb1_field_extraction`：端到端执行 Thumb-1 `LSL`/`SUBS reg`/`SUBS imm3`，
+  校验内核按编码提取 Rn/Rm/Rd（`lsls r0,r1,#5`→r0=0x400、`subs r0,r2,r1`→r0=5-32、
+  `subs r0,r2,#3`→r0=2），锁定格式 0/1 字段提取修复。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -356,6 +359,12 @@ done
   `disassembles_thumb2_wide_forms` 锁定：Thumb-1 覆盖执行内核全部 16 位家族，Thumb-2 覆盖
   BL/BLX、MOVW/MOVT、ADDW/SUBW、LDR/STR/LDRB/STRB 12 位立即；`b`（0xE001）与 `bl 0x28`
   （0xF000D000）分别按 2/4 字节推进。
+  Thumb-1 执行内核的字段提取同步修复为与编码一致：格式 0 取 Rm=bits5-3（bit6 属移位量）、
+  格式 1 以 bit9 选 SUB/bit10 选立即且 Rn=bits5-3/Rm=bits8-6、格式 4 ALU 取 Rm=bits5-3、
+  格式 5 取 Rn=bits5-3/Rm=bits8-6、格式 9/0xA 取 Rd=bits10-8、格式 0xC 取 Rn=bits10-8
+  （原实现把 rn/rm 字段弄错或把 `sub`/`immediate` 两比特弄反）。由 ns-sim 单测
+  `thumb1_field_extraction_matches_encoding`/`thumb1_high_register_and_sp_relative_fields`/
+  `thumb1_register_offset_addressing` 与 CLI `run_arm_thumb1_field_extraction` 锁定。
   RL78 反汇编同时镜像核心 `execute_61` 的 `op & 0xF8` 低组优先分发（`0x61 0x59` 等被寄存器-
   寄存器家族捕获为 `and a, A`，`0x61 0xAA`/`0xAB` 经 `0xA8` 家族路由为 `mov a, ES:[imm16]`），
   与核心执行语义逐字节一致。
