@@ -371,6 +371,8 @@ done
   （原实现把 rn/rm 字段弄错或把 `sub`/`immediate` 两比特弄反）。由 ns-sim 单测
   `thumb1_field_extraction_matches_encoding`/`thumb1_high_register_and_sp_relative_fields`/
   `thumb1_register_offset_addressing` 与 CLI `run_arm_thumb1_field_extraction` 锁定。
+  Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
+  由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   RL78 反汇编同时镜像核心 `execute_61` 的 `op & 0xF8` 低组优先分发（`0x61 0x59` 等被寄存器-
   寄存器家族捕获为 `and a, A`，`0x61 0xAA`/`0xAB` 经 `0xA8` 家族路由为 `mov a, ES:[imm16]`），
   与核心执行语义逐字节一致。

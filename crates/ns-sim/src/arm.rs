@@ -471,6 +471,11 @@ impl ArmCore {
                         }
                         _ => {
                             let target = self.regs[rm_high];
+                            // BLX (bit 7 set) links the return address; BX
+                            // does not. Both exchange the Thumb bit from bit 0.
+                            if insn & 0x80 != 0 {
+                                self.regs[LR] = self.regs[PC];
+                            }
                             self.set_thumb(target & 1 != 0);
                             self.regs[PC] = target & !1;
                         }
@@ -1715,6 +1720,25 @@ mod tests {
             assert_eq!(c.step(&[]), ArmStep::Advanced, "barrier {second:#06x}");
             assert_eq!(c.regs[PC], 4);
         }
+    }
+
+    #[test]
+    fn thumb1_bx_blx_register() {
+        // BX r0 (0x4700) branches through bit 0 without linking.
+        let mut c = core();
+        c.regs[0] = 0x0800_0009; // Thumb target.
+        run(&mut c, &[0x4700], 1);
+        assert_eq!(c.regs[PC], 0x0800_0008);
+        assert!(c.thumb());
+        assert_eq!(c.regs[LR], 0);
+
+        // BLX r0 (0x4780) also links the return address (PC after advance).
+        let mut c = core();
+        c.regs[0] = 0x0800_0009;
+        run(&mut c, &[0x4780], 1);
+        assert_eq!(c.regs[PC], 0x0800_0008);
+        assert!(c.thumb());
+        assert_eq!(c.regs[LR], 2);
     }
 
     #[test]
