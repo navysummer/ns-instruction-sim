@@ -134,6 +134,7 @@ ns-instruction-sim/
 1. **人类可读**（默认）：表格/文本，适合终端交互。
 2. **机器可读**（`--json`）：稳定字段的 JSON 对象（`arch`、`pc`、`cycleCount`、`halted`、
    `lastResult`、`registers`、`armState`（仅 ARM，`a32`/`thumb`，其余架构 null）、`uartText`、`uart`、
+   `armXpsr`（仅 ARM：N/Z/C/V 条件标志、Thumb 位、当前异常号的 xPSR 原值，其余架构 null）、
    `peripherals`（UART/GPIO/定时器/看门狗/中断/`externalRegs`）、
    `csr`（mstatus/mtvec/mepc/mcause/mie/mhartid）、`breakpoints`（地址/条件/命中次数/一次性/启用状态/实际命中）、
    `firmware`（path/base/format，无则 null）、`pcSymbol`（最近 ELF 符号 name/address/size，无则 null）），
@@ -245,6 +246,8 @@ done
 - `state_includes_peripherals_and_csr`：`state --json` 含外设与 CSR 完整快照。
 - `state_reports_arm_state`：`state --json` 报告 ARM 指令集状态（`armState`=`a32`/`thumb`，
   其余架构为 null），供外部选择正确的反汇编模式。
+- `state_reports_arm_xpsr`：`state --json` 报告 ARM xPSR（`armXpsr`，含 N/Z/C/V 条件标志与
+  Thumb 位；其余架构为 null），供外部无需执行指令即可读取条件标志。
 - `version_command_and_flag`：`version` 子命令（含 `--json`）与 `--version` 均输出版本号。
 - `mem_write_read_arm_roundtrip`：非 RISC-V（ARM）内存写跨会话持久化。
 - `periph_config_relocates_bases`：外设 UART/GPIO 基址重定位并持久化。

@@ -1220,6 +1220,10 @@ struct StateOutput {
     /// ARM 指令集状态（仅 ARM；`a32`/`thumb`，其余架构为 null）。
     #[serde(rename = "armState")]
     arm_state: Option<String>,
+    /// ARM xPSR（仅 ARM：N/Z/C/V 条件标志、Thumb 位、当前异常号；其余架构为
+    /// null）。让外部调用方无需执行指令即可读取条件标志（例如评估条件分支）。
+    #[serde(rename = "armXpsr")]
+    arm_xpsr: Option<u32>,
     uart: Vec<u8>,
     #[serde(rename = "uartText")]
     uart_text: String,
@@ -1337,6 +1341,11 @@ fn state_output(sim: &Simulator, result: StepResult, firmware: Option<&FirmwareS
         registers,
         arm_state: if sim.arch == ns_sim::Arch::Arm {
             Some(if sim.arm_state() { "a32" } else { "thumb" }.to_string())
+        } else {
+            None
+        },
+        arm_xpsr: if sim.arch == ns_sim::Arch::Arm {
+            sim.arm_xpsr()
         } else {
             None
         },

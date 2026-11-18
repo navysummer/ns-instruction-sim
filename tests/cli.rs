@@ -410,6 +410,28 @@ fn state_reports_arm_state() {
 }
 
 #[test]
+fn state_reports_arm_xpsr() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-xpsr.json");
+    // Fresh ARM session: xPSR = 0x01000000 (Thumb bit only, flags clear).
+    let out = Command::new(bin())
+        .args(["state", "--arch", "arm", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["armXpsr"], 0x0100_0000u64);
+    // Non-ARM architectures report null.
+    let out = Command::new(bin())
+        .args(["state", "--arch", "riscv", "--session", dir.join("rv-xpsr.json").to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["armXpsr"].is_null());
+}
+
+#[test]
 fn all_arch_core_operations() {
     let dir = tmpdir();
     for arch in ["riscv", "arm", "mcs51", "mcs251", "c166", "xtensa", "avr", "msp430", "v850", "stm8", "rx", "rl78"] {
