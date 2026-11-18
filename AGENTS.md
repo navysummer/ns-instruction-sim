@@ -279,6 +279,9 @@ done
 - `run_arm_thumb1_cbz_branch`：端到端分三次 `step --session` 执行 `movs r0,#0` 后 `cbz r0,+4`
   （0xB110）命中，PC 停在 0x0800001c 且 r2=1（r1 未被触碰），锁定 CBZ/CBNZ 分支执行
   （原被误当作 `ADD/SUB SP`，导致栈与 PC 损坏）。
+- `run_arm_thumb1_extend_and_mul`：端到端分三次 `step --session` 执行 `sxtb r3,r4`（0xB263，
+  r4=0x80→r3=0xFFFFFF80）、`uxth r5,r6`（0xB2B5，r6=0xFFFF8000→r5=0x8000）、
+  `mul r0,r1,r2`（0xFB01F002，3×5=15），锁定符号/零扩展与 Thumb-2 MUL 执行。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -436,6 +439,11 @@ done
   会错误读取并改写 SP/PC）。由 ns-sim 单测 `thumb1_cbz_cbnz_branch`/
   `thumb1_add_sub_sp_immediate`/`thumb1_nop_no_effect` 与 CLI `run_arm_thumb1_cbz_branch`
   锁定。
+  Thumb-1 符号/零扩展（`SXTH/SXTB/UXTH/UXTB`，`0xB200-0xB2FF`，编码 `1011 0010 0 op Rm Rd`，
+  op=bits7-6，Rm=bits5-3，Rd=bits2-0）现正确执行（原被当作 `PUSH/POP`/`ADD/SUB SP`），
+  Thumb-2 `MUL Rd,Rn,Rm`（`0xFB00` 前缀，second bits15-12=1111、bits7-4=0）现执行低 32 位
+  乘积；由 ns-sim 单测 `thumb1_extend_sign_zero`/`thumb2_mul` 与 CLI
+  `run_arm_thumb1_extend_and_mul` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

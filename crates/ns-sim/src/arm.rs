@@ -594,8 +594,8 @@ impl ArmCore {
                 };
                 self.regs[rd] = base.wrapping_add(imm8.wrapping_mul(4));
             }
-            // 0xB: CBZ/CBNZ (0xB1xx/0xB9xx), ADD/SUB SP (0xB0-0xB3),
-            // NOP (0xBF00) or PUSH/POP (0xB4-0xBF).
+            // 0xB: CBZ/CBNZ (0xB1xx/0xB9xx), ADD/SUB SP (0xB0-0xB3), sign/zero
+            // extend (0xB2xx), NOP (0xBF00) or PUSH/POP (0xB4-0xBF).
             0xB => {
                 // CBZ/CBNZ (1011 i 0 0 1 imm5 Rn): 0xB1xx CBZ, 0xB9xx CBNZ.
                 if insn & 0x0F00 == 0x0100 || insn & 0x0F00 == 0x0900 {
@@ -624,6 +624,21 @@ impl ArmCore {
                     } else {
                         self.regs[SP].wrapping_add(value)
                     };
+                } else if insn & 0xFF00 == 0xB200 {
+                    // SXTH/SXTB/UXTH/UXTB (1011 0010 0 op Rm Rd): op = bits
+                    // 7-6, Rm = bits 5-3, Rd = bits 2-0. SXTH/SXTB
+                    // sign-extend; UXTH/UXTB zero-extend.
+                    let op = (insn >> 6) & 0x03;
+                    let rm = ((insn >> 3) & 0x07) as usize;
+                    let rd = (insn & 0x07) as usize;
+                    let v = self.regs[rm];
+                    let r = match op {
+                        0 => v as u16 as i16 as i32 as u32, // SXTH
+                        1 => v as u8 as i8 as i32 as u32,   // SXTB
+                        2 => (v as u16) as u32,             // UXTH
+                        _ => (v as u8) as u32,              // UXTB
+                    };
+                    self.regs[rd] = r;
                 } else if insn == 0xBF00 {
                     // NOP: no effect.
                 } else {
@@ -906,6 +921,15 @@ impl ArmCore {
             } else {
                 self.regs[rd] = (self.regs[rd] & 0xFFFF_0000) | imm16;
             }
+            return;
+        }
+
+        // MUL Rd, Rn, Rm (0xFB00 prefix, second bits 15-12 = 1111, bits 7-4 = 0).
+        if first & 0xFFF0 == 0xFB00 && second & 0xF0F0 == 0xF000 {
+            let rn = (first & 0x0F) as usize;
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            self.regs[rd] = self.regs[rn].wrapping_mul(self.regs[rm]);
             return;
         }
 
@@ -1907,6 +1931,51 @@ mod tests {
         assert_eq!(c.regs[PC], 2);
         assert_eq!(c.regs[SP], 0x2000_0000);
         assert_eq!(c.regs[0], 0x1234_5678);
+    }
+
+    #[test]
+    fn thumb1_extend_sign_zero() {
+        // SXTB r3, r4 (0xB263): sign-extend the low byte.
+        let mut c = core();
+        c.regs[4] = 0x80;
+        run(&mut c, &[0xB263], 1);
+        assert_eq!(c.regs[3], 0xFFFF_FF80);
+
+        // SXTH r3, r4 (0xB223): sign-extend the low halfword.
+        let mut c = core();
+        c.regs[4] = 0x8000;
+        run(&mut c, &[0xB223], 1);
+        assert_eq!(c.regs[3], 0xFFFF_8000);
+
+        // UXTB r3, r4 (0xB2E3): zero-extend the low byte.
+        let mut c = core();
+        c.regs[4] = 0xFFFF_FF80;
+        run(&mut c, &[0xB2E3], 1);
+        assert_eq!(c.regs[3], 0x80);
+
+        // UXTH r3, r4 (0xB2A3): zero-extend the low halfword.
+        let mut c = core();
+        c.regs[4] = 0xFFFF_8000;
+        run(&mut c, &[0xB2A3], 1);
+        assert_eq!(c.regs[3], 0x8000);
+    }
+
+    #[test]
+    fn thumb2_mul() {
+        // MUL r0, r1, r2 (0xFB01F002): low 32 bits of the product.
+        let mut c = core();
+        c.regs[1] = 0x0001_0000;
+        c.regs[2] = 0x0002_0000;
+        run(&mut c, &[0xFB01, 0xF002], 1);
+        assert_eq!(c.regs[0], 0x0000_0000); // 0x200000000 truncated to 32 bits.
+        assert_eq!(c.regs[PC], 4); // 32-bit Thumb-2 instruction.
+
+        // 3 * 5 = 15.
+        let mut c = core();
+        c.regs[1] = 3;
+        c.regs[2] = 5;
+        run(&mut c, &[0xFB01, 0xF002], 1);
+        assert_eq!(c.regs[0], 15);
     }
 
     #[test]

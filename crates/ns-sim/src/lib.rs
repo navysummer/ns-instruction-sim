@@ -3426,6 +3426,16 @@ fn disassemble_thumb1(half: u16, pc: u32) -> String {
                 let sub = (half >> 7) & 1 != 0;
                 let name = if sub { "sub" } else { "add" };
                 format!("{name} sp, sp, #{}", (imm8 & 0x7F).wrapping_mul(4))
+            } else if half & 0xFF00 == 0xB200 {
+                // SXTH/SXTB/UXTH/UXTB (1011 0010 0 op Rm Rd).
+                let op = (half >> 6) & 0x03;
+                let name = match op {
+                    0 => "sxth",
+                    1 => "sxtb",
+                    2 => "uxth",
+                    _ => "uxtb",
+                };
+                format!("{name} r{}, r{}", half & 0x07, (half >> 3) & 0x07)
             } else if half == 0xBF00 {
                 format!("nop")
             } else {
@@ -3514,6 +3524,14 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         } else {
             format!("movw r{rd}, #0x{imm16:x}")
         };
+    }
+
+    // MUL Rd, Rn, Rm (0xFB00 prefix, second bits 15-12 = 1111, bits 7-4 = 0).
+    if first & 0xFFF0 == 0xFB00 && second & 0xF0F0 == 0xF000 {
+        let rn = (first & 0x0F) as usize;
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        return format!("mul r{rd}, r{rn}, r{rm}");
     }
 
     // ADDW/SUBW (0xF200-0xF2FF, second bits 14-12 = 010, bit 15 = 0).
