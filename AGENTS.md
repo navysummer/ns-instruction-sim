@@ -286,6 +286,10 @@ done
   `mrs r1,xpsr`（0xF3EF8103→r1=0x41000000，读 Z+Thumb）、`msr xpsr_nzcvq,r2`
   （0xF3828803，r2=0x80000000→置 N 清 Z），`state --json` 校验 `armXpsr`=0x81000000，
   锁定 Thumb-2 MRS/MSR 读写状态寄存器。
+- `run_arm_thumb1_rev_and_clz`：端到端分三次 `step --session` 执行 `cpsie i`（0xB662，清
+  PRIMASK）、`rev r1,r0`（0xBA08，0x12345678→0x78563412）、`clz r2,r3`（0xFAB3F287，
+  r3=0x00008000→r2=16），锁定 Thumb-1 CPSID/CPSIE 对 PRIMASK 的写与 REV/REV16/REVSH、
+  Thumb-2 CLZ 的执行。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -453,6 +457,14 @@ done
   MRS 的 Rd 取 second bits11-8、SYSm 取 second bits3-0（xPSR=3/IPSR=5/EPSR=6/APSR=0），
   MSR 的源寄存器 Rm 取 first bits3-0、mask 取 second bits11-8（flags=mask8、GE=mask4）；
   由 ns-sim 单测 `thumb2_mrs_msr` 与 CLI `run_arm_thumb2_mrs_msr` 锁定。
+  Thumb-1 `CPSIE/CPSID`（`0xB660-0xB67F`，编码 `1011 0110 0 i 0 1 0 0`，bit4=0 使能/1 禁用、
+  bit1=`i` 选 PRIMASK）现读写 PRIMASK（CPSIE 清、CPSID 置，其余位保留），原被当作
+  `REV` 家族执行；`REV/REV16/REVSH`（`0xBA00-0xBAFF`，编码 `1011 1010 0 op Rm Rd`，
+  op=bits7-6：0=REV、1=REV16、2=REVSH、Rm=bits5-3、Rd=bits2-0）现执行字节/半字反序
+  （REVSH 对反转后的半字符号扩展）；Thumb-2 `CLZ Rd,Rm`（0xFAB0-0xFABF 且
+  second & 0x00FF == 0x0087，Rd=second bits11-8、Rm=first bits3-0）现返回前导零计数
+  （0 输入返回 32）。由 ns-sim 单测 `thumb1_cps_primask`/`thumb1_rev_family`/
+  `thumb2_clz` 与 CLI `run_arm_thumb1_rev_and_clz` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

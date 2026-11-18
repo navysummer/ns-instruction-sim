@@ -639,6 +639,33 @@ impl ArmCore {
                         _ => (v as u8) as u32,              // UXTB
                     };
                     self.regs[rd] = r;
+                } else if insn & 0xFFF0 == 0xB660 || insn & 0xFFF0 == 0xB670 {
+                    // CPSIE/CPSID (interrupt mask): bit 4 = disable, the `i`
+                    // bit (0x02) selects the interrupt mask (PRIMASK).
+                    if insn & 0x02 != 0 {
+                        let disable = insn & 0x10 != 0;
+                        self.primask = if disable { 1 } else { 0 };
+                    }
+                } else if insn & 0xFF00 == 0xBA00 {
+                    // REV/REV16/REVSH (1011 1010 0 op Rm Rd): op = bits 7-6.
+                    let op = (insn >> 6) & 0x03;
+                    let rm = ((insn >> 3) & 0x07) as usize;
+                    let rd = (insn & 0x07) as usize;
+                    let v = self.regs[rm];
+                    let r = match op {
+                        0 => v.swap_bytes(), // REV
+                        1 => {
+                            // REV16: swap the bytes of each halfword.
+                            (v & 0x00FF_00FF).rotate_left(8)
+                                | ((v & 0xFF00_FF00) >> 8)
+                        }
+                        _ => {
+                            // REVSH: reverse the low halfword bytes, sign-extend.
+                            let low = (v as u16).swap_bytes();
+                            low as i16 as i32 as u32
+                        }
+                    };
+                    self.regs[rd] = r;
                 } else if insn == 0xBF00 {
                     // NOP: no effect.
                 } else {
@@ -1039,6 +1066,14 @@ impl ArmCore {
                     self.xpsr = (self.xpsr & !0x000F_0000) | (value & 0x000F_0000);
                 }
             }
+            return;
+        }
+
+        // CLZ Rd, Rm (0xFAB0-0xFABF 0xF0Rd0087).
+        if first & 0xFFF0 == 0xFAB0 && second & 0x00FF == 0x0087 {
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (first & 0x0F) as usize;
+            self.regs[rd] = self.regs[rm].leading_zeros();
             return;
         }
 
@@ -2039,6 +2074,53 @@ mod tests {
         run(&mut c, &[0xF380, 0x8803], 1);
         assert!(c.flag_n());
         assert!(!c.flag_z() && !c.flag_c() && !c.flag_v());
+    }
+
+    #[test]
+    fn thumb1_cps_primask() {
+        // CPSID i (0xB672): set PRIMASK.
+        let mut c = core();
+        run(&mut c, &[0xB672], 1);
+        assert_eq!(c.primask, 1);
+        // CPSIE i (0xB662): clear PRIMASK.
+        run(&mut c, &[0xB662], 1);
+        assert_eq!(c.primask, 0);
+    }
+
+    #[test]
+    fn thumb1_rev_family() {
+        // REV r0, r1 (0xBA08): reverse all four bytes.
+        let mut c = core();
+        c.regs[1] = 0x1234_5678;
+        run(&mut c, &[0xBA08], 1);
+        assert_eq!(c.regs[0], 0x7856_3412);
+
+        // REV16 r2, r3 (0xBA5A): swap bytes within each halfword.
+        let mut c = core();
+        c.regs[3] = 0x1234_5678;
+        run(&mut c, &[0xBA5A], 1);
+        assert_eq!(c.regs[2], 0x3412_7856);
+
+        // REVSH r4, r5 (0xBAEC): reverse the low halfword bytes, sign-extend.
+        let mut c = core();
+        c.regs[5] = 0x1234_0080; // low halfword 0x0080 reverses to 0x8000.
+        run(&mut c, &[0xBAEC], 1);
+        assert_eq!(c.regs[4], 0xFFFF_8000);
+    }
+
+    #[test]
+    fn thumb2_clz() {
+        // CLZ r6, r7 (0xFAB7F687): count leading zeros.
+        let mut c = core();
+        c.regs[7] = 0x0000_0001;
+        run(&mut c, &[0xFAB7, 0xF687], 1);
+        assert_eq!(c.regs[6], 31);
+        assert_eq!(c.regs[PC], 4);
+
+        let mut c = core();
+        c.regs[7] = 0x8000_0000;
+        run(&mut c, &[0xFAB7, 0xF687], 1);
+        assert_eq!(c.regs[6], 0);
     }
 
     #[test]

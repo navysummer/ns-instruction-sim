@@ -3436,6 +3436,19 @@ fn disassemble_thumb1(half: u16, pc: u32) -> String {
                     _ => "uxtb",
                 };
                 format!("{name} r{}, r{}", half & 0x07, (half >> 3) & 0x07)
+            } else if half & 0xFFF0 == 0xB660 || half & 0xFFF0 == 0xB670 {
+                // CPSIE/CPSID (interrupt mask): bit 4 = disable, `i` bit = 0x02.
+                let disable = half & 0x10 != 0;
+                format!("{} i", if disable { "cpsid" } else { "cpsie" })
+            } else if half & 0xFF00 == 0xBA00 {
+                // REV/REV16/REVSH (1011 1010 0 op Rm Rd): op = bits 7-6.
+                let op = (half >> 6) & 0x03;
+                let name = match op {
+                    0 => "rev",
+                    1 => "rev16",
+                    _ => "revsh",
+                };
+                format!("{name} r{}, r{}", half & 0x07, (half >> 3) & 0x07)
             } else if half == 0xBF00 {
                 format!("nop")
             } else {
@@ -3639,6 +3652,13 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             mask_str.push_str("nzcvq");
         }
         return format!("msr xpsr_{mask_str}, r{rm}");
+    }
+
+    // CLZ Rd, Rm (0xFAB0-0xFABF 0xF0Rd0087).
+    if first & 0xFFF0 == 0xFAB0 && second & 0x00FF == 0x0087 {
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (first & 0x0F) as usize;
+        return format!("clz r{rd}, r{rm}");
     }
 
     let _ = read;
