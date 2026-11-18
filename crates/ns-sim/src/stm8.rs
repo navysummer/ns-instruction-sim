@@ -1726,4 +1726,25 @@ mod disasm_tests {
         core.step(&[]);
         assert_eq!(core.pc, 2, "NOP follows the standalone load");
     }
+
+    #[test]
+    fn disasm_matches_core_coverage() {
+        // Every opcode that the core executes (does not halt) must have a real
+        // disassembly, not a raw-hex placeholder.
+        for op in 0u8..=255 {
+            let bytes = [op];
+            let read = |a: u32| bytes.get(a as usize).copied().unwrap_or(0);
+            let text = disassemble(0, &read);
+            let placeholder = text.starts_with("0x") || text.starts_with(".byte");
+            if placeholder {
+                let mut core = Stm8Core::new();
+                core.load_image(0, &bytes);
+                core.step(&[]);
+                assert!(
+                    core.halted,
+                    "opcode 0x{op:02x} disassembles as placeholder {text:?} but core executes"
+                );
+            }
+        }
+    }
 }

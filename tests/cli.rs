@@ -3409,6 +3409,46 @@ fn disasm_rx_decodes_families() {
 }
 
 #[test]
+fn disasm_rx_bit_and_register_ops() {
+    // RX 0x78-0x7D (BSET/BCLR/BTST #imm5, rd) and 0x7E/0x7F
+    // (NOT/NEG/ABS/RORC/ROLC/PUSH/POP/PUSHC/POPC and JMP/JSR/BRA.l/BSR.l)
+    // decode as real instructions and advance by 2 bytes each.
+    let dir = tmpdir();
+    let sess = dir.join("rxbit.json");
+    let code = dir.join("rxbit.bin");
+    std::fs::write(&code, [
+        0x78, 0x03, // bset #0x18, r3
+        0x7A, 0x00, // bclr #0x1a, r0
+        0x7C, 0x20, // btst #0x1c, r0
+        0x7E, 0x80, // push r0
+        0x7F, 0x00, // jmp r0
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "rx", "--firmware", code.to_str().unwrap(), "--base", "0x8000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0x8000", "--count", "5", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000u64);
+    assert_eq!(json[0]["text"], "bset #0x18, r3");
+    assert_eq!(json[1]["address"], 0x8002u64);
+    assert_eq!(json[1]["text"], "bclr #0x1a, r0");
+    assert_eq!(json[2]["address"], 0x8004u64);
+    assert_eq!(json[2]["text"], "btst #0x1c, r0");
+    assert_eq!(json[3]["address"], 0x8006u64);
+    assert_eq!(json[3]["text"], "push r0");
+    assert_eq!(json[4]["address"], 0x8008u64);
+    assert_eq!(json[4]["text"], "jmp r0");
+}
+
+#[test]
 fn rx_step_over_uses_call_width() {
     // RX BSR.w is 4 bytes: step-over must resume at the return address (pc+4),
     // and BSR.w pushes the return address to the stack.

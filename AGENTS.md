@@ -316,6 +316,12 @@ done
 - `device_svd_by_device_key`：`device svd --device` 从内置 SVD 解析；缺源报错。
 - `disasm_rx_fc_fd_long_forms`：RX `0xFC`/`0xFD` 长操作码族反汇编文本与实际宽度推进。
 - `step_rx_fc_fd_long_forms`：RX `0xFC`/`0xFD` 长操作码族执行（ADC/SHLR/SBB）与 PC/寄存器变化。
+- `disasm_rx_bit_and_register_ops`：RX `0x78-0x7D`（BSET/BCLR/BTST #imm5, rd）与
+  `0x7E`/`0x7F`（NOT/NEG/ABS/RORC/ROLC/PUSH/POP/PUSHC/POPC 与 JMP/JSR/BRA.l/BSR.l）
+  按 2 字节解码为真实助记符（此前 0x7A-0x7D 落到占位符、0x7E/0x7F 误配到 NOT/JMP 族）。
+- `byte_opcode_disasm_matches_core`/`word_opcode_disasm_matches_core`：逐操作码枚举校验
+  “反汇编占位符 ⟺ 核心停机”，确保执行内核支持的操作码族都有真实反汇编（MCS-51/80251/
+  C166/STM8/RL78/AVR/MSP430/RX）。
 
 ### 5.2 反汇编宽度
 

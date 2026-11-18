@@ -1737,21 +1737,38 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let m = match kind { 0 => "cmp", 1 => "mul", 2 => "and", _ => "or" };
         return format!("{} #0x{:04x}, r{}", m, ((read(pc + 2) as u16) << 8) | read(pc + 3) as u16, rd);
     }
-    if (op & 0xFE) == 0x78 {
+    // BSET/BCLR/BTST #imm5, rd: the core executes op 0x78-0x7D (kind selects
+    // the operation from bit 1); mirror that range exactly.
+    if (0x78..=0x7D).contains(&op) {
         let kind = (op >> 1) & 0x03;
         let imm = ((insn >> 8) & 0x1F) as u32;
         let rd = (low & 0x0F) as usize;
         let m = match kind { 0 => "bset", 1 => "bclr", 2 => "btst", _ => "bset" };
         return format!("{} #0x{:x}, r{}", m, imm, rd);
     }
-    if (op & 0xFC) == 0x7C {
-        let kind = op & 0x03;
+    // 0111 1110 kkkk rd: NOT/NEG/ABS/SAT/RORC/ROLC/PUSH/POP/PUSHC/POPC,
+    // mirroring the core's op==0x7E dispatch (kind = low nibble high bits).
+    if op == 0x7E {
+        let kind = (low >> 4) & 0x0F;
         let rd = (low & 0x0F) as usize;
-        let m = match kind { 0 => "not", 1 => "neg", 2 => "abs", _ => "pushc" };
+        let m = match kind {
+            0 => "not",
+            1 => "neg",
+            2 => "abs",
+            3 => "sat",
+            4 => "rorc",
+            5 => "rolc",
+            8 => "push",
+            10 => "pop",
+            12 => "pushc",
+            14 => "popc",
+            _ => "?",
+        };
         return format!("{} r{}", m, rd);
     }
-    if (op & 0xFE) == 0x7E {
-        let kind = op & 0x0F;
+    // 0111 1111 kkkk rs: JMP/JSR/BRA.l/BSR.l, mirroring op==0x7F.
+    if op == 0x7F {
+        let kind = (low >> 4) & 0x0F;
         let rs = (low & 0x0F) as usize;
         let m = match kind { 0 => "jmp", 1 => "jsr", 4 => "bra.l", 5 => "bsr.l", _ => "?" };
         return format!("{} r{}", m, rs);
@@ -2715,5 +2732,66 @@ mod tests {
             code.get(a as usize).copied().unwrap_or(0)
         };
         assert_eq!(instruction_len(0, &read32), 7);
+    }
+
+    #[test]
+    fn word_opcode_disasm_matches_core() {
+        // For every 16-bit first opcode word, a raw hex placeholder in the
+        // disassembler must correspond to an opcode the core halts on.
+        let mut placeholders = Vec::new();
+        for word in 0u16..=65535 {
+            let bytes = [(word >> 8) as u8, word as u8];
+            let read = |a: u32| {
+                let off = a.wrapping_sub(0x1000) as usize;
+                bytes.get(off).copied().unwrap_or(0)
+            };
+            let text = disassemble(0x1000, &read);
+            if text.starts_with("0x") {
+                placeholders.push((word, text));
+            }
+        }
+        // Reuse one core across the (rare) placeholder words; each placeholder
+        // must halt the core, and placeholders never write memory before
+        // halting, so a single `reset` between iterations is safe.
+        let mut core = RxCore::new();
+        for (word, text) in placeholders {
+            let bytes = [(word >> 8) as u8, word as u8];
+            core.reset(0x1000);
+            core.write_bytes(0x1000, &bytes);
+            let r = core.step(&[]);
+            assert_ne!(
+                r,
+                RxStep::Advanced,
+                "opcode 0x{word:04x} disassembles as {text:?} but core executes"
+            );
+        }
+    }
+
+    #[test]
+    fn disassembles_bit_and_register_ops() {
+        // 0x78-0x7D: BSET/BCLR/BTST #imm5, rd (kind from op bit 1).
+        let read = |a: u32| -> u8 {
+            let code = [
+                0x78, 0x03, // bset #0x18, r3
+                0x7A, 0x00, // bclr #0x1a, r0
+                0x7C, 0x20, // btst #0x1c, r0
+                0x7E, 0x00, // not r0
+                0x7E, 0x10, // neg r0
+                0x7E, 0x80, // push r0
+                0x7F, 0x00, // jmp r0
+                0x7F, 0x10, // jsr r0
+                0x7F, 0x40, // bra.l r0
+            ];
+            code.get(a as usize).copied().unwrap_or(0)
+        };
+        assert_eq!(disassemble(0, &read), "bset #0x18, r3");
+        assert_eq!(disassemble(2, &read), "bclr #0x1a, r0");
+        assert_eq!(disassemble(4, &read), "btst #0x1c, r0");
+        assert_eq!(disassemble(6, &read), "not r0");
+        assert_eq!(disassemble(8, &read), "neg r0");
+        assert_eq!(disassemble(10, &read), "push r0");
+        assert_eq!(disassemble(12, &read), "jmp r0");
+        assert_eq!(disassemble(14, &read), "jsr r0");
+        assert_eq!(disassemble(16, &read), "bra.l r0");
     }
 }

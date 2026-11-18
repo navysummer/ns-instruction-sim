@@ -1368,4 +1368,26 @@ mod disasm_tests {
         let r = reader(&[0x30, 0x12, 0x34, 0x12]);
         assert_eq!(disassemble(0, &r), "PUSH #0x1234");
     }
+
+    #[test]
+    fn word_opcode_disasm_matches_core() {
+        // For every 16-bit opcode, a raw `DW` placeholder in the disassembler
+        // must correspond to an opcode the core halts on.
+        for word in 0u16..=65535 {
+            let bytes = word.to_le_bytes();
+            let r = reader(&bytes);
+            let text = disassemble(0, &r);
+            if text.starts_with("DW") {
+                let mut core = Msp430Core::new();
+                core.reset(0);
+                core.write_bytes(0, &bytes);
+                let step = core.step(&[]);
+                assert_ne!(
+                    step,
+                    Msp430Step::Advanced,
+                    "opcode 0x{word:04x} disassembles as {text:?} but core executes"
+                );
+            }
+        }
+    }
 }

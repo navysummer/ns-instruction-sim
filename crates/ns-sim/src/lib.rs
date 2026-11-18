@@ -4802,6 +4802,37 @@ mod tests {
     }
 
     #[test]
+    fn byte_opcode_disasm_matches_core() {
+        // For every single-byte opcode, if the disassembler prints a raw
+        // placeholder the execution core must halt on it (and vice versa the
+        // core's supported opcodes must all have a real disassembly).
+        for arch in [Arch::Mcs51, Arch::Mcs251, Arch::C166] {
+            for op in 0u8..=255 {
+                let bytes = [op];
+                let read = |a: u32| bytes.get(a as usize).copied().unwrap_or(0);
+                let text = disassemble_one(arch, 0, &read);
+                let placeholder =
+                    text.starts_with("0x") || text.starts_with(".byte") || text.starts_with(".word");
+                if placeholder {
+                    let mut sim = Simulator::for_arch(arch).unwrap();
+                    let r = match arch {
+                        Arch::Mcs51 => sim.load_mcs51(0, &bytes).map(|_| sim.step()),
+                        Arch::Mcs251 => sim.load_x51(0, &bytes).map(|_| sim.step()),
+                        Arch::C166 => sim.load_c166(0, &bytes).map(|_| sim.step()),
+                        _ => unreachable!(),
+                    };
+                    let r = r.expect("load");
+                    assert_ne!(
+                        r,
+                        StepResult::Advanced,
+                        "arch {arch:?} opcode 0x{op:02x} disassembles as {text:?} but core executes"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn instruction_size_matches_encoding_width() {
         // ARM A32 is always 4 bytes.
         let read = |_addr: u32| 0u8;

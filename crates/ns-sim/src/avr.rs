@@ -1214,4 +1214,24 @@ mod tests {
         core.step(&[]);
         assert_eq!(core.pc, 8);
     }
+
+    #[test]
+    fn word_opcode_disasm_matches_core() {
+        // For every 16-bit opcode, a raw `.word` placeholder in the
+        // disassembler must correspond to an opcode the core halts on.
+        for word in 0u16..=65535 {
+            let bytes = [(word & 0xFF) as u8, (word >> 8) as u8];
+            let read = |a: u32| bytes.get(a as usize).copied().unwrap_or(0);
+            let text = disassemble(0, &read);
+            if text.starts_with(".word") {
+                let mut core = core_with(&[word]);
+                let r = core.step(&[]);
+                assert_ne!(
+                    r,
+                    AvrStep::Advanced,
+                    "opcode 0x{word:04x} disassembles as {text:?} but core executes"
+                );
+            }
+        }
+    }
 }

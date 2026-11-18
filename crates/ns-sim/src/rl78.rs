@@ -1530,6 +1530,26 @@ mod tests {
     }
 
     #[test]
+    fn byte_opcode_disasm_matches_core() {
+        // For every single-byte opcode, a raw `.byte` placeholder in the
+        // disassembler must correspond to an opcode the core halts on.
+        for op in 0u8..=255 {
+            let bytes = [op];
+            let read = |a: u32| bytes.get(a as usize).copied().unwrap_or(0);
+            let text = disassemble(0x1000, &read);
+            if text.starts_with(".byte") || text.starts_with("0x") {
+                let mut c = core_with(&bytes);
+                let r = c.step(&[]);
+                assert_ne!(
+                    r,
+                    Rl78Step::Advanced,
+                    "opcode 0x{op:02x} disassembles as {text:?} but core executes"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn add_imm_to_a() {
         // ADD A, #0x05 (0x0C 0x05)
         let mut c = core_with(&[0x0C, 0x05]);
