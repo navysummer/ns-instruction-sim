@@ -1752,6 +1752,53 @@ fn run_arm_thumb1_field_extraction() {
 }
 
 #[test]
+fn run_arm_thumb1_pc_relative() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-pcrel.json");
+    // Cortex-M vector table at 0x08000000 (SP=0x20000000, reset PC=0x08000011).
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Thumb-1 code: ldr r0, [pc, #0]; add r2, pc, #4. The literal word at
+    // 0x08000014 holds 0xCAFEBABE; the first instruction must read it (base is
+    // Align(current + 4, 4) = 0x08000014), not the instruction word at PC.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes", "0x00", "0x48", "0x01", "0xA2",
+               "0xBE", "0xBA", "0xFE", "0xCA"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Step 1: ldr r0, [pc, #0] → r0 = literal at 0x08000014.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0012u64);
+    assert_eq!(json["registers"]["r0"], 0xCAFE_BABEu64);
+    // Step 2: add r2, pc, #4 → r2 = Align(0x08000016, 4) + 4 = 0x08000018.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0014u64);
+    assert_eq!(json["registers"]["r2"], 0x0800_0018u64);
+}
+
+#[test]
 fn disasm_thumb2_ldrh_strh_barriers() {
     let dir = tmpdir();
     let binfile = dir.join("thumb2-wide.bin");

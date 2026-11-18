@@ -449,7 +449,12 @@ impl ArmCore {
                 if insn & 0x0800 != 0 {
                     // PC-relative LDR: rd = bits 10-8, imm8 scaled by 4.
                     let rd = ((insn >> 8) & 0x07) as usize;
-                    let addr = ((self.regs[PC] & !2).wrapping_add(imm8.wrapping_mul(4))) & !3;
+                    // Thumb-1 is 16-bit, so `step` left PC at the next
+                    // instruction (current + 2); the architectural PC used for
+                    // PC-relative addressing is current + 4 (two halfwords
+                    // ahead), word-aligned. The literal base is Align(PC, 4).
+                    let arch_pc = self.regs[PC].wrapping_add(2);
+                    let addr = (arch_pc & !3).wrapping_add(imm8.wrapping_mul(4));
                     self.regs[rd] = self.read_u32(addr);
                 } else if insn & 0x0400 != 0 {
                     // High-register ops / BX (op = bits 9-8)
@@ -567,7 +572,10 @@ impl ArmCore {
                 let base = if sp_relative {
                     self.regs[SP]
                 } else {
-                    (self.regs[PC] & !2).wrapping_add(4)
+                    // ADR/`add rd, pc, #imm`: the PC base is Align(PC, 4)
+                    // where the architectural PC is current + 4 (see above).
+                    let arch_pc = self.regs[PC].wrapping_add(2);
+                    arch_pc & !3
                 };
                 self.regs[rd] = base.wrapping_add(imm8.wrapping_mul(4));
             }
@@ -1614,6 +1622,28 @@ mod tests {
         c.write_u16(0x1004, 0xABCD);
         run(&mut c, &[0x5A88], 1);
         assert_eq!(c.regs[0], 0xABCD);
+    }
+
+    #[test]
+    fn thumb1_pc_relative_uses_architectural_pc() {
+        // PC-relative LDR (0x4800: ldr r0, [pc, #0]) at a 4-aligned address:
+        // the literal base is Align(current + 4, 4), so it must read word at
+        // address 4 (not address 0).
+        let mut c = core();
+        c.write_u32(0x4, 0xCAFE_F00D);
+        c.write_u32(0x0, 0xDEAD_BEEF); // must not be read.
+        run(&mut c, &[0x4800], 1);
+        assert_eq!(c.regs[0], 0xCAFE_F00D);
+
+        // ADR/`add r2, pc, #4` (0xA201) at a 2-aligned (not 4-aligned) address:
+        // Align(current + 4, 4) + imm8*4 = Align(2 + 4, 4) + 4 = 4 + 4 = 8.
+        let mut c = core();
+        c.write_u16(0x2, 0xA201);
+        c.regs[PC] = 2;
+        c.set_thumb(true);
+        let r = c.step(&[]);
+        assert_eq!(r, ArmStep::Advanced);
+        assert_eq!(c.regs[2], 8);
     }
 
     #[test]

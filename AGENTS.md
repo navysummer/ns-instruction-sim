@@ -260,6 +260,9 @@ done
 - `run_arm_thumb1_field_extraction`：端到端执行 Thumb-1 `LSL`/`SUBS reg`/`SUBS imm3`，
   校验内核按编码提取 Rn/Rm/Rd（`lsls r0,r1,#5`→r0=0x400、`subs r0,r2,r1`→r0=5-32、
   `subs r0,r2,#3`→r0=2），锁定格式 0/1 字段提取修复。
+- `run_arm_thumb1_pc_relative`：端到端执行 Thumb-1 `LDR r,[pc,#imm]` 与 `ADD rd,pc,#imm`，
+  校验 PC 相对基址按架构 PC（当前 +4）取字对齐（`ldr r0,[pc,#0]` 读取 4 字对齐字面量
+  0xCAFEBABE、`add r2,pc,#4` 得 0x08000018），锁定 16 位 PC 相对寻址修复。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -376,6 +379,10 @@ done
   （原实现把 rn/rm 字段弄错或把 `sub`/`immediate` 两比特弄反）。由 ns-sim 单测
   `thumb1_field_extraction_matches_encoding`/`thumb1_high_register_and_sp_relative_fields`/
   `thumb1_register_offset_addressing` 与 CLI `run_arm_thumb1_field_extraction` 锁定。
+  Thumb-1 的 PC 相对寻址（`LDR r,[pc,#imm]` 与 `ADD rd,pc,#imm`）现按架构 PC（当前地址
+  +4，两条半字）取字对齐作为基址（原把下一指令地址按半字对齐，在 4 字节对齐/2 字节对齐
+  两种边界各偏 4 字节），由 ns-sim 单测 `thumb1_pc_relative_uses_architectural_pc` 与
+  CLI `run_arm_thumb1_pc_relative` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI
