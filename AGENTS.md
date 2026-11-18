@@ -399,6 +399,9 @@ done
   溢出 panic，且 `ASR` 立即被误判为 `ADD/SUB` 组——`top=1` 且 bit11 清 0）。由 ns-sim
   单测 `thumb1_shift_zero_and_wide_amounts`/`disassembles_thumb_full_families` 与 CLI
   `run_arm_thumb1_asr_immediate` 锁定。
+  Thumb-1 `LDMIA` 现写回基址寄存器（原只写回 `STMIA`）；当基址寄存器在加载列表中时不写回
+  （加载值优先），与 A32 `arm_block_transfer` 一致；由 ns-sim 单测
+  `thumb1_ldm_stm_writeback` 锁定。
   Thumb-1 的 PC 相对寻址（`LDR r,[pc,#imm]` 与 `ADD rd,pc,#imm`）现按架构 PC（当前地址
   +4，两条半字）取字对齐作为基址（原把下一指令地址按半字对齐，在 4 字节对齐/2 字节对齐
   两种边界各偏 4 字节），由 ns-sim 单测 `thumb1_pc_relative_uses_architectural_pc` 与

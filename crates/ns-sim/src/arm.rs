@@ -653,7 +653,10 @@ impl ArmCore {
                         addr = addr.wrapping_add(4);
                     }
                 }
-                if !load {
+                // Thumb-1 STMIA/LDMIA always use writeback. For a load, the
+                // base register is only written back when it is not itself in
+                // the register list (otherwise the loaded value wins).
+                if !load || rlist & (1 << rn) == 0 {
                     self.regs[rn] = addr;
                 }
             }
@@ -1793,6 +1796,32 @@ mod tests {
         run(&mut c, &[0x40C8], 1);
         assert_eq!(c.regs[0], 0);
         assert!(c.flag_z());
+    }
+
+    #[test]
+    fn thumb1_ldm_stm_writeback() {
+        // STMIA r0!, {r1} (0xC002): stores r1 and writes back r0.
+        let mut c = core();
+        c.regs[0] = 0x1000;
+        c.regs[1] = 0x1234_5678;
+        run(&mut c, &[0xC002], 1);
+        assert_eq!(c.read_u32(0x1000), 0x1234_5678);
+        assert_eq!(c.regs[0], 0x1004);
+
+        // LDMIA r0!, {r1} (0xC802): loads r1 and writes back r0.
+        let mut c = core();
+        c.regs[0] = 0x1000;
+        c.write_u32(0x1000, 0xCAFE_BABE);
+        run(&mut c, &[0xC802], 1);
+        assert_eq!(c.regs[1], 0xCAFE_BABE);
+        assert_eq!(c.regs[0], 0x1004);
+
+        // LDMIA r0!, {r0} (0xC801): rn in the list, writeback suppressed.
+        let mut c = core();
+        c.regs[0] = 0x1000;
+        c.write_u32(0x1000, 0xDEAD_BEEF);
+        run(&mut c, &[0xC801], 1);
+        assert_eq!(c.regs[0], 0xDEAD_BEEF);
     }
 
     #[test]
