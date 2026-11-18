@@ -105,6 +105,15 @@ pub struct Session {
     /// ARM instruction-set state (true = A32, false = Thumb), when ARM.
     #[serde(default)]
     pub arm_arm_state: Option<bool>,
+    /// ARM If-Then block mask (bits 3-0 of the IT encoding; 0 = inactive).
+    #[serde(default)]
+    pub arm_it_mask: Option<u8>,
+    /// ARM If-Then block base condition (bits 3-0 of the IT encoding).
+    #[serde(default)]
+    pub arm_it_cond: Option<u32>,
+    /// ARM If-Then block instruction index (0-based within the block).
+    #[serde(default)]
+    pub arm_it_index: Option<u8>,
     pub breakpoints: Vec<BpState>,
     pub cycle_count: u64,
     pub halted: bool,
@@ -161,6 +170,21 @@ impl Session {
             },
             arm_arm_state: if sim.arch == Arch::Arm {
                 Some(sim.arm_state())
+            } else {
+                None
+            },
+            arm_it_mask: if sim.arch == Arch::Arm {
+                sim.arm_it_state().map(|(mask, _, _)| mask)
+            } else {
+                None
+            },
+            arm_it_cond: if sim.arch == Arch::Arm {
+                sim.arm_it_state().map(|(_, cond, _)| cond)
+            } else {
+                None
+            },
+            arm_it_index: if sim.arch == Arch::Arm {
+                sim.arm_it_state().map(|(_, _, index)| index)
             } else {
                 None
             },
@@ -263,6 +287,9 @@ impl Session {
         }
         if let Some(xpsr) = self.arm_xpsr {
             sim.set_arm_xpsr(xpsr);
+        }
+        if let Some(mask) = self.arm_it_mask {
+            sim.set_arm_it_state(mask, self.arm_it_cond.unwrap_or(0), self.arm_it_index.unwrap_or(0));
         }
         // PC is a register in some cores (ARM/XTENSA), so apply after regs.
         sim.set_program_counter(self.pc);

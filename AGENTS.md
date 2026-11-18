@@ -313,6 +313,13 @@ done
 - `disasm_thumb2_modified_immediate`：`disasm --arm-state thumb` 将
   `mov r0,#0xff`/`add r3,r4,#0x40`/`sub r5,r6,#0x200`/`cmp r0,#0x40`/`tst r2,#0xff`
   反汇编为真实助记符并按扩展立即数显示。
+- `run_arm_thumb1_it_bkpt`：端到端分八次 `step --session` 执行
+  `movs r0,#0`（0x2000，置 Z）、`it eq`（0xBF08，`moveq r0,r1` 执行）、
+  `movs r2,#1`（0x2201，清 Z）、`ite eq`（0xBF0C，`moveq r3,r4` 跳过、
+  `movne r5,r6` 执行）、`bkpt #3`（0xBE03，停机），校验寄存器/标志/PC 并验证
+  IT 状态跨会话持久化（跨进程 `step --session` 保留 IT 块与索引）。
+- `disasm_thumb1_it_bkpt`：`disasm --arm-state thumb` 将
+  `it eq`/`ite ge`/`itt eq`/`itete eq`/`bkpt #3` 反汇编为真实助记符。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -531,6 +538,13 @@ done
   ARM 进位/溢出语义。反汇编按扩展值显示立即（`mov r0,#0xff`/`add r3,r4,#0x40` 等）。
   由 ns-sim 单测 `thumb2_data_processing_modified_immediate`/`thumb_expand_imm12_matches_encodings`
   与 CLI `run_arm_thumb2_modified_immediate`/`disasm_thumb2_modified_immediate` 锁定。
+  Thumb-1 `IT`（If-Then，`0xBF00-0xBFFF`，cond=bits7-4、mask=bits3-0，mask=0 即 NOP）现
+  正确执行条件块：块长度 = `4 - trailing_zeros(mask)`，第 0 条指令恒为 then（cond），
+  第 i 条（i≥1）为 then 当 `(mask >> (4-i)) & 1 == 0`，否则 else（cond^1）；后续指令按
+  该条件执行或跳过（跳过仅推进 PC），块结束自动清除。此前 IT 被误当作 POP 破坏 SP。
+  `BKPT`（`0xBE00-0xBEFF`）现停机（原误当作 POP）。IT/BKPT 状态（mask/cond/index）加入
+  会话持久化，跨进程 `step --session` 可续跑条件块。由 ns-sim 单测 `thumb1_it_block` 与
+  CLI `run_arm_thumb1_it_bkpt`/`disasm_thumb1_it_bkpt` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

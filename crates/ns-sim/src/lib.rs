@@ -1815,6 +1815,24 @@ impl Simulator {
         }
     }
 
+    /// Read the ARM If-Then block state as `(mask, cond, index)`, or `None`
+    /// when the core is not ARM. A zero mask means no IT block is active.
+    pub fn arm_it_state(&self) -> Option<(u8, u32, u8)> {
+        self.arm
+            .as_ref()
+            .map(|core| (core.it_mask, core.it_cond, core.it_index))
+    }
+
+    /// Write the ARM If-Then block state directly. Only meaningful when
+    /// `arch == Arch::Arm`; ignored otherwise.
+    pub fn set_arm_it_state(&mut self, mask: u8, cond: u32, index: u8) {
+        if let Some(core) = self.arm.as_mut() {
+            core.it_mask = mask;
+            core.it_cond = cond;
+            core.it_index = index;
+        }
+    }
+
     /// Set the program counter, routing to the active architecture core so the
     /// PC stays consistent (ARM/Xtensa keep their own PC register).
     pub fn set_program_counter(&mut self, pc: u32) {
@@ -3458,8 +3476,23 @@ fn disassemble_thumb1(half: u16, pc: u32) -> String {
                     _ => "revsh",
                 };
                 format!("{name} r{}, r{}", half & 0x07, (half >> 3) & 0x07)
-            } else if half == 0xBF00 {
-                format!("nop")
+            } else if half & 0xFF00 == 0xBE00 {
+                format!("bkpt #{:#x}", half & 0xFF)
+            } else if half & 0xFF00 == 0xBF00 {
+                let mask = half & 0x0F;
+                if mask == 0 {
+                    format!("nop")
+                } else {
+                    // IT (If-Then): the mnemonic is `it` followed by `t`/`e`
+                    // for each arm after the first (determined by the mask).
+                    let cond = (half >> 4) & 0x0F;
+                    let n = 4 - (mask as u32).trailing_zeros();
+                    let mut mnem = String::from("it");
+                    for i in 1..n {
+                        mnem.push(if ((mask >> (4 - i)) & 1) == 0 { 't' } else { 'e' });
+                    }
+                    format!("{mnem} {}", cond_suffix(cond as u8))
+                }
             } else {
                 let push = (half >> 11) & 1 == 0;
                 let mut regs = reg_list(half & 0xFF);
@@ -5894,6 +5927,14 @@ mod tests {
             (0xDF00, "svc #0"),
             (0xD001, "beq 0x6"),
             (0xE001, "b 0x6"),
+            (0xBF08, "it eq"),
+            (0xBF04, "itt eq"),
+            (0xBF0C, "ite eq"),
+            (0xBFAC, "ite ge"),
+            (0xBF0B, "itete eq"),
+            (0xBF02, "ittt eq"),
+            (0xBF01, "itttt eq"),
+            (0xBE03, "bkpt #0x3"),
         ];
         for (half, expected) in cases {
             let bytes = [*half as u8, (*half >> 8) as u8];

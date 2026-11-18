@@ -2435,6 +2435,71 @@ fn run_arm_thumb2_modified_immediate() {
 }
 
 #[test]
+fn run_arm_thumb1_it_bkpt() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-itbkpt.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: movs r0,#0 (Z=1); it eq; moveq r0,r1; movs r2,#1 (Z=0);
+    // ite eq; moveq r3,r4 (skipped); movne r5,r6; bkpt #3.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x00", "0x20", "0x08", "0xBF",
+               "0x08", "0x46", "0x01", "0x22",
+               "0x0C", "0xBF", "0x23", "0x46",
+               "0x35", "0x46", "0x03", "0xBE"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [
+        ("r1", "0x00000011"), ("r4", "0x00000022"), ("r6", "0x00000033"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let mut halted = false;
+    for _ in 0..8 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        if json["halted"] == true {
+            halted = true;
+            break;
+        }
+    }
+    assert!(halted, "BKPT 应使核心停机");
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0020u64); // past the BKPT at 0x0800001E
+    assert_eq!(json["registers"]["r0"], 0x11u64); // moveq r0, r1 (EQ, Z=1)
+    assert_eq!(json["registers"]["r2"], 1u64);     // movs r2, #1 (cleared Z)
+    assert_eq!(json["registers"]["r3"], 0u64);     // moveq r3, r4 skipped
+    assert_eq!(json["registers"]["r5"], 0x33u64);  // movne r5, r6 (NE, Z=0)
+}
+
+#[test]
 fn disasm_thumb2_ldrh_strh_barriers() {
     let dir = tmpdir();
     let binfile = dir.join("thumb2-wide.bin");
@@ -2499,6 +2564,41 @@ fn disasm_thumb2_modified_immediate() {
         "0x00000008: sub r5, r6, #0x200",
         "0x0000000c: cmp r0, #0x40",
         "0x00000010: tst r2, #0xff",
+    ] {
+        assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
+    }
+}
+
+#[test]
+fn disasm_thumb1_it_bkpt() {
+    let dir = tmpdir();
+    let binfile = dir.join("thumb1-it.bin");
+    let sess = dir.join("thumb1-it.json");
+    // Thumb-1 IT (If-Then) and BKPT forms the core executes.
+    let bytes: &[u8] = &[
+        0x08, 0xBF, // it eq
+        0xAC, 0xBF, // ite ge
+        0x04, 0xBF, // itt eq
+        0x0B, 0xBF, // itete eq
+        0x03, 0xBE, // bkpt #3
+    ];
+    std::fs::write(&binfile, bytes).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "5", "--arm-state", "thumb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "0x00000000: it eq",
+        "0x00000002: ite ge",
+        "0x00000004: itt eq",
+        "0x00000006: itete eq",
+        "0x00000008: bkpt #0x3",
     ] {
         assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
     }

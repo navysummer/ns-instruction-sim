@@ -53,6 +53,14 @@ pub struct ArmCore {
     /// Byte-level stores performed since the last drain, as (address, byte).
     /// The `Simulator` routes these to its virtual peripherals after each step.
     pub store_events: Vec<(u32, u8)>,
+    /// Active If-Then (IT) block: 0 when no IT is active, otherwise the 4-bit
+    /// IT mask (bits 3-0 of the IT encoding). The base condition and the index
+    /// of the instruction being evaluated are kept alongside.
+    pub it_mask: u8,
+    /// Base condition for the active IT block (bits 3-0 of the IT encoding).
+    pub it_cond: u32,
+    /// Index (0-based) of the instruction currently inside the IT block.
+    pub it_index: u8,
  }
 
 impl ArmCore {
@@ -68,8 +76,11 @@ impl ArmCore {
             vtor: 0,
             arm_state: false,
              halted: false,
-             cycle_count: 0,
+            cycle_count: 0,
             store_events: Vec::new(),
+            it_mask: 0,
+            it_cond: 0,
+            it_index: 0,
          }
     }
 
@@ -348,10 +359,52 @@ impl ArmCore {
     }
 
     fn execute(&mut self, insn: u32, wide: bool) {
+        // An active IT block gates this instruction: if the condition fails
+        // the instruction is skipped (PC was already advanced) and the block
+        // advances. The instruction that *sets up* the block (the IT itself)
+        // starts with no active IT, so it is never gated or counted.
+        let in_it = self.it_mask != 0;
+        if in_it {
+            let cond = self.it_current_condition();
+            if !self.condition_true(cond) {
+                self.it_advance();
+                return;
+            }
+        }
         if wide {
             self.execute_wide(insn);
         } else {
             self.execute_thumb1(insn as u16);
+        }
+        if in_it {
+            self.it_advance();
+        }
+    }
+
+    /// Condition code for the instruction at the current IT-block index.
+    fn it_current_condition(&self) -> u32 {
+        let mask = self.it_mask as u32;
+        let index = self.it_index as u32;
+        // The first instruction is always the "then" arm; later arms are
+        // "else" when the bit at position `4 - index` of the mask is set.
+        let then = index == 0 || ((mask >> (4 - index)) & 1) == 0;
+        if then {
+            self.it_cond
+        } else {
+            self.it_cond ^ 1
+        }
+    }
+
+    /// Advance the active IT block after one instruction was evaluated.
+    fn it_advance(&mut self) {
+        if self.it_mask == 0 {
+            return;
+        }
+        let n = 4 - (self.it_mask as u32).trailing_zeros();
+        self.it_index += 1;
+        if self.it_index as u32 >= n {
+            self.it_mask = 0;
+            self.it_index = 0;
         }
     }
 }
@@ -666,8 +719,20 @@ impl ArmCore {
                         }
                     };
                     self.regs[rd] = r;
-                } else if insn == 0xBF00 {
-                    // NOP: no effect.
+                } else if insn & 0xFF00 == 0xBE00 {
+                    // BKPT (breakpoint): stop the core so the caller can
+                    // observe the stopped state.
+                    self.halted = true;
+                } else if insn & 0xFF00 == 0xBF00 {
+                    // IT (If-Then) / NOP. Condition = bits 7-4, mask = bits
+                    // 3-0; a zero mask is NOP, otherwise it arms the block.
+                    let mask = (insn & 0x0F) as u8;
+                    if mask != 0 {
+                        self.it_cond = ((insn >> 4) & 0x0F) as u32;
+                        self.it_mask = mask;
+                        self.it_index = 0;
+                    }
+                    // mask == 0: NOP, no effect.
                 } else {
                     let push = (insn >> 11) & 1 == 0;
                     let rlist = (insn & 0xFF) as u32;
@@ -2541,6 +2606,56 @@ mod tests {
         // CPSIE i (0xB662): clear PRIMASK.
         run(&mut c, &[0xB662], 1);
         assert_eq!(c.primask, 0);
+    }
+
+    #[test]
+    fn thumb1_it_block() {
+        // `it eq` (0xBF08) with Z set: the following `moveq r0, r1` (0x4608)
+        // executes; with Z clear it is skipped.
+        let mut c = core();
+        c.xpsr |= 0x4000_0000; // Z set
+        c.regs[1] = 0xAB;
+        run(&mut c, &[0xBF08, 0x4608], 2);
+        assert_eq!(c.regs[0], 0xAB, "IT then-arm executes when the condition holds");
+        assert_eq!(c.it_mask, 0, "IT block clears after its last instruction");
+
+        let mut c = core();
+        c.regs[1] = 0xAB;
+        run(&mut c, &[0xBF08, 0x4608], 2);
+        assert_eq!(c.regs[0], 0, "IT then-arm is skipped when the condition fails");
+
+        // `ite ge` (0xBFAC): the then-arm is `movge r0, r1` (0x4608) and the
+        // else-arm is `movlt r2, r3` (0x461A). With GE true only the then-arm
+        // executes; with GE false only the else-arm executes.
+        let mut c = core();
+        c.xpsr = 0x0100_0000; // N=0, V=0 → GE true, LT false
+        c.regs[1] = 0x11;
+        c.regs[3] = 0x22;
+        run(&mut c, &[0xBFAC, 0x4608, 0x461A], 3);
+        assert_eq!(c.regs[0], 0x11, "ITE then-arm executes when GE holds");
+        assert_eq!(c.regs[2], 0, "ITE else-arm is skipped when LT fails");
+
+        let mut c = core();
+        c.xpsr = 0x8100_0000; // N=1, V=0 → GE false, LT true
+        c.regs[1] = 0x11;
+        c.regs[3] = 0x22;
+        run(&mut c, &[0xBFAC, 0x4608, 0x461A], 3);
+        assert_eq!(c.regs[0], 0, "ITE then-arm is skipped when GE fails");
+        assert_eq!(c.regs[2], 0x22, "ITE else-arm executes when LT holds");
+
+        // `itt eq` (0xBF04): both arms are then; with Z set both execute.
+        let mut c = core();
+        c.xpsr |= 0x4000_0000; // Z set
+        c.regs[1] = 0x11;
+        c.regs[3] = 0x22;
+        run(&mut c, &[0xBF04, 0x4608, 0x461A], 3);
+        assert_eq!(c.regs[0], 0x11);
+        assert_eq!(c.regs[2], 0x22);
+
+        // `bkpt #3` (0xBE03): halts the core.
+        let mut c = core();
+        run(&mut c, &[0xBE03], 1);
+        assert!(c.halted, "BKPT halts the core");
     }
 
     #[test]
