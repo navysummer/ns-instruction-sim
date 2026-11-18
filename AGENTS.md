@@ -277,6 +277,8 @@ done
 - `disasm_v850_variable_width`：V850 变长指令（2/4/6 字节）按解码宽度推进（NOP=2、DISPOSE=4）。
 - `disasm_stm8_variable_width`：STM8 变长指令按实际宽度推进并解码内核主流操作码族（NOP=1、JRA=2、
   CALL=3、CALLF=4、`0x90` 前缀 Y 索引=3），替换原先仅解码 7 个操作码的极小反汇编器。
+- `step_stm8_sp_relative_ld`：STM8 `0x17` 修正为 `LD (off8,SP),A`（写回栈相对字节）、
+  `0x16` 为 `LD A,(off8,SP)`（读入 A）；此前 `0x17` 误把操作数读入 A 而不写内存。
 - `disasm_rl78_decodes_core_families`：RL78 反汇编扩展为镜像内核 `execute_single`/`execute_61`
   的实际分发——`0x61` 前缀的寄存器-寄存器（add/addc/sub/subc/cmp/and/or/xor/xch）、
   `ES:[HL+B/C]`、`ES:[HL+imm8]`、`ES:[imm16]`、PSW（push/pop）、控制流（skc/sknc/skz/sknz/

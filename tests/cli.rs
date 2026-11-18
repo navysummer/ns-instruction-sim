@@ -3080,6 +3080,40 @@ fn stm8_step_over_and_step_out_use_call_width() {
 }
 
 #[test]
+fn step_stm8_sp_relative_ld() {
+    // STM8 0x17 = LD (off8,SP),A and 0x16 = LD A,(off8,SP): running both in
+    // one process writes then reads back the stack-relative byte.
+    let dir = tmpdir();
+    let sess = dir.join("stm8sp.json");
+    let code = dir.join("stm8sp.bin");
+    std::fs::write(&code, [0x17, 0x34, 0x16, 0x34]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "stm8", "--firmware", code.to_str().unwrap(), "--base", "0x8000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [("A", "0xAB"), ("SP", "0x0100")] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(),
+                   "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["run", "--session", sess.to_str().unwrap(),
+               "--firmware", code.to_str().unwrap(), "--base", "0x8000",
+               "--steps", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8004u64);
+    assert_eq!(json["registers"]["A"], 0xABu64);
+}
+
+#[test]
 fn disasm_msp430_extension_words() {
     // MSP430 double-operand instructions carry an extension word for
     // immediate/absolute/indexed operands; disassembly must advance by the

@@ -739,8 +739,16 @@ impl Stm8Core {
             _ if opcode >= 0x10 => {
                 let off = self.fetch8() as u32;
                 let addr = self.sp.wrapping_add(off as u16) as u32;
-                let operand = self.read_u8(addr);
-                self.alu_a_byte(low, operand, addr);
+                if low == 0x7 {
+                    // LD (off8, SP), A: write A to the stack-relative byte.
+                    self.write_u8(addr, self.a);
+                } else if low == 0x6 {
+                    // LD A, (off8, SP): load into A.
+                    self.a = self.read_u8(addr);
+                } else {
+                    let operand = self.read_u8(addr);
+                    self.alu_a_byte(low, operand, addr);
+                }
             }
             // Bit test / unary on (off8,SP) for 0x00-0x0F.
             0x0 | 0x2 | 0x4 | 0x6 | 0x8 | 0xA | 0xC | 0xE => {
@@ -1607,5 +1615,24 @@ mod disasm_tests {
         // RLC (off8, Y) with 0x90 prefix.
         let r = reader(&[0x90, 0x65, 0x10]);
         assert_eq!(disassemble(0, &r), "rlc (0x10, y)");
+    }
+
+    #[test]
+    fn sp_relative_ld() {
+        // 0x16/0x17 are LD A,(off,SP) / LD (off,SP),A.
+        let r = reader(&[0x16, 0x34]);
+        assert_eq!(disassemble(0, &r), "ld a, (0x34, sp)");
+        let r = reader(&[0x17, 0x34]);
+        assert_eq!(disassemble(0, &r), "ld (0x34, sp), a");
+        // Execution: LD (off,SP),A writes A; LD A,(off,SP) reads it back.
+        let mut core = Stm8Core::new();
+        core.load_image(0, &[0x17, 0x34, 0x16, 0x34]);
+        core.sp = 0x100;
+        core.a = 0xAB;
+        core.step(&[]);
+        assert_eq!(core.read_u8(0x100 + 0x34), 0xAB);
+        core.a = 0;
+        core.step(&[]);
+        assert_eq!(core.a, 0xAB);
     }
 }
