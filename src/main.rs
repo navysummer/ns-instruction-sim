@@ -1217,6 +1217,9 @@ struct StateOutput {
     #[serde(rename = "lastResult")]
     last_result: String,
     registers: BTreeMap<String, u32>,
+    /// ARM 指令集状态（仅 ARM；`a32`/`thumb`，其余架构为 null）。
+    #[serde(rename = "armState")]
+    arm_state: Option<String>,
     uart: Vec<u8>,
     #[serde(rename = "uartText")]
     uart_text: String,
@@ -1332,6 +1335,11 @@ fn state_output(sim: &Simulator, result: StepResult, firmware: Option<&FirmwareS
         halted: sim.halted,
         last_result: fmt_step_result(result).to_string(),
         registers,
+        arm_state: if sim.arch == ns_sim::Arch::Arm {
+            Some(if sim.arm_state() { "a32" } else { "thumb" }.to_string())
+        } else {
+            None
+        },
         uart: sim.peripherals.outputs.clone(),
         uart_text: String::from_utf8_lossy(&sim.peripherals.outputs).into_owned(),
         peripherals: peripherals_json(sim),

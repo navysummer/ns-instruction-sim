@@ -388,6 +388,28 @@ fn all_arch_state_works() {
 }
 
 #[test]
+fn state_reports_arm_state() {
+    let dir = tmpdir();
+    // ARM state defaults to Thumb (Cortex-M); the field must be reported so
+    // external callers can pick the right disassembly mode.
+    let out = Command::new(bin())
+        .args(["state", "--arch", "arm", "--session", dir.join("arm-state.json").to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["armState"], "thumb");
+    // Non-ARM architectures report null.
+    let out = Command::new(bin())
+        .args(["state", "--arch", "riscv", "--session", dir.join("rv-state.json").to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["armState"].is_null());
+}
+
+#[test]
 fn all_arch_core_operations() {
     let dir = tmpdir();
     for arch in ["riscv", "arm", "mcs51", "mcs251", "c166", "xtensa", "avr", "msp430", "v850", "stm8", "rx", "rl78"] {

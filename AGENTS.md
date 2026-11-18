@@ -133,7 +133,8 @@ ns-instruction-sim/
 
 1. **人类可读**（默认）：表格/文本，适合终端交互。
 2. **机器可读**（`--json`）：稳定字段的 JSON 对象（`arch`、`pc`、`cycleCount`、`halted`、
-   `lastResult`、`registers`、`uartText`、`uart`、`peripherals`（UART/GPIO/定时器/看门狗/中断/`externalRegs`）、
+   `lastResult`、`registers`、`armState`（仅 ARM，`a32`/`thumb`，其余架构 null）、`uartText`、`uart`、
+   `peripherals`（UART/GPIO/定时器/看门狗/中断/`externalRegs`）、
    `csr`（mstatus/mtvec/mepc/mcause/mie/mhartid）、`breakpoints`（地址/条件/命中次数/一次性/启用状态/实际命中）、
    `firmware`（path/base/format，无则 null）、`pcSymbol`（最近 ELF 符号 name/address/size，无则 null）），
    字段名不随版本随意变动。
@@ -242,6 +243,8 @@ done
 - `reset_json`：`reset --json` 输出 PC/周期/停止 JSON。
 - `reset_default_goes_to_entry`：`reset` 不带 `--entry` 回固件/架构入口（非当前 PC）。
 - `state_includes_peripherals_and_csr`：`state --json` 含外设与 CSR 完整快照。
+- `state_reports_arm_state`：`state --json` 报告 ARM 指令集状态（`armState`=`a32`/`thumb`，
+  其余架构为 null），供外部选择正确的反汇编模式。
 - `version_command_and_flag`：`version` 子命令（含 `--json`）与 `--version` 均输出版本号。
 - `mem_write_read_arm_roundtrip`：非 RISC-V（ARM）内存写跨会话持久化。
 - `periph_config_relocates_bases`：外设 UART/GPIO 基址重定位并持久化。
