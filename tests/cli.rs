@@ -1776,6 +1776,7 @@ fn disasm_a32_operand2_shifts() {
         0x10, 0x01, 0x90, 0xE7, // ldr r0, [r0, r0, lsl r1]
         0x01, 0x02, 0xA0, 0xE1, // mov r0, r1, lsl #4
         0x61, 0x00, 0xA0, 0xE1, // mov r0, r1, rrx
+        0x91, 0x02, 0x03, 0xE0, // mul r3, r1, r2
     ];
     std::fs::write(&binfile, bytes).unwrap();
     Command::new(bin())
@@ -1783,7 +1784,7 @@ fn disasm_a32_operand2_shifts() {
         .output()
         .unwrap();
     let out = Command::new(bin())
-        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "4", "--arm-state", "a32"])
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "5", "--arm-state", "a32"])
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -1793,6 +1794,7 @@ fn disasm_a32_operand2_shifts() {
         "0x00000004: ldr r0, [r0, r0, lsl r1]",
         "0x00000008: mov r0, r1, lsl #4",
         "0x0000000c: mov r0, r1, rrx",
+        "0x00000010: mul r3, r1, r2",
     ] {
         assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
     }

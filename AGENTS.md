@@ -380,6 +380,9 @@ done
   `ArmCore::arm_operand2` 解码 LSL/LSR/ASR/ROR 立即、RRX 与寄存器指定位移（原仅显示
   `lsl #imm` 且忽略移位类型与寄存器移位）；半字/有符号传送（LDRH/LDRSB/LDRSH/STRH）
   现区分立即与寄存器偏移（原把寄存器偏移当作立即）。
+  A32 `MUL/MLA` 的目标寄存器现取 bits19-16（原误用 bits15-12，把 `mul r3,...`
+  显示成 `mul r0,...`），由 `disassembles_a32_operand2_shifts`/`disasm_a32_operand2_shifts`
+  用例锁定。
   RL78 反汇编同时镜像核心 `execute_61` 的 `op & 0xF8` 低组优先分发（`0x61 0x59` 等被寄存器-
   寄存器家族捕获为 `and a, A`，`0x61 0xAA`/`0xAB` 经 `0xA8` 家族路由为 `mov a, ES:[imm16]`），
   与核心执行语义逐字节一致。

@@ -3682,6 +3682,8 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     // Multiply / multiply-accumulate.
     if insn & 0x0FC0_00F0 == 0x0000_0090 {
         let acc = insn & (1 << 21) != 0;
+        let rd = ((insn >> 16) & 0x0F) as usize;
+        let rn = ((insn >> 12) & 0x0F) as usize;
         let rs = ((insn >> 8) & 0x0F) as usize;
         if acc {
             return format!("mla{cc} {}, {}, {}, {}", rname(rd), rname(rm), rname(rs), rname(rn));
@@ -5603,6 +5605,8 @@ mod tests {
             // Halfword / signed transfer: immediate vs register offset.
             (0xE1D1_00B2, "ldrh r0, [r1, #2]"),
             (0xE191_00B2, "ldrh r0, [r1, r2]"),
+            // Multiply destination is bits 19-16, not bits 15-12.
+            (0xE003_0291, "mul r3, r1, r2"),
         ];
         for (insn, expected) in cases {
             let bytes = insn.to_le_bytes();
