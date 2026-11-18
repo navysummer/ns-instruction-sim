@@ -482,6 +482,9 @@ impl ArmCore {
                             self.set_add_carry(self.regs[rd_high], self.regs[rm_high], true);
                             let r = self.regs[rd_high].wrapping_sub(self.regs[rm_high]);
                             self.set_nz(r);
+                            // CMP (register) updates N, Z, C and V; the
+                            // high-register form has the same semantics.
+                            self.set_add_sub_v(self.regs[rd_high], self.regs[rm_high], r, true);
                         }
                         2 => {
                             self.regs[rd_high] = self.regs[rm_high];
@@ -1769,6 +1772,28 @@ mod tests {
         assert_eq!(c.regs[0], 0x7FFF_FFFF);
         assert!(c.flag_v());
         assert!(!c.flag_n() && !c.flag_z());
+    }
+
+    #[test]
+    fn thumb1_high_cmp_sets_v_flag() {
+        // High-register CMP r0, r1 (0x4508) updates N, Z, C and V.
+        // 0x80000000 - 1 = 0x7FFFFFFF: overflow (negative minus positive).
+        let mut c = core();
+        c.regs[0] = 0x8000_0000;
+        c.regs[1] = 1;
+        run(&mut c, &[0x4508], 1);
+        assert!(c.flag_v());
+        assert!(!c.flag_n() && !c.flag_z());
+        assert!(c.flag_c()); // no borrow: 0x80000000 >= 1.
+
+        // Non-overflowing subtraction leaves V clear.
+        let mut c = core();
+        c.regs[0] = 5;
+        c.regs[1] = 3;
+        run(&mut c, &[0x4508], 1);
+        assert!(!c.flag_v());
+        assert!(!c.flag_n() && !c.flag_z());
+        assert!(c.flag_c());
     }
 
     #[test]

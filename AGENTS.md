@@ -270,6 +270,9 @@ done
 - `run_arm_thumb1_branch_target`：端到端分两次 `step --session`（跨会话保存/恢复）执行
   `movs r0,#0`（置 Z）后 `beq +2`（0xD001）命中，PC 停在 0x08000018（架构 PC = 当前 +4 基址），
   锁定 Thumb-1 分支目标基址与 ARM 条件标志（xPSR）跨会话持久化。
+- `run_arm_thumb1_high_cmp_v_flag`：端到端分三次 `step --session` 执行 `cmp r0,r1`（0x4508，
+  0x80000000 - 1 溢出）后 `bvs +2`（0xD601）命中，PC 停在 0x0800001a 且 r2=2，
+  锁定高寄存器 CMP 更新 V 标志（原不更新，使 `VS/VC` 有符号条件分支失效）。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -417,6 +420,9 @@ done
   保存/恢复（`Session::capture`/`apply` 新增 `arm_xpsr`/`arm_arm_state` 字段），使
   `step --session` 分次调用仍能正确评估条件分支；由 CLI `run_arm_thumb1_branch_target`
   锁定。
+  Thumb-1 高寄存器 `CMP rD,rM`（`0x4500-0x45FF`）现更新溢出标志 V（原只更新 N/Z/C），
+  与 A32/Thumb `CMP` 的 N/Z/C/V 语义一致；由 ns-sim 单测 `thumb1_high_cmp_sets_v_flag`
+  与 CLI `run_arm_thumb1_high_cmp_v_flag` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

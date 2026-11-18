@@ -1881,6 +1881,60 @@ fn run_arm_thumb1_branch_target() {
 }
 
 #[test]
+fn run_arm_thumb1_high_cmp_v_flag() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-high-cmp.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // cmp r0, r1 (0x4508); bvs +2 (0xD601); movs r2,#1 (0x2201);
+    // movs r2,#3 (0x2203); movs r2,#2 (0x2202).
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes", "0x08", "0x45", "0x01", "0xD6",
+               "0x01", "0x22", "0x03", "0x22", "0x02", "0x22"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // 0x80000000 - 1 = 0x7FFFFFFF overflows → CMP r0,r1 sets V.
+    for (name, value) in [("r0", "0x80000000"), ("r1", "1")] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    // Step 1: cmp r0, r1 (sets V). Step 2: bvs taken → PC = 0x08000018.
+    // Step 3: movs r2, #2 at the target → r2 = 2.
+    for _ in 0..3 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    // bvs taken → the fallthrough movs r2,#1 was skipped; r2 = 2 at the target.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_001au64);
+    assert_eq!(json["registers"]["r2"], 2);
+}
+
+#[test]
 fn disasm_thumb2_ldrh_strh_barriers() {
     let dir = tmpdir();
     let binfile = dir.join("thumb2-wide.bin");
