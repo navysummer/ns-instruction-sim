@@ -2227,6 +2227,68 @@ fn run_arm_thumb2_div_load_literal_and_ldm() {
 }
 
 #[test]
+fn run_arm_thumb2_data_processing_register() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-t2dp.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: add.w r3,r1,r2; and.w r4,r3,r5; cmp.w r0,r1; mov.w r6,r7.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x01", "0xEB", "0x02", "0x03",
+               "0x03", "0xEA", "0x05", "0x04",
+               "0xB0", "0xEB", "0x01", "0x0F",
+               "0x4F", "0xEA", "0x06", "0x07"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [
+        ("r1", "0x00000005"), ("r2", "0x00000007"),
+        ("r5", "0x0000000E"), ("r0", "0x00000009"),
+        ("r7", "0x00001234"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..4 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0020u64);
+    assert_eq!(json["registers"]["r3"], 12u64);           // add.w 5 + 7
+    assert_eq!(json["registers"]["r4"], 12u64);           // and.w 12 & 14
+    assert_eq!(json["registers"]["r6"], 0x1234u64);       // mov.w r6, r7
+    // cmp.w r0, r1 (9 - 5): C set, N/Z clear.
+    let xpsr = json["armXpsr"].as_u64().unwrap();
+    assert_eq!(xpsr & 0x2000_0000u64, 0x2000_0000u64);
+    assert_eq!(xpsr & 0x8000_0000u64, 0u64);
+}
+
+#[test]
 fn disasm_thumb2_ldrh_strh_barriers() {
     let dir = tmpdir();
     let binfile = dir.join("thumb2-wide.bin");

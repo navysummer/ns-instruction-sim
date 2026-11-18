@@ -3741,6 +3741,68 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("clz r{rd}, r{rm}");
     }
 
+    // Data processing (register): AND/BIC/ORR/ORN/EOR/ADD/ADC/SBC/SUB/RSB plus
+    // MOV/MVN/TST/TEQ/CMP/CMN. Bits 15-9 = 1110101.
+    if first & 0xFE00 == 0xEA00 {
+        let op = (((first >> 8) & 1) << 3) | ((first >> 5) & 0x7);
+        let set_flags = first & 0x0010 != 0;
+        let rn = (first & 0x0F) as usize;
+        // MOV/MVN (ORR/ORN with Rn=PC) place Rd in bits 3-0 and Rm in bits
+        // 11-8, the reverse of the general data-processing layout.
+        let (rd, rm) = if rn == 0xF && (op == 2 || op == 3) {
+            ((second & 0x0F) as usize, ((second >> 8) & 0x0F) as usize)
+        } else {
+            (((second >> 8) & 0x0F) as usize, (second & 0x0F) as usize)
+        };
+        let imm2 = (second >> 6) & 0x03;
+        let shift_type = (second >> 4) & 0x03;
+        let shift_name = match shift_type {
+            0 => "lsl",
+            1 => "lsr",
+            2 => "asr",
+            _ => "ror",
+        };
+        let shift = match (shift_type, imm2) {
+            (0, 0) => String::new(),
+            (1, 0) => format!(", {shift_name} #32"),
+            (2, 0) => format!(", {shift_name} #32"),
+            (3, 0) => ", rrx".to_string(),
+            (_, a) => format!(", {shift_name} #{a}"),
+        };
+        let rd_name = format!("r{rd}");
+        let mnem = match op {
+            0 if set_flags && rd == 0xF => "tst",
+            4 if set_flags && rd == 0xF => "teq",
+            8 if set_flags && rd == 0xF => "cmn",
+            13 if set_flags && rd == 0xF => "cmp",
+            2 if rn == 0xF => "mov",
+            3 if rn == 0xF => "mvn",
+            0 => "and",
+            1 => "bic",
+            2 => "orr",
+            3 => "orn",
+            4 => "eor",
+            8 => "add",
+            10 => "adc",
+            11 => "sbc",
+            13 => "sub",
+            14 => "rsb",
+            _ => return format!(".word 0x{:08x}", ((first as u32) << 16) | second as u32),
+        };
+        let s = if set_flags { "s" } else { "" };
+        return match mnem {
+            "tst" | "teq" | "cmn" | "cmp" => {
+                format!("{mnem} r{rn}, r{rm}{shift}")
+            }
+            "mov" | "mvn" => {
+                format!("{mnem}{s} {rd_name}, r{rm}{shift}")
+            }
+            _ => {
+                format!("{mnem}{s} {rd_name}, r{rn}, r{rm}{shift}")
+            }
+        };
+    }
+
     let _ = read;
     format!(".word 0x{insn:08x}")
 }

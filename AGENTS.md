@@ -295,6 +295,10 @@ done
   `sdiv r3,r4,r5`（0xFB94F5F3，-7/2=-3）、`ldmia.w r6!,{r7,r8}`（0xE8B68001，
   r6 写回 0x20000018）、`udiv r9,r10,r11`（0xFBBAFBF9，0x10000/3=0x5555），
   锁定 Thumb-2 寄存器偏移存取、有/无符号除法与 LDM/STM 宽格式写回。
+- `run_arm_thumb2_data_processing_register`：端到端分四次 `step --session` 执行
+  `add.w r3,r1,r2`（0xEB010203，5+7=12）、`and.w r4,r3,r5`（0xEA030504，12&14=12）、
+  `cmp.w r0,r1`（0xEBB00F01，9-5 置 C 清 N/Z）、`mov.w r6,r7`（0xEA4F0607，r6=0x1234），
+  `state --json` 校验寄存器与 `armXpsr` 标志，锁定 Thumb-2 数据处理（寄存器）执行。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -479,6 +483,15 @@ done
   L=bit4）现按 IA/IB/DA/DB 全部寻址方式执行并写回基址（载入时基址在列表中则写回被
   载入值覆盖）。由 ns-sim 单测 `thumb2_ldr_str_register_offset`/`thumb2_ldr_literal`/
   `thumb2_sdiv_udiv`/`thumb2_ldm_stm_multiple` 与 CLI `run_arm_thumb2_div_load_literal_and_ldm`
+  锁定。
+  Thumb-2 数据处理（寄存器，bits15-9 = `1110101`）现按 `op = bit8<<3 | bits7-5` 分发执行
+  AND/BIC/ORR/ORN/EOR/ADD/ADC/SBC/SUB/RSB，S=bit4 更新 N/Z/C/V（逻辑运算 C 取自移位器、
+  V 不变；加减运算按 ARM 进位/溢出语义）；`Rn=PC` 的 ORR/ORN 即 MOV/MVN（其 Rd 在
+  bits3-0、Rm 在 bits11-8，与一般布局相反）；`S=1 且 Rd=PC` 的 AND/EOR/ADD/SUB 即
+  TST/TEQ/CMN/CMP（只置标志不写回）；移位器支持 LSL/LSR/ASR #imm2（imm2=0 时 LSR/ASR
+  取 #32）与 ROR #imm2（imm2=0 即 RRX）。由 ns-sim 单测
+  `thumb2_data_processing_register`/`thumb2_mov_mvn_compare`/
+  `thumb2_data_processing_shifted_register` 与 CLI `run_arm_thumb2_data_processing_register`
   锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。

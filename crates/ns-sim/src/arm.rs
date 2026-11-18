@@ -1206,6 +1206,13 @@ impl ArmCore {
             return;
         }
 
+        // Data processing (register): AND/BIC/ORR/ORN/EOR/ADD/ADC/SBC/SUB/RSB
+        // plus MOV/MVN/TST/TEQ/CMP/CMN. Bits 15-9 = 1110101.
+        if first & 0xFE00 == 0xEA00 {
+            self.thumb2_data_processing(first, second, pc);
+            return;
+        }
+
         self.halted = true;
     }
 }
@@ -1570,6 +1577,148 @@ impl ArmCore {
                 self.branch_exchange_value(result);
             } else {
                 self.regs[rd] = result;
+            }
+        }
+    }
+
+    /// Execute a Thumb-2 data-processing (register) instruction. `first` and
+    /// `second` are the two halfwords of the 32-bit encoding; `pc` is the
+    /// architectural PC (current instruction + 4) already advanced by `step`.
+    fn thumb2_data_processing(&mut self, first: u16, second: u16, pc: u32) {
+        // op = (bit8 << 3) | bits7-5; bit4 = S; bits3-0 = Rn.
+        let op = (((first >> 8) & 1) << 3) | ((first >> 5) & 0x7);
+        let set_flags = first & 0x0010 != 0;
+        let rn = (first & 0x0F) as usize;
+        // MOV/MVN (ORR/ORN with Rn=PC) place Rd in bits 3-0 and Rm in bits
+        // 11-8, which is the reverse of the general data-processing layout.
+        let is_mov = op == 2 && rn == PC;
+        let is_mvn = op == 3 && rn == PC;
+        let (rd, rm) = if is_mov || is_mvn {
+            ((second & 0x0F) as usize, ((second >> 8) & 0x0F) as usize)
+        } else {
+            (((second >> 8) & 0x0F) as usize, (second & 0x0F) as usize)
+        };
+        let imm2 = ((second >> 6) & 0x03) as u32;
+        let shift_type = ((second >> 4) & 0x03) as u32;
+        // PC operand (Rn) reads as Align(PC, 4).
+        let pc_val = pc & !3;
+        let rn_val = if rn == PC { pc_val } else { self.regs[rn] };
+        let rm_val = if rm == PC { pc_val } else { self.regs[rm] };
+        let (b, shifter_carry) = self.thumb_shifted(rm_val, imm2, shift_type);
+        // TST/TEQ/CMP/CMN are the op with S=1 and Rd=PC (0xF); MOV/MVN are
+        // ORR/ORN with Rn=PC.
+        let is_compare = set_flags && rd == PC && matches!(op, 0 | 4 | 8 | 13);
+        let result = match op {
+            0 => rn_val & b,       // AND
+            1 => rn_val & !b,      // BIC
+            2 if is_mov => b,      // MOV
+            2 => rn_val | b,       // ORR
+            3 if is_mvn => !b,     // MVN
+            3 => !rn_val | b,      // ORN
+            4 => rn_val ^ b,       // EOR
+            8 | 10 => {
+                let (r, _, _) = if op == 8 {
+                    Self::arm_add(rn_val, b, false)
+                } else {
+                    Self::arm_add(rn_val, b, self.flag_c())
+                };
+                r
+            }
+            11 | 13 => {
+                let (r, _, _) = if op == 11 {
+                    Self::arm_sub(rn_val, b, self.flag_c())
+                } else {
+                    Self::arm_sub(rn_val, b, true)
+                };
+                r
+            }
+            14 => {
+                let (r, _, _) = Self::arm_sub(b, rn_val, true);
+                r
+            }
+            _ => {
+                self.halted = true;
+                return;
+            }
+        };
+        let (n, z, c, v) = match op {
+            0 | 1 | 2 | 3 | 4 => {
+                // Logical: N/Z from result, C from shifter, V unchanged.
+                (result & 0x8000_0000 != 0, result == 0, shifter_carry, self.flag_v())
+            }
+            8 | 10 => {
+                let (r, c, v) = if op == 8 {
+                    Self::arm_add(rn_val, b, false)
+                } else {
+                    Self::arm_add(rn_val, b, self.flag_c())
+                };
+                (r & 0x8000_0000 != 0, r == 0, c, v)
+            }
+            11 | 13 => {
+                let (r, c, v) = if op == 11 {
+                    Self::arm_sub(rn_val, b, self.flag_c())
+                } else {
+                    Self::arm_sub(rn_val, b, true)
+                };
+                (r & 0x8000_0000 != 0, r == 0, c, v)
+            }
+            14 => {
+                let (r, c, v) = Self::arm_sub(b, rn_val, true);
+                (r & 0x8000_0000 != 0, r == 0, c, v)
+            }
+            _ => (self.flag_n(), self.flag_z(), self.flag_c(), self.flag_v()),
+        };
+        if is_compare || set_flags {
+            self.set_nzcv(n, z, c, v);
+        }
+        if !is_compare {
+            if rd == PC {
+                self.branch_exchange_value(result);
+            } else {
+                self.regs[rd] = result;
+            }
+        }
+    }
+
+    /// Compute the Thumb-2 shifted-register operand (Rm with the shift encoded
+    /// by `imm2`/`shift_type`), returning the shifted value and the shifter
+    /// carry-out. shift_type: 0=LSL, 1=LSR, 2=ASR, 3=ROR (imm2=0 → RRX).
+    fn thumb_shifted(&self, value: u32, imm2: u32, shift_type: u32) -> (u32, bool) {
+        match shift_type {
+            0 => {
+                if imm2 == 0 {
+                    (value, self.flag_c())
+                } else {
+                    (value << imm2, (value >> (32 - imm2)) & 1 != 0)
+                }
+            }
+            1 => {
+                if imm2 == 0 {
+                    (0, value & 0x8000_0000 != 0)
+                } else {
+                    (value >> imm2, (value >> (imm2 - 1)) & 1 != 0)
+                }
+            }
+            2 => {
+                if imm2 == 0 {
+                    (((value as i32) >> 31) as u32, value & 0x8000_0000 != 0)
+                } else {
+                    (
+                        ((value as i32) >> imm2) as u32,
+                        (value >> (imm2 - 1)) & 1 != 0,
+                    )
+                }
+            }
+            _ => {
+                if imm2 == 0 {
+                    let c = self.flag_c();
+                    ((value >> 1) | ((c as u32) << 31), value & 1 != 0)
+                } else {
+                    (
+                        (value >> imm2) | (value << (32 - imm2)),
+                        (value >> (imm2 - 1)) & 1 != 0,
+                    )
+                }
             }
         }
     }
@@ -2388,6 +2537,145 @@ mod tests {
         assert_eq!(c.read_u32(0x1F8), 0x44);
         assert_eq!(c.read_u32(0x1FC), 0x55);
         assert_eq!(c.regs[13], 0x1F8);
+    }
+
+    #[test]
+    fn thumb2_data_processing_register() {
+        // AND r0, r1, r2 (0xEA010002).
+        let mut c = core();
+        c.regs[1] = 0xF0F0;
+        c.regs[2] = 0xFF00;
+        run(&mut c, &[0xEA01, 0x0002], 1);
+        assert_eq!(c.regs[0], 0xF000);
+
+        // ORR r6, r7, r8 (0xEA470608).
+        let mut c = core();
+        c.regs[7] = 0x0F0F;
+        c.regs[8] = 0xF0F0;
+        run(&mut c, &[0xEA47, 0x0608], 1);
+        assert_eq!(c.regs[6], 0xFFFF);
+
+        // EOR r3, r4, r5 (0xEA840305).
+        let mut c = core();
+        c.regs[4] = 0xFFFF;
+        c.regs[5] = 0x00FF;
+        run(&mut c, &[0xEA84, 0x0305], 1);
+        assert_eq!(c.regs[3], 0xFF00);
+
+        // BIC r9, r10, r11 (0xEA2A090B).
+        let mut c = core();
+        c.regs[10] = 0xFFFF;
+        c.regs[11] = 0x00FF;
+        run(&mut c, &[0xEA2A, 0x090B], 1);
+        assert_eq!(c.regs[9], 0xFF00);
+
+        // ADD r3, r4, r5 (0xEB040305).
+        let mut c = core();
+        c.regs[4] = 5;
+        c.regs[5] = 7;
+        run(&mut c, &[0xEB04, 0x0305], 1);
+        assert_eq!(c.regs[3], 12);
+
+        // ADDS r0, r1, r2 (0xEB110002): 0xFFFFFFFF + 1 = 0, C set, Z set.
+        let mut c = core();
+        c.regs[1] = 0xFFFF_FFFF;
+        c.regs[2] = 1;
+        run(&mut c, &[0xEB11, 0x0002], 1);
+        assert_eq!(c.regs[0], 0);
+        assert!(c.flag_z() && c.flag_c() && !c.flag_n() && !c.flag_v());
+
+        // ADC r6, r7, r8 (0xEB470608) with carry in: 5 + 7 + 1 = 13.
+        let mut c = core();
+        c.regs[7] = 5;
+        c.regs[8] = 7;
+        c.set_nzcv(false, false, true, false);
+        run(&mut c, &[0xEB47, 0x0608], 1);
+        assert_eq!(c.regs[6], 13);
+
+        // SUB r0, r1, r2 (0xEBA10002).
+        let mut c = core();
+        c.regs[1] = 10;
+        c.regs[2] = 3;
+        run(&mut c, &[0xEBA1, 0x0002], 1);
+        assert_eq!(c.regs[0], 7);
+
+        // RSB r3, r4, r5 (0xEBC40305): 10 - 3 = 7.
+        let mut c = core();
+        c.regs[4] = 3;
+        c.regs[5] = 10;
+        run(&mut c, &[0xEBC4, 0x0305], 1);
+        assert_eq!(c.regs[3], 7);
+        assert_eq!(c.regs[PC], 4);
+    }
+
+    #[test]
+    fn thumb2_mov_mvn_compare() {
+        // MOV r8, r9 (0xEA4F0908).
+        let mut c = core();
+        c.regs[9] = 0x1234_5678;
+        run(&mut c, &[0xEA4F, 0x0908], 1);
+        assert_eq!(c.regs[8], 0x1234_5678);
+
+        // MVN r10, r11 (0xEA6F0B0A): logical NOT.
+        let mut c = core();
+        c.regs[11] = 0x0000_FFFF;
+        run(&mut c, &[0xEA6F, 0x0B0A], 1);
+        assert_eq!(c.regs[10], 0xFFFF_0000);
+
+        // CMP r0, r1 (0xEBB00F01): 5 - 3, C set, Z clear, N clear.
+        let mut c = core();
+        c.regs[0] = 5;
+        c.regs[1] = 3;
+        run(&mut c, &[0xEBB0, 0x0F01], 1);
+        assert!(c.flag_c() && !c.flag_z() && !c.flag_n());
+        assert_eq!(c.regs[0], 5); // CMP does not write the destination.
+
+        // CMP r0, r1 equal: Z set.
+        let mut c = core();
+        c.regs[0] = 5;
+        c.regs[1] = 5;
+        run(&mut c, &[0xEBB0, 0x0F01], 1);
+        assert!(c.flag_z());
+
+        // TST r2, r3 (0xEA120F03): 0xF & 0xF = 0xF, Z clear.
+        let mut c = core();
+        c.regs[2] = 0xF;
+        c.regs[3] = 0xF;
+        run(&mut c, &[0xEA12, 0x0F03], 1);
+        assert!(!c.flag_z());
+    }
+
+    #[test]
+    fn thumb2_data_processing_shifted_register() {
+        // ADD r2, r3, r4, lsl #3 (0xEB0302C4): 1 + (2 << 3) = 17.
+        let mut c = core();
+        c.regs[3] = 1;
+        c.regs[4] = 2;
+        run(&mut c, &[0xEB03, 0x02C4], 1);
+        assert_eq!(c.regs[2], 17);
+
+        // ADD r2, r3, r4, asr #2 (0xEB0302A4): 0x80000000 >> 2 = 0xE0000000.
+        let mut c = core();
+        c.regs[3] = 0;
+        c.regs[4] = 0x8000_0000;
+        run(&mut c, &[0xEB03, 0x02A4], 1);
+        assert_eq!(c.regs[2], 0xE000_0000);
+
+        // ADD r2, r3, r4, rrx (0xEB030234): RRX of 1 with C=1 → 0x80000000.
+        let mut c = core();
+        c.regs[3] = 0;
+        c.regs[4] = 1;
+        c.set_nzcv(false, false, true, false);
+        run(&mut c, &[0xEB03, 0x0234], 1);
+        assert_eq!(c.regs[2], 0x8000_0000);
+
+        // ADDS r6, r6, r4, lsr #2 (0xEB160694): (0x100 >> 2) = 0x40, Z clear.
+        let mut c = core();
+        c.regs[6] = 0;
+        c.regs[4] = 0x100;
+        run(&mut c, &[0xEB16, 0x0694], 1);
+        assert_eq!(c.regs[6], 0x40);
+        assert!(!c.flag_z());
     }
 
     #[test]
