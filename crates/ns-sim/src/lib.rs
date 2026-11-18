@@ -3713,11 +3713,17 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             (true, _) => "ldrsh",
             (false, _) => "strh",
         };
-        let imm = ((insn >> 4) & 0xF0) | (insn & 0x0F);
         let pre = insn & (1 << 24) != 0;
         let add = insn & (1 << 23) != 0;
         // Positive offsets omit the `+` sign per ARM assembly convention.
-        let off_str = if add { format!("#{imm}") } else { format!("#-{imm}") };
+        let off_str = if insn & (1 << 22) != 0 {
+            let imm = ((insn >> 4) & 0xF0) | (insn & 0x0F);
+            if add { format!("#{imm}") } else { format!("#-{imm}") }
+        } else if add {
+            rname((insn & 0x0F) as usize)
+        } else {
+            format!("-{}", rname((insn & 0x0F) as usize))
+        };
         if pre {
             return format!("{mnem}{cc} {}, [{}, {off_str}]", rname(rd), rname(rn));
         }
@@ -5594,6 +5600,9 @@ mod tests {
             (0xE1A0_0201, "mov r0, r1, lsl #4"),
             (0xE1A0_0661, "mov r0, r1, ror #12"),
             (0xE1A0_0061, "mov r0, r1, rrx"),
+            // Halfword / signed transfer: immediate vs register offset.
+            (0xE1D1_00B2, "ldrh r0, [r1, #2]"),
+            (0xE191_00B2, "ldrh r0, [r1, r2]"),
         ];
         for (insn, expected) in cases {
             let bytes = insn.to_le_bytes();
