@@ -636,7 +636,20 @@ impl Stm8Core {
         loop {
             let b = self.fetch8();
             match b {
-                0x90 | 0x91 | 0x92 | 0x72 => prefixes.push(b),
+                0x91 | 0x92 | 0x72 => prefixes.push(b),
+                0x90 => {
+                    // `0x90` is both the Y-index prefix and the standalone
+                    // `LDW Y,X` instruction. It stays a prefix only when the
+                    // next byte is another prefix or an opcode that actually
+                    // has a Y form; otherwise it is the standalone load.
+                    let next = self.read_u8(self.pc);
+                    if is_stm8_prefix(next) || stm8_y_prefix_applies(next) {
+                        prefixes.push(b);
+                    } else {
+                        opcode = 0x90;
+                        break;
+                    }
+                }
                 other => {
                     opcode = other;
                     break;
@@ -1159,6 +1172,28 @@ fn prefix_key(has_72: bool, has_90: bool, has_91: bool, has_92: bool) -> u8 {
     }
 }
 
+/// Whether `b` is an STM8 prefix byte (`0x90`/`0x91`/`0x92`/`0x72`).
+fn is_stm8_prefix(b: u8) -> bool {
+    matches!(b, 0x90 | 0x91 | 0x92 | 0x72)
+}
+
+/// Whether `opcode` has a Y-index form that the `0x90` prefix selects.
+///
+/// `0x90` is both the Y-index prefix and the standalone `LDW Y,X`. It is only
+/// a prefix when the following opcode actually has a Y form; otherwise it
+/// decodes as the standalone load and the following byte starts a new
+/// instruction. The set mirrors the addressing forms the core decodes:
+/// unary `(off8,Y)`/`(Y)` (`0x60-0x7F`), the inherent X/Y-select group
+/// (`0x94-0x97`/`0x9E-0x9F`) and the ALU indexed-Y family (`0xD0-0xFF`).
+fn stm8_y_prefix_applies(opcode: u8) -> bool {
+    match opcode {
+        0x60..=0x7F => true,
+        0x94..=0x97 | 0x9E..=0x9F => true,
+        0xD0..=0xFF => true,
+        _ => false,
+    }
+}
+
 /// Decode the ALU addressing mode selected by the high nibble and prefix,
 /// matching `Stm8Core::decode_alu_target`.
 fn alu_target(pk: u8, high: u8) -> Target {
@@ -1251,9 +1286,17 @@ pub fn instruction_len(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
     loop {
         match read(pc.wrapping_add(off)) {
             0x72 => has_72 = true,
-            0x90 => has_90 = true,
             0x91 => has_91 = true,
             0x92 => has_92 = true,
+            0x90 => {
+                let next = read(pc.wrapping_add(off + 1));
+                if is_stm8_prefix(next) || stm8_y_prefix_applies(next) {
+                    has_90 = true;
+                } else {
+                    // Standalone `LDW Y,X`: one byte, no operand.
+                    return off + 1;
+                }
+            }
             opcode => {
                 let pk = prefix_key(has_72, has_90, has_91, has_92);
                 return off + 1 + operand_len(opcode, pk);
@@ -1377,6 +1420,7 @@ fn decode_inherent(opcode: u8, pk: u8, base: u32, read: &dyn Fn(u32) -> u8) -> S
         0x8D => format!("callf 0x{:06x}", rd24(base, read)),
         0x8E => "halt".to_string(),
         0x8F => "wfi".to_string(),
+        0x90 => "ldw y, x".to_string(),
         0x93 => "ldw x, y".to_string(),
         0x94 => {
             if has_90 {
@@ -1520,9 +1564,18 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     loop {
         match read(pc.wrapping_add(off)) {
             0x72 => has_72 = true,
-            0x90 => has_90 = true,
             0x91 => has_91 = true,
             0x92 => has_92 = true,
+            0x90 => {
+                let next = read(pc.wrapping_add(off + 1));
+                if is_stm8_prefix(next) || stm8_y_prefix_applies(next) {
+                    has_90 = true;
+                } else {
+                    let pk = prefix_key(has_72, false, has_91, has_92);
+                    let base = pc.wrapping_add(off + 1);
+                    return decode_opcode(0x90, pk, base, pc, off, read);
+                }
+            }
             opcode => {
                 let pk = prefix_key(has_72, has_90, has_91, has_92);
                 let base = pc.wrapping_add(off + 1);
@@ -1634,5 +1687,43 @@ mod disasm_tests {
         core.a = 0;
         core.step(&[]);
         assert_eq!(core.a, 0xAB);
+    }
+
+    #[test]
+    fn standalone_90_is_ldw_y_x() {
+        // A bare 0x90 (or one followed by an opcode without a Y form) is the
+        // single-byte `LDW Y,X`, not a prefix.
+        let r = reader(&[0x90]);
+        assert_eq!(disassemble(0, &r), "ldw y, x");
+        let r = reader(&[0x90, 0x9D]);
+        assert_eq!(disassemble(0, &r), "ldw y, x");
+        // NEG addr8 (0x34) has no Y form, so 0x90 stays the standalone load.
+        let r = reader(&[0x90, 0x34, 0x12]);
+        assert_eq!(disassemble(0, &r), "ldw y, x");
+        // Two consecutive 0x90 bytes are two standalone loads.
+        let r = reader(&[0x90, 0x90]);
+        assert_eq!(disassemble(0, &r), "ldw y, x");
+        // A 0x90 followed by a Y-form opcode remains the prefix.
+        let r = reader(&[0x90, 0x65, 0x10]);
+        assert_eq!(disassemble(0, &r), "rlc (0x10, y)");
+        // Instruction lengths: standalone 0x90 is one byte.
+        let r = reader(&[0x90, 0x34, 0x12]);
+        assert_eq!(instruction_len(0, &r), 1);
+        let r = reader(&[0x90, 0x65, 0x10]);
+        assert_eq!(instruction_len(0, &r), 3);
+    }
+
+    #[test]
+    fn executes_standalone_90_then_next() {
+        // LDW Y,X (0x90) followed by NOP (0x9D): two steps.
+        let mut core = Stm8Core::new();
+        core.load_image(0, &[0x90, 0x9D]);
+        core.x = 0x1234;
+        core.y = 0;
+        core.step(&[]);
+        assert_eq!(core.y, 0x1234, "0x90 loads Y from X");
+        assert_eq!(core.pc, 1);
+        core.step(&[]);
+        assert_eq!(core.pc, 2, "NOP follows the standalone load");
     }
 }

@@ -3051,6 +3051,39 @@ fn disasm_stm8_variable_width() {
 }
 
 #[test]
+fn disasm_stm8_standalone_90() {
+    // A bare 0x90 (or one followed by an opcode without a Y form) is the
+    // single-byte `LDW Y,X`, not a prefix: the disassembler must advance by
+    // one byte and decode the following instruction separately.
+    let dir = tmpdir();
+    let sess = dir.join("stm890.json");
+    let code = dir.join("stm890.bin");
+    // ldw y, x (1), nop (1), ldw y, x (1), sla 0x12 (2).
+    std::fs::write(&code, [0x90, 0x9D, 0x90, 0x34, 0x12]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "stm8", "--firmware", code.to_str().unwrap(), "--base", "0x8000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0x8000", "--count", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000u64);
+    assert_eq!(json[0]["text"], "ldw y, x");
+    assert_eq!(json[1]["address"], 0x8001u64);
+    assert_eq!(json[1]["text"], "nop");
+    assert_eq!(json[2]["address"], 0x8002u64);
+    assert_eq!(json[2]["text"], "ldw y, x");
+    assert_eq!(json[3]["address"], 0x8003u64);
+    assert_eq!(json[3]["text"], "sla 0x12");
+}
+
+#[test]
 fn stm8_step_over_and_step_out_use_call_width() {
     // STM8 `call addr16` is 3 bytes: step-over runs the call and stops at the
     // caller's next instruction (pc+3). `ret` is recognized by step-out.
