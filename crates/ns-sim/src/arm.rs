@@ -928,7 +928,7 @@ impl ArmCore {
         }
 
         // Memory barriers DMB/DSB/ISB (0xF3BF 0x8F5F/8F6F/8F7F): no-ops here.
-        if first == 0xF3BF && second & 0xFFF0 == 0x8F50 {
+        if first == 0xF3BF && second & 0xFFF0 >= 0x8F50 && second & 0xFFF0 <= 0x8F70 {
             return;
         }
 
@@ -1677,6 +1677,44 @@ mod tests {
         assert_eq!(r, ArmStep::Advanced);
         assert_eq!(c.regs[LR], 4);
         assert_eq!(c.regs[PC], 4);
+    }
+
+    #[test]
+    fn execute_wide_ldrh_strh_and_barriers() {
+        // LDRH r0, [r0, #0x0] (0xF8B00000).
+        let mut c = core();
+        c.write_u16(0, 0xF8B0);
+        c.write_u16(2, 0x0000);
+        c.regs[PC] = 0;
+        c.regs[0] = 0x1000;
+        c.write_u16(0x1000, 0xABCD);
+        c.set_thumb(true);
+        assert_eq!(c.step(&[]), ArmStep::Advanced);
+        assert_eq!(c.regs[0], 0xABCD);
+        assert_eq!(c.regs[PC], 4);
+
+        // STRH r1, [r0, #0x0] (0xF8A01000): stores the low halfword.
+        let mut c = core();
+        c.write_u16(0, 0xF8A0);
+        c.write_u16(2, 0x1000);
+        c.regs[PC] = 0;
+        c.regs[0] = 0x1000;
+        c.regs[1] = 0xABCD_EF01;
+        c.set_thumb(true);
+        assert_eq!(c.step(&[]), ArmStep::Advanced);
+        assert_eq!(c.read_u16(0x1000), 0xEF01);
+        assert_eq!(c.regs[PC], 4);
+
+        // DMB/DSB/ISB (0xF3BF 0x8F5F/8F6F/8F7F) are no-ops, not halts.
+        for second in [0x8F5Fu16, 0x8F6F, 0x8F7F] {
+            let mut c = core();
+            c.write_u16(0, 0xF3BF);
+            c.write_u16(2, second);
+            c.regs[PC] = 0;
+            c.set_thumb(true);
+            assert_eq!(c.step(&[]), ArmStep::Advanced, "barrier {second:#06x}");
+            assert_eq!(c.regs[PC], 4);
+        }
     }
 
     #[test]

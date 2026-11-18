@@ -1730,6 +1730,41 @@ fn run_arm_thumb1_field_extraction() {
 }
 
 #[test]
+fn disasm_thumb2_ldrh_strh_barriers() {
+    let dir = tmpdir();
+    let binfile = dir.join("thumb2-wide.bin");
+    let sess = dir.join("thumb2-wide.json");
+    // STRH/LDRH immediate and DMB/DSB/ISB barrier forms the core executes.
+    let bytes: &[u8] = &[
+        0xA0, 0xF8, 0x00, 0x00, // strh r0, [r0, #0x0]
+        0xB0, 0xF8, 0x00, 0x00, // ldrh r0, [r0, #0x0]
+        0xBF, 0xF3, 0x5F, 0x8F, // dmb sy
+        0xBF, 0xF3, 0x6F, 0x8F, // dsb sy
+        0xBF, 0xF3, 0x7F, 0x8F, // isb sy
+    ];
+    std::fs::write(&binfile, bytes).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "5", "--arm-state", "thumb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "0x00000000: strh r0, [r0, #0x0]",
+        "0x00000004: ldrh r0, [r0, #0x0]",
+        "0x00000008: dmb sy",
+        "0x0000000c: dsb sy",
+        "0x00000010: isb sy",
+    ] {
+        assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
+    }
+}
+
+#[test]
 fn disasm_source_annotates_lines() {
     let dir = tmpdir();
     let sess = dir.join("dsrc.json");

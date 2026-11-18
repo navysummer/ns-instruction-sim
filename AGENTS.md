@@ -250,6 +250,8 @@ done
 - `disasm_thumb_full_families`：Thumb-1/Thumb-2 全家族反汇编镜像执行内核（LSL/ADD/MOV/CMP/SUB
   imm、PC-rel LDR、寄存器偏移 LDRH、字/字节/半字立即、SP 相对、PUSH/POP、LDMIA、SVC、条件/无条件分支、
   BL、MOVW、ADDW、LDR/STR/LDRB/STRB 立即），并校验按编码实际宽度推进。
+- `disasm_thumb2_ldrh_strh_barriers`：Thumb-2 `LDRH/STRH` 立即与 `DMB/DSB/ISB` 屏障反汇编，
+  校验宽度与助记符。
 - `run_arm_thumb1_field_extraction`：端到端执行 Thumb-1 `LSL`/`SUBS reg`/`SUBS imm3`，
   校验内核按编码提取 Rn/Rm/Rd（`lsls r0,r1,#5`→r0=0x400、`subs r0,r2,r1`→r0=5-32、
   `subs r0,r2,#3`→r0=2），锁定格式 0/1 字段提取修复。
@@ -357,8 +359,10 @@ done
   `disasm_mcs51_ajmp_acall_addr11`/`disasm_avr_muls_lpm_spm_push` 锁定。
   ARM Thumb 全家族（Thumb-1/Thumb-2）另由 ns-sim 单测 `disassembles_thumb_full_families`/
   `disassembles_thumb2_wide_forms` 锁定：Thumb-1 覆盖执行内核全部 16 位家族，Thumb-2 覆盖
-  BL/BLX、MOVW/MOVT、ADDW/SUBW、LDR/STR/LDRB/STRB 12 位立即；`b`（0xE001）与 `bl 0x28`
-  （0xF000D000）分别按 2/4 字节推进。
+  BL/BLX、MOVW/MOVT、ADDW/SUBW、LDR/STR/LDRB/STRB/LDRH/STRH 12 位立即与 DMB/DSB/ISB
+  内存屏障；`b`（0xE001）与 `bl 0x28`（0xF000D000）分别按 2/4 字节推进。屏障（0xF3BF
+  0x8F5F/8F6F/8F7F）在执行内核中为 no-op（原仅 DMB 被识别，DSB/ISB 会误 halt），
+  由 ns-sim 单测 `execute_wide_ldrh_strh_and_barriers` 与 CLI `disasm_thumb2_ldrh_strh_barriers` 锁定。
   Thumb-1 执行内核的字段提取同步修复为与编码一致：格式 0 取 Rm=bits5-3（bit6 属移位量）、
   格式 1 以 bit9 选 SUB/bit10 选立即且 Rn=bits5-3/Rm=bits8-6、格式 4 ALU 取 Rm=bits5-3、
   格式 5 取 Rn=bits5-3/Rm=bits8-6、格式 9/0xA 取 Rd=bits10-8、格式 0xC 取 Rn=bits10-8

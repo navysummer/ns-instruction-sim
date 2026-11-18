@@ -3530,6 +3530,29 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         };
     }
 
+    // LDRH/STRH (0xF8B0-0xF8BF / 0xF8A0-0xF8AF).
+    if first & 0xFFF0 == 0xF8B0 || first & 0xFFF0 == 0xF8A0 {
+        let load = first & 0x0010 != 0;
+        let rn = (first & 0x000F) as usize;
+        let rd = ((second >> 12) & 0x0F) as usize;
+        let imm12 = (second & 0x0FFF) as u32;
+        return if load {
+            format!("ldrh r{rd}, [r{rn}, #0x{imm12:x}]")
+        } else {
+            format!("strh r{rd}, [r{rn}, #0x{imm12:x}]")
+        };
+    }
+
+    // Memory barriers DMB/DSB/ISB (0xF3BF 0x8F5F/8F6F/8F7F).
+    if first == 0xF3BF && second & 0xFFF0 >= 0x8F50 && second & 0xFFF0 <= 0x8F70 {
+        let name = match (second >> 4) & 0x0F {
+            0x6 => "dsb",
+            0x7 => "isb",
+            _ => "dmb",
+        };
+        return format!("{name} sy");
+    }
+
     let _ = read;
     format!(".word 0x{insn:08x}")
 }
@@ -5516,7 +5539,8 @@ mod tests {
     #[test]
     fn disassembles_thumb2_wide_forms() {
         // Thumb-2 32-bit forms the core executes (BL/BLX, MOVW/MOVT,
-        // ADDW/SUBW, LDR/STR/LDRB/STRB immediate) decode with real mnemonics.
+        // ADDW/SUBW, LDR/STR/LDRB/STRB/LDRH/STRH immediate, DMB/DSB/ISB)
+        // decode with real mnemonics.
         let cases: &[(u32, &str)] = &[
             (0xF000_D000, "bl 0x0"),
             (0xF240_4000, "movw r0, #0x200"),
@@ -5525,6 +5549,11 @@ mod tests {
             (0xF8C0_0000, "str r0, [r0, #0x0]"),
             (0xF890_0000, "ldrb r0, [r0, #0x0]"),
             (0xF880_0000, "strb r0, [r0, #0x0]"),
+            (0xF8B0_0000, "ldrh r0, [r0, #0x0]"),
+            (0xF8A0_0000, "strh r0, [r0, #0x0]"),
+            (0xF3BF_8F5F, "dmb sy"),
+            (0xF3BF_8F6F, "dsb sy"),
+            (0xF3BF_8F7F, "isb sy"),
         ];
         for (insn, expected) in cases {
             let bytes = [
