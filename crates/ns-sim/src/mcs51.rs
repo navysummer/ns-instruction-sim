@@ -800,16 +800,34 @@ impl Mc51Core {
                 let addr = self.fetch_u16();
                 self.pc = addr;
             }
-            // ACALL addr11 (0x11-0x1F) / AJMP addr11 (0x01-0x0F)
-            (0x1, n) if n <= 0x7 => {
+            // ACALL addr11 / AJMP addr11. The 11-bit target's top three bits
+            // are packed in opcode bits 7..5 and the low byte follows:
+            // ACALL = 0x11 | (page << 5), AJMP = 0x01 | (page << 5); the low
+            // nibble is always 0x1. Odd high nibble selects ACALL, even AJMP.
+            (high, 0x1) if high & 1 == 1 => {
+                let page_hi = (high >> 1) & 0x07;
+                let addr_lo = self.fetch() as u16;
                 let page = self.pc & 0xF800;
-                let addr = page | ((high as u16 & 0x07) << 8) | (low as u16);
+                let addr = page | ((page_hi as u16) << 8) | addr_lo;
                 self.call(addr);
             }
-            (0x0, n) if n <= 0x7 => {
+            (high, 0x1) if high & 1 == 0 => {
+                let page_hi = (high >> 1) & 0x07;
+                let addr_lo = self.fetch() as u16;
                 let page = self.pc & 0xF800;
-                let addr = page | ((high as u16 & 0x07) << 8) | (low as u16);
+                let addr = page | ((page_hi as u16) << 8) | addr_lo;
                 self.pc = addr;
+            }
+            // INC Rn (0x08-0x0F) / DEC Rn (0x18-0x1F).
+            (0x0, n) if n >= 8 => {
+                let rn = n - 8;
+                let value = self.read_register(rn).wrapping_add(1);
+                self.write_register(rn, value);
+            }
+            (0x1, n) if n >= 8 => {
+                let rn = n - 8;
+                let value = self.read_register(rn).wrapping_sub(1);
+                self.write_register(rn, value);
             }
             // RET (0x22) / RETI (0x32)
             (0x2, 0x2) => {
@@ -1148,6 +1166,34 @@ mod tests {
         assert_eq!(core.step(&[]), Mc51Step::Advanced);
         assert_eq!(core.pc, 0x0003, "RET returns to instruction after LCALL");
         assert_eq!(core.sp, 0x07, "stack restored");
+    }
+
+    #[test]
+    fn ajmp_and_acall_addr11() {
+        // AJMP 0x01 0x60 -> page 0, low byte 0x60.
+        let mut core = core_with(&[0x01, 0x60]);
+        assert_eq!(core.step(&[]), Mc51Step::Advanced);
+        assert_eq!(core.pc, 0x0060, "AJMP page 0 targets 0x0060");
+        // ACALL 0x31 0x55 -> page 1, low byte 0x55; pushes a return address.
+        let mut core = core_with(&[0x31, 0x55, 0x00]);
+        assert_eq!(core.step(&[]), Mc51Step::Advanced);
+        assert_eq!(core.pc, 0x0155, "ACALL page 1 targets 0x0155");
+        assert_eq!(core.sp, 0x09, "ACALL pushes two return bytes");
+        // AJMP 0xE1 0x34 -> page 7, low byte 0x34.
+        let mut core = core_with(&[0xE1, 0x34]);
+        assert_eq!(core.step(&[]), Mc51Step::Advanced);
+        assert_eq!(core.pc, 0x0734, "AJMP page 7 targets 0x0734");
+    }
+
+    #[test]
+    fn inc_and_dec_register() {
+        // INC R7 (0x0F) / DEC R7 (0x1F) operate on the register-bank slot.
+        let mut core = core_with(&[0x0F, 0x1F]);
+        core.write_register(7, 0x41);
+        assert_eq!(core.step(&[]), Mc51Step::Advanced);
+        assert_eq!(core.read_register(7), 0x42);
+        assert_eq!(core.step(&[]), Mc51Step::Advanced);
+        assert_eq!(core.read_register(7), 0x41);
     }
 
     #[test]

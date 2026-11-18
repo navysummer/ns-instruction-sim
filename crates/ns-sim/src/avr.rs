@@ -883,6 +883,12 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             ((w >> 4) & 0x0F) * 2,
             (w & 0x0F) * 2
         ),
+        // MULS Rd, Rr (signed, R16-R31): 0000 0010 dddd rrrr.
+        w if w & 0xFF00 == 0x0200 => format!(
+            "muls r{}, r{}",
+            16 + ((w >> 4) & 0x0F),
+            16 + (w & 0x0F)
+        ),
         w if w & 0xFC00 == 0x0C00 => format!("add r{}, r{}", reg(w), reg2(w)),
         w if w & 0xFC00 == 0x1C00 => format!("adc r{}, r{}", reg(w), reg2(w)),
         w if w & 0xFC00 == 0x1800 => format!("sub r{}, r{}", reg(w), reg2(w)),
@@ -938,30 +944,37 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
                 0x94F8 => "cli".to_string(),
                 0x940C => format!("jmp 0x{:x}", read16(pc + 2, read)),
                 0x940E => format!("call 0x{:x}", read16(pc + 2, read)),
+                0x95C8 => "lpm".to_string(),
+                0x95E8 => "spm".to_string(),
                 _ => format!(".word 0x{word:04x}"),
             },
         },
         // The 0x9000-0x93FF control/load-store group (LDS/STS/LD/ST/POP/LPM)
         // is guarded separately: `w & 0xFE00 == 0x9400` only covers 0x9400+.
         w if w & 0xFC00 == 0x9000 => match w {
-            0x9000 => format!("lds r{}, 0x{:04x}", (w >> 4) & 0x1F, read16(pc + 2, read)),
-            0x9200 => format!("sts 0x{:04x}, r{}", read16(pc + 2, read), (w >> 4) & 0x1F),
-            0x900C => format!("ld r{}, x", (w >> 4) & 0x1F),
-            0x900D => format!("ld r{}, x+", (w >> 4) & 0x1F),
-            0x900E => format!("ld r{}, -x", (w >> 4) & 0x1F),
-            0x9009 => format!("ld r{}, y+", (w >> 4) & 0x1F),
-            0x900A => format!("ld r{}, -y", (w >> 4) & 0x1F),
-            0x9001 => format!("ld r{}, z+", (w >> 4) & 0x1F),
-            0x9002 => format!("ld r{}, -z", (w >> 4) & 0x1F),
-            0x920C => format!("st x, r{}", (w >> 4) & 0x1F),
-            0x920D => format!("st x+, r{}", (w >> 4) & 0x1F),
-            0x920E => format!("st -x, r{}", (w >> 4) & 0x1F),
-            0x9209 => format!("st y+, r{}", (w >> 4) & 0x1F),
-            0x920A => format!("st -y, r{}", (w >> 4) & 0x1F),
-            0x9201 => format!("st z+, r{}", (w >> 4) & 0x1F),
-            0x9202 => format!("st -z, r{}", (w >> 4) & 0x1F),
-            0x900F => format!("pop r{}", (w >> 4) & 0x1F),
-            0x9004 => format!("lpm r{}, z", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x9000 => {
+                format!("lds r{}, 0x{:04x}", (w >> 4) & 0x1F, read16(pc + 2, read))
+            }
+            w if w & 0xFE0F == 0x9200 => {
+                format!("sts 0x{:04x}, r{}", read16(pc + 2, read), (w >> 4) & 0x1F)
+            }
+            w if w & 0xFE0F == 0x900C => format!("ld r{}, x", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x900D => format!("ld r{}, x+", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x900E => format!("ld r{}, -x", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x9009 => format!("ld r{}, y+", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x900A => format!("ld r{}, -y", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x9001 => format!("ld r{}, z+", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x9002 => format!("ld r{}, -z", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x920C => format!("st x, r{}", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x920D => format!("st x+, r{}", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x920E => format!("st -x, r{}", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x9209 => format!("st y+, r{}", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x920A => format!("st -y, r{}", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x9201 => format!("st z+, r{}", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x9202 => format!("st -z, r{}", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x900F => format!("pop r{}", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x920F => format!("push r{}", (w >> 4) & 0x1F),
+            w if w & 0xFE0F == 0x9004 => format!("lpm r{}, z", (w >> 4) & 0x1F),
             _ => format!(".word 0x{word:04x}"),
         },
         w if w & 0xD000 == 0x8000 => {
@@ -1169,6 +1182,27 @@ mod tests {
         let read = |addr: u32| *bytes.get(addr as usize).unwrap_or(&0);
         assert_eq!(disassemble(0, &read), "ldi r16, 0x0a");
         assert_eq!(disassemble(2, &read), "ldi r16, 0x0f");
+    }
+
+    #[test]
+    fn disassembles_muls_lpm_spm_and_push() {
+        // MULS r16, r17 (0x0201), LPM (0x95C8), SPM (0x95E8), PUSH r5 (0x925F),
+        // LD r5,X (0x905C) and ST X+,r6 (0x926D) with non-zero register index.
+        let bytes: Vec<u8> = vec![
+            0x01, 0x02,
+            0xC8, 0x95,
+            0xE8, 0x95,
+            0x5F, 0x92,
+            0x5C, 0x90,
+            0x6D, 0x92,
+        ];
+        let read = |addr: u32| *bytes.get(addr as usize).unwrap_or(&0);
+        assert_eq!(disassemble(0, &read), "muls r16, r17");
+        assert_eq!(disassemble(2, &read), "lpm");
+        assert_eq!(disassemble(4, &read), "spm");
+        assert_eq!(disassemble(6, &read), "push r5");
+        assert_eq!(disassemble(8, &read), "ld r5, x");
+        assert_eq!(disassemble(10, &read), "st x+, r6");
     }
 
     #[test]

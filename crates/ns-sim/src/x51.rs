@@ -333,13 +333,13 @@ impl X51Core {
                 self.acc = self.read_xram(addr) as u16;
             }
             // MOVX @Ri, A / MOVX A, @Ri (8-bit pointer, low byte of DPTR)
-            0xF2 => {
-                let ri = ((op >> 3) & 1) as usize;
+            0xF2 | 0xF3 => {
+                let ri = (op & 1) as usize;
                 let addr = (self.regs[ri] & 0xFF) as u32;
                 self.write_xram(addr, self.acc as u8);
             }
-            0xE2 => {
-                let ri = ((op >> 3) & 1) as usize;
+            0xE2 | 0xE3 => {
+                let ri = (op & 1) as usize;
                 let addr = (self.regs[ri] & 0xFF) as u32;
                 self.acc = self.read_xram(addr) as u16;
             }
@@ -517,6 +517,20 @@ mod tests {
         let r = c.step(&[]);
         assert_eq!(r, X51Step::Advanced);
         assert_eq!(c.pc, 4, "RET returns to instruction after LCALL");
+    }
+
+    #[test]
+    fn movx_r1_roundtrip() {
+        let mut c = core();
+        c.regs[1] = 0x34;
+        c.acc = 0xAB;
+        // MOVX @R1, A (0xF3) writes the accumulator to external RAM at R1.
+        run(&mut c, &[0xF3], 1);
+        assert_eq!(c.read_xram(0x34), 0xAB);
+        // MOVX A, @R1 (0xE3) reads it back.
+        c.acc = 0;
+        run(&mut c, &[0xE3], 1);
+        assert_eq!(c.acc, 0xAB);
     }
 
     #[test]

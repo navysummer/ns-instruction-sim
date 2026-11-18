@@ -2600,6 +2600,77 @@ fn disasm_mcs51_alu_acc_register() {
 }
 
 #[test]
+fn disasm_mcs51_ajmp_acall_addr11() {
+    // AJMP/ACALL addr11 decode the page bits from opcode bits 7..5 and the
+    // low address byte, advancing 2 bytes each.
+    let dir = tmpdir();
+    let sess = dir.join("m51jmp.json");
+    let code = dir.join("m51jmp.bin");
+    std::fs::write(&code, [
+        0x01, 0x60, // ajmp 0x0060
+        0x31, 0x55, // acall 0x0155
+        0xE1, 0x34, // ajmp 0x0734
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "mcs51", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "3", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0u64);
+    assert_eq!(json[0]["text"], "ajmp 0x0060");
+    assert_eq!(json[1]["address"], 2u64);
+    assert_eq!(json[1]["text"], "acall 0x0155");
+    assert_eq!(json[2]["address"], 4u64);
+    assert_eq!(json[2]["text"], "ajmp 0x0734");
+}
+
+#[test]
+fn step_mcs51_inc_dec_register() {
+    // INC R7 (0x0F) / DEC R7 (0x1F) operate on the register-bank slot and
+    // persist across session steps.
+    let dir = tmpdir();
+    let sess = dir.join("m51incdec.json");
+    let code = dir.join("m51incdec.bin");
+    std::fs::write(&code, [0x0F, 0x1F]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "mcs51", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reg", "set", "--session", sess.to_str().unwrap(),
+               "--name", "R7", "--value", "0x41"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 1u64);
+    assert_eq!(json["registers"]["R7"], 0x42u64);
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 2u64);
+    assert_eq!(json["registers"]["R7"], 0x41u64);
+}
+
+#[test]
 fn disasm_mcs251_code_space_width() {
     // The 80251 is variable-length: disassembly must advance by the width of
     // each instruction (NOP=1, MOV Rn,#imm16=3).
@@ -2693,6 +2764,43 @@ fn disasm_mcs251_core_forms() {
 }
 
 #[test]
+fn step_mcs251_movx_r1_roundtrip() {
+    // MOVX @R1,A (0xF3) / MOVX A,@R1 (0xE3) use the low bit of the opcode as
+    // the register index; running both in one process round-trips external
+    // RAM (external RAM is not part of the session's sparse `memory` view).
+    let dir = tmpdir();
+    let sess = dir.join("x51movx.json");
+    let code = dir.join("x51movx.bin");
+    std::fs::write(&code, [0xF3, 0xE3]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "mcs251", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [("ACC", "0xAB"), ("R1", "0x34")] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(),
+                   "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    // MOVX @R1,A writes ACC (0xAB) to external RAM at R1 (0x34), then
+    // MOVX A,@R1 reads it back — all within a single `run --steps 2`.
+    let out = Command::new(bin())
+        .args(["run", "--session", sess.to_str().unwrap(),
+               "--firmware", code.to_str().unwrap(),
+               "--steps", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 2u64);
+    assert_eq!(json["registers"]["ACC"], 0xABu64);
+}
+
+#[test]
 fn disasm_avr_32bit_width() {
     // AVR's LDS/STS/JMP/CALL are 32-bit; disassembly must advance 4 bytes for
     // them and decode the mnemonic (previously the guard hid these arms).
@@ -2727,6 +2835,48 @@ fn disasm_avr_32bit_width() {
     assert_eq!(json[0]["bytes"], serde_json::json!([0, 0x90, 0x34, 0x12]));
     assert_eq!(json[1]["address"], 4u64);
     assert_eq!(json[1]["text"], "nop");
+}
+
+#[test]
+fn disasm_avr_muls_lpm_spm_push() {
+    // AVR MULS, LPM, SPM and the 0x920F PUSH encoding decode with their real
+    // mnemonics and advance 2 bytes each.
+    let dir = tmpdir();
+    let sess = dir.join("avrforms.json");
+    let code = dir.join("avrforms.bin");
+    std::fs::write(&code, [
+        0x01, 0x02,       // muls r16, r17
+        0xC8, 0x95,       // lpm
+        0xE8, 0x95,       // spm
+        0x5F, 0x92,       // push r5
+        0x5C, 0x90,       // ld r5, x
+        0x6D, 0x92,       // st x+, r6
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "avr", "--firmware", code.to_str().unwrap(), "--base", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0", "--count", "6", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0u64);
+    assert_eq!(json[0]["text"], "muls r16, r17");
+    assert_eq!(json[1]["address"], 2u64);
+    assert_eq!(json[1]["text"], "lpm");
+    assert_eq!(json[2]["address"], 4u64);
+    assert_eq!(json[2]["text"], "spm");
+    assert_eq!(json[3]["address"], 6u64);
+    assert_eq!(json[3]["text"], "push r5");
+    assert_eq!(json[4]["address"], 8u64);
+    assert_eq!(json[4]["text"], "ld r5, x");
+    assert_eq!(json[5]["address"], 10u64);
+    assert_eq!(json[5]["text"], "st x+, r6");
 }
 
 #[test]

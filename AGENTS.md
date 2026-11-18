@@ -255,10 +255,20 @@ done
   ALU 立即/直接/寄存器（ADD/ADDC/SUBB/ANL/ORL/XRL，含新增 `ORL/ANL/XRL A,Rn`）、
   MOV/MOVX/MOVC、XCH/XCHD、位操作、相对分支（JB/JNB/JBC/CJNE/DJNZ）等家族；内核同时修复 `RR A`/`RLC A` 缺失与
   `ANL/ORL/XRL A,direct` 编码（`0x55`/`0x45`/`0x65`，原 `0x54`/`0x44`/`0x64` 误用）。
+- `disasm_mcs51_ajmp_acall_addr11`：mcs51 `AJMP/ACALL addr11` 按 opcode bits 7..5
+  取页位 A10..A8、后随低地址字节，按 2 字节推进；执行内核同步补齐全部 8 个页组合
+  （此前只覆盖 `0x01`/`0x11` 且用 opcode 低半字节当作地址，属错误）。
+- `step_mcs51_inc_dec_register`：mcs51 执行内核补齐 `INC Rn`（0x08-0x0F）与
+  `DEC Rn`（0x18-0x1F），寄存器写入/读回跨会话一致（此前反汇编已显示但核心会 halt）。
 - `disasm_mcs251_code_space_width`：80251 变长指令按实际宽度推进（NOP=1、MOV Rn,#imm16=3）。
 - `disasm_mcs251_core_forms`：80251 反汇编镜像执行内核的 RET/INC/DEC/JC/JNC/MOV A,direct/
   MOVX @Ri/CLR/CPL/RL/RR/JMP @A+DPTR 家族，按实际宽度推进（相对跳转=2、MOV A,direct=2）。
+- `step_mcs251_movx_r1_roundtrip`：80251 `MOVX @R1,A`（0xF3）/`MOVX A,@R1`（0xE3）
+  按 opcode 最低位选择寄存器索引，单进程运行 2 条指令完成外部 RAM 写读回环。
 - `disasm_avr_32bit_width`：AVR LDS/STS/JMP/CALL 32 位指令按 4 字节推进并正确解码（此前守卫隐藏了这些分支）。
+- `disasm_avr_muls_lpm_spm_push`：AVR 反汇编补齐 `MULS`（0x0200 有符号乘法）、
+  `LPM`（0x95C8）、`SPM`（0x95E8）与 `PUSH Rr`（`0x920F | d<<4`），
+  并将 LDS/STS/LD/ST/POP/PUSH/LPM 按 `word & 0xFE0F` 掩码解码以支持任意目的寄存器。
 - `disasm_c166_imm_width`：C166 `MOV Rn,#imm16`/`CALL` 按 3 字节推进并解码小端立即数（与执行内核一致）。
 - `disasm_c166_logic_register_forms`：C166 `0x50-0x5F` 按 `bits 3:2` 解码
   `AND`/`OR`/`XOR Rn, Rm`（00=AND、01=OR、1x=XOR；低半字节为目的寄存器，
@@ -325,7 +335,8 @@ done
   `disasm_mcs51_code_space_width`/`disasm_mcs251_code_space_width`/`disasm_avr_32bit_width`/
   `disasm_c166_imm_width`/`disasm_xtensa_24bit_width`/`disasm_v850_variable_width`/
   `disasm_stm8_variable_width`/`disasm_msp430_extension_words`/`disasm_rl78_variable_width`/
-  `disasm_rx_variable_width`/`disasm_rx_decodes_families`/`disasm_rl78_decodes_core_families` 锁定。
+  `disasm_rx_variable_width`/`disasm_rx_decodes_families`/`disasm_rl78_decodes_core_families`/
+  `disasm_mcs51_ajmp_acall_addr11`/`disasm_avr_muls_lpm_spm_push` 锁定。
   RL78 反汇编同时镜像核心 `execute_61` 的 `op & 0xF8` 低组优先分发（`0x61 0x59` 等被寄存器-
   寄存器家族捕获为 `and a, A`，`0x61 0xAA`/`0xAB` 经 `0xA8` 家族路由为 `mov a, ES:[imm16]`），
   与核心执行语义逐字节一致。

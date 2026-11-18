@@ -3644,6 +3644,23 @@ fn disassemble_mcs51(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         n if (0xD8..=0xDF).contains(&n) => format!("djnz r{}, {:#x}", n & 7, pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
         n if (0xE8..=0xEF).contains(&n) => format!("mov a, r{}", n & 7),
         n if (0xF8..=0xFF).contains(&n) => format!("mov r{}, a", n & 7),
+        // AJMP addr11 (0x01,0x21,...,0xE1) / ACALL addr11 (0x11,0x31,...,0xF1).
+        // The page bits A10..A8 are in opcode bits 7..5 and the low address
+        // byte follows; odd high nibble selects ACALL, even selects AJMP.
+        n if n & 0x0F == 0x01 && ((n >> 4) & 1) == 0 => {
+            let page_hi = ((n >> 4) >> 1) & 0x07;
+            let addr = ((pc as u16) & 0xF800)
+                | ((page_hi as u16) << 8)
+                | read(pc + 1) as u16;
+            format!("ajmp 0x{addr:04x}")
+        }
+        n if n & 0x0F == 0x01 && ((n >> 4) & 1) == 1 => {
+            let page_hi = ((n >> 4) >> 1) & 0x07;
+            let addr = ((pc as u16) & 0xF800)
+                | ((page_hi as u16) << 8)
+                | read(pc + 1) as u16;
+            format!("acall 0x{addr:04x}")
+        }
         _ => format!(".byte 0x{op:02x}"),
     }
 }
@@ -4772,6 +4789,9 @@ mod tests {
             (&[0xBF, 0x12, 0xFE][..], "cjne r7, #0x12, 0x1"),
             (&[0xD5, 0x30, 0xFE][..], "djnz 0x30, 0x1"),
             (&[0xD8, 0xFE][..], "djnz r0, 0x0"),
+            (&[0x01, 0x60][..], "ajmp 0x0060"),
+            (&[0x31, 0x55][..], "acall 0x0155"),
+            (&[0xE1, 0x34][..], "ajmp 0x0734"),
         ] {
             let read = |addr: u32| {
                 let i = addr as usize;
