@@ -263,6 +263,8 @@ done
   ALU 立即/直接/寄存器（ADD/ADDC/SUBB/ANL/ORL/XRL，含新增 `ORL/ANL/XRL A,Rn`）、
   MOV/MOVX/MOVC、XCH/XCHD、位操作、相对分支（JB/JNB/JBC/CJNE/DJNZ）等家族；内核同时修复 `RR A`/`RLC A` 缺失与
   `ANL/ORL/XRL A,direct` 编码（`0x55`/`0x45`/`0x65`，原 `0x54`/`0x44`/`0x64` 误用）。
+- `disasm_mcs51_alu_acc_register`：mcs51 `ORL/ANL/XRL A,Rn`（`0x48-0x4F`/`0x58-0x5F`/`0x68-0x6F`）
+  按低半字节取源寄存器并各推进 1 字节。
 - `disasm_mcs51_ajmp_acall_addr11`：mcs51 `AJMP/ACALL addr11` 按 opcode bits 7..5
   取页位 A10..A8、后随低地址字节，按 2 字节推进；执行内核同步补齐全部 8 个页组合
   （此前只覆盖 `0x01`/`0x11` 且用 opcode 低半字节当作地址，属错误）。
