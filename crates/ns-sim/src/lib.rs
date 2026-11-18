@@ -3752,7 +3752,17 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             (true, 1) => "ldrh",
             (true, 2) => "ldrsb",
             (true, _) => "ldrsh",
-            (false, _) => "strh",
+            (false, 1) => "strh",
+            (false, 2) => "ldrd",
+            (false, _) => "strd",
+        };
+        // LDRD/STRD operate on a register pair (Rd, Rd+1); the register
+        // offset form places Rm in bits 11-8 (not bits 3-0 as LDRH/STRH).
+        let reg_pair = !load && sh >= 2;
+        let reg_str = if reg_pair {
+            format!("r{rd}, r{}", rd + 1)
+        } else {
+            rname(rd)
         };
         let pre = insn & (1 << 24) != 0;
         let add = insn & (1 << 23) != 0;
@@ -3761,14 +3771,22 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             let imm = ((insn >> 4) & 0xF0) | (insn & 0x0F);
             if add { format!("#{imm}") } else { format!("#-{imm}") }
         } else if add {
-            rname((insn & 0x0F) as usize)
+            rname(if reg_pair {
+                ((insn >> 8) & 0x0F) as usize
+            } else {
+                (insn & 0x0F) as usize
+            })
         } else {
-            format!("-{}", rname((insn & 0x0F) as usize))
+            format!("-{}", rname(if reg_pair {
+                ((insn >> 8) & 0x0F) as usize
+            } else {
+                (insn & 0x0F) as usize
+            }))
         };
         if pre {
-            return format!("{mnem}{cc} {}, [{}, {off_str}]", rname(rd), rname(rn));
+            return format!("{mnem}{cc} {reg_str}, [{}, {off_str}]", rname(rn));
         }
-        return format!("{mnem}{cc} {}, [{}], {off_str}", rname(rd), rname(rn));
+        return format!("{mnem}{cc} {reg_str}, [{}], {off_str}", rname(rn));
     }
     // CLZ.
     if insn & 0x0FFF_0FF0 == 0x016F_0F10 {

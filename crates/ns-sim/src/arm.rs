@@ -1402,6 +1402,40 @@ impl ArmCore {
         let rn = ((insn >> 16) & 0x0F) as usize;
         let rd = ((insn >> 12) & 0x0F) as usize;
         let sh = (insn >> 5) & 0x03;
+        // LDRD/STRD (doubleword transfer): bit 20 = 0 and sh = 2 (LDRD) or
+        // sh = 3 (STRD). The register pair is Rt/Rt+1 and the offset is imm8
+        // (byte, immediate form) or Rm (bits 11-8, register form).
+        if !load && sh >= 2 {
+            let offset = if immediate {
+                ((insn >> 4) & 0xF0) | (insn & 0x0F)
+            } else {
+                self.arm_reg(((insn >> 8) & 0x0F) as usize, pc_base)
+            };
+            let base = self.arm_reg(rn, pc_base);
+            let address = if add {
+                base.wrapping_add(offset)
+            } else {
+                base.wrapping_sub(offset)
+            };
+            let effective = if pre_index { address } else { base };
+            if sh == 2 {
+                // LDRD: load the consecutive word pair.
+                self.regs[rd] = self.read_u32(effective & !3);
+                self.regs[rd + 1] = self.read_u32((effective.wrapping_add(4)) & !3);
+            } else {
+                // STRD: store the consecutive word pair.
+                self.write_u32(effective & !3, self.regs[rd]);
+                self.write_u32((effective.wrapping_add(4)) & !3, self.regs[rd + 1]);
+            }
+            if (!pre_index || writeback) && rn != PC {
+                self.regs[rn] = if add {
+                    base.wrapping_add(offset)
+                } else {
+                    base.wrapping_sub(offset)
+                };
+            }
+            return;
+        }
         let offset = if immediate {
             ((insn >> 4) & 0xF0) | (insn & 0x0F)
         } else {
@@ -2100,6 +2134,48 @@ mod tests {
         c.regs[2] = 4;
         assert_eq!(c.step(&[]), ArmStep::Advanced);
         assert_eq!(c.read_u16(0x1004), 0xEF01);
+        assert_eq!(c.regs[PC], 4);
+    }
+
+    #[test]
+    fn arm_a32_ldrd_strd() {
+        // LDRD r0, r1, [r2, #8] (0xE1C200D8): loads the word pair at base+8.
+        let mut c = core();
+        c.write_u32(0, 0xE1C2_00D8);
+        c.set_arm_state(true);
+        c.regs[PC] = 0;
+        c.regs[2] = 0x1000;
+        c.write_u32(0x1008, 0x1111_2222);
+        c.write_u32(0x100C, 0x3333_4444);
+        assert_eq!(c.step(&[]), ArmStep::Advanced);
+        assert_eq!(c.regs[0], 0x1111_2222);
+        assert_eq!(c.regs[1], 0x3333_4444);
+        assert_eq!(c.regs[PC], 4);
+
+        // LDRD r0, r1, [r2] (0xE1C200D0): offset 0, no writeback.
+        let mut c = core();
+        c.write_u32(0, 0xE1C2_00D0);
+        c.set_arm_state(true);
+        c.regs[PC] = 0;
+        c.regs[2] = 0x1000;
+        c.write_u32(0x1000, 0xAAAA_BBBB);
+        c.write_u32(0x1004, 0xCCCC_DDDD);
+        assert_eq!(c.step(&[]), ArmStep::Advanced);
+        assert_eq!(c.regs[0], 0xAAAA_BBBB);
+        assert_eq!(c.regs[1], 0xCCCC_DDDD);
+
+        // STRD r4, r5, [r6, #8]! (0xE1E640F8): stores the pair and writes back.
+        let mut c = core();
+        c.write_u32(0, 0xE1E6_40F8);
+        c.set_arm_state(true);
+        c.regs[PC] = 0;
+        c.regs[4] = 0x0102_0304;
+        c.regs[5] = 0x0506_0708;
+        c.regs[6] = 0x1000;
+        assert_eq!(c.step(&[]), ArmStep::Advanced);
+        assert_eq!(c.read_u32(0x1008), 0x0102_0304);
+        assert_eq!(c.read_u32(0x100C), 0x0506_0708);
+        assert_eq!(c.regs[6], 0x1008); // writeback
         assert_eq!(c.regs[PC], 4);
     }
 

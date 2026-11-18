@@ -448,6 +448,9 @@ done
   用例锁定。
   A32 半字传送寄存器偏移由 ns-sim 单测 `arm_a32_halfword_transfer_register_offset`
   锁定执行内核语义（LDRH/STRH `[rn, rm]`）。
+  A32 `LDRD`/`STRD`（双字传送，bit20=0 且 sh=2/3，寄存器对 Rd/Rd+1，偏移为 imm8 字节或
+  Rm）现正确执行（原 `LDRD` 被当作 `LDRSB` 加载、`STRD` 被当作 `STRH` 半字存储），
+  反汇编同时输出寄存器对；由 ns-sim 单测 `arm_a32_ldrd_strd` 锁定。
   RL78 反汇编同时镜像核心 `execute_61` 的 `op & 0xF8` 低组优先分发（`0x61 0x59` 等被寄存器-
   寄存器家族捕获为 `and a, A`，`0x61 0xAA`/`0xAB` 经 `0xA8` 家族路由为 `mov a, ES:[imm16]`），
   与核心执行语义逐字节一致。
