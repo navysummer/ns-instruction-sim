@@ -320,6 +320,13 @@ done
   IT 状态跨会话持久化（跨进程 `step --session` 保留 IT 块与索引）。
 - `disasm_thumb1_it_bkpt`：`disasm --arm-state thumb` 将
   `it eq`/`ite ge`/`itt eq`/`itete eq`/`bkpt #3` 反汇编为真实助记符。
+- `run_arm_thumb2_bfx`：端到端分四次 `step --session` 执行 `ubfx r1,r2,#4,#8`
+  （0xF3C21107，r2=0xABCDEF12 → r1=0xF1）、`sbfx r3,r4,#2,#6`（0xF3440385，
+  r4=0x80 → r3=0xFFFFFFE0）、`bfc r5,#4,#8`（0xF36F150B，清 [11:4] →
+  0xFFFFF00F）、`bfi r6,r7,#3,#5`（0xF36706C7，插入 r7 低 5 位到 [7:3] →
+  0xF8），`state --json` 校验，锁定 Thumb-2 位域提取/插入/清除执行。
+- `disasm_thumb2_bfx`：`disasm --arm-state thumb` 将 `ubfx`/`sbfx`/`bfc`/`bfi`
+  反汇编为真实助记符与字段参数。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -427,7 +434,7 @@ done
   ARM Thumb 全家族（Thumb-1/Thumb-2）另由 ns-sim 单测 `disassembles_thumb_full_families`/
   `disassembles_thumb2_wide_forms` 锁定：Thumb-1 覆盖执行内核全部 16 位家族，Thumb-2 覆盖
   BL/BLX、MOVW/MOVT、ADDW/SUBW、LDR/STR/LDRB/STRB/LDRH/STRH 12 位立即与 DMB/DSB/ISB
-  内存屏障、数据处理（寄存器/修正立即）与 TBB/TBH/LDRD/STRD；`b`（0xE001）与
+  内存屏障、数据处理（寄存器/修正立即）、位域 SBFX/UBFX/BFC/BFI 与 TBB/TBH/LDRD/STRD；`b`（0xE001）与
   `bl 0x28`（0xF000D000）分别按 2/4 字节推进。屏障（0xF3BF
   0x8F5F/8F6F/8F7F）在执行内核中为 no-op（原仅 DMB 被识别，DSB/ISB 会误 halt），
   由 ns-sim 单测 `execute_wide_ldrh_strh_and_barriers` 与 CLI `disasm_thumb2_ldrh_strh_barriers` 锁定。
@@ -545,6 +552,12 @@ done
   `BKPT`（`0xBE00-0xBEFF`）现停机（原误当作 POP）。IT/BKPT 状态（mask/cond/index）加入
   会话持久化，跨进程 `step --session` 可续跑条件块。由 ns-sim 单测 `thumb1_it_block` 与
   CLI `run_arm_thumb1_it_bkpt`/`disasm_thumb1_it_bkpt` 锁定。
+  Thumb-2 位域 `SBFX`/`UBFX`/`BFC`/`BFI`（首半字 `0xF340|Rn`、`0xF360|Rn`（Rn=PC 即
+  BFC `0xF36F`）、`0xF3C0|Rn`；第二半字 `0 imm3(3) Rd(4) imm2(2) 0 lsb(5)`，
+  `lsb=(imm3<<2)|imm2`）现执行与反汇编：`SBFX`/`UBFX` 提取 `[lsb:lsb+width-1]` 并按
+  `width=lsb5+1` 有/零符号扩展；`BFC` 清除 `[msb:lsb]`（`msb=lsb5`）、`BFI` 将 Rn 低
+  `width=msb-lsb+1` 位插入 `[msb:lsb]` 并保留 Rd 其余位。由 ns-sim 单测 `thumb2_bfx` 与
+  CLI `run_arm_thumb2_bfx`/`disasm_thumb2_bfx` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

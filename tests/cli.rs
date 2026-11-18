@@ -2435,6 +2435,64 @@ fn run_arm_thumb2_modified_immediate() {
 }
 
 #[test]
+fn run_arm_thumb2_bfx() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-bfx.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: ubfx r1,r2,#4,#8; sbfx r3,r4,#2,#6; bfc r5,#4,#8; bfi r6,r7,#3,#5.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0xC2", "0xF3", "0x07", "0x11",
+               "0x44", "0xF3", "0x85", "0x03",
+               "0x6F", "0xF3", "0x0B", "0x15",
+               "0x67", "0xF3", "0xC7", "0x06"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [
+        ("r2", "0xABCDEF12"), ("r4", "0x00000080"),
+        ("r5", "0xFFFFFFFF"), ("r6", "0x00000000"), ("r7", "0x0000001F"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..4 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0020u64);
+    assert_eq!(json["registers"]["r1"], 0xF1u64);          // ubfx bits [11:4]
+    assert_eq!(json["registers"]["r3"], 0xFFFF_FFE0u64);   // sbfx bits [7:2]
+    assert_eq!(json["registers"]["r5"], 0xFFFF_F00Fu64);   // bfc cleared [11:4]
+    assert_eq!(json["registers"]["r6"], 0xF8u64);          // bfi inserted [7:3]
+}
+
+#[test]
 fn run_arm_thumb1_it_bkpt() {
     let dir = tmpdir();
     let sess = dir.join("arm-itbkpt.json");
@@ -2564,6 +2622,39 @@ fn disasm_thumb2_modified_immediate() {
         "0x00000008: sub r5, r6, #0x200",
         "0x0000000c: cmp r0, #0x40",
         "0x00000010: tst r2, #0xff",
+    ] {
+        assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
+    }
+}
+
+#[test]
+fn disasm_thumb2_bfx() {
+    let dir = tmpdir();
+    let binfile = dir.join("thumb2-bfx.bin");
+    let sess = dir.join("thumb2-bfx.json");
+    // Thumb-2 bit-field forms the core executes.
+    let bytes: &[u8] = &[
+        0xC2, 0xF3, 0x07, 0x11, // ubfx r1, r2, #4, #8
+        0x44, 0xF3, 0x85, 0x03, // sbfx r3, r4, #2, #6
+        0x6F, 0xF3, 0x0B, 0x15, // bfc r5, #4, #8
+        0x67, 0xF3, 0xC7, 0x06, // bfi r6, r7, #3, #5
+    ];
+    std::fs::write(&binfile, bytes).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "4", "--arm-state", "thumb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "0x00000000: ubfx r1, r2, #0x4, #0x8",
+        "0x00000004: sbfx r3, r4, #0x2, #0x6",
+        "0x00000008: bfc r5, #4, #8",
+        "0x0000000c: bfi r6, r7, #3, #5",
     ] {
         assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
     }

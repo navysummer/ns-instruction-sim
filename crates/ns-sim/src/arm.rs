@@ -1338,6 +1338,52 @@ impl ArmCore {
             return;
         }
 
+        // Bit-field extract/insert/clear: SBFX (0xF340), BFI (0xF360 with
+        // Rn != PC), BFC (0xF36F), UBFX (0xF3C0). Second halfword layout is
+        // `0 imm3(3) Rd(4) imm2(2) 0 lsb(5)`; the field starts at
+        // `lsb = (imm3 << 2) | imm2` and has `width = lsb5 + 1` bits.
+        if second & 0x0020 == 0
+            && (first & 0xFFF0 == 0xF340 || first & 0xFFF0 == 0xF360
+                || first == 0xF36F || first & 0xFFF0 == 0xF3C0)
+        {
+            let rn = (first & 0x0F) as usize;
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let lsb = ((((second >> 12) & 0x7) as u32) << 2) | ((second >> 6) & 0x3) as u32;
+            let sbfx = first & 0xFFF0 == 0xF340;
+            let ubfx = first & 0xFFF0 == 0xF3C0;
+            // SBFX/UBFX encode the width as `lsb5 + 1`; BFC/BFI encode the
+            // field's most-significant bit in `lsb5` (width = msb - lsb + 1).
+            let width = if sbfx || ubfx {
+                (second & 0x1F) as u32 + 1
+            } else {
+                (second & 0x1F) as u32 + 1 - lsb
+            };
+            let mask = if width >= 32 {
+                0xFFFF_FFFF
+            } else {
+                (1u32 << width) - 1
+            };
+            if sbfx || ubfx {
+                let v = (self.regs[rn] >> lsb) & mask;
+                let result = if sbfx && width < 32 && (v & (1u32 << (width - 1))) != 0 {
+                    v | !mask
+                } else {
+                    v
+                };
+                self.regs[rd] = result;
+            } else {
+                let clear = !(mask << lsb);
+                if first == 0xF36F {
+                    // BFC: clear the field in Rd.
+                    self.regs[rd] &= clear;
+                } else {
+                    // BFI: insert the low `width` bits of Rn into Rd at lsb.
+                    self.regs[rd] = (self.regs[rd] & clear) | ((self.regs[rn] & mask) << lsb);
+                }
+            }
+            return;
+        }
+
         // Data processing (register): AND/BIC/ORR/ORN/EOR/ADD/ADC/SBC/SUB/RSB
         // plus MOV/MVN/TST/TEQ/CMP/CMN. Bits 15-9 = 1110101.
         if first & 0xFE00 == 0xEA00 {
@@ -2656,6 +2702,34 @@ mod tests {
         let mut c = core();
         run(&mut c, &[0xBE03], 1);
         assert!(c.halted, "BKPT halts the core");
+    }
+
+    #[test]
+    fn thumb2_bfx() {
+        // ubfx r1, r2, #4, #8 (0xF3C21107): extract bits [11:4].
+        let mut c = core();
+        c.regs[2] = 0xABCD_EF12;
+        run(&mut c, &[0xF3C2, 0x1107], 1);
+        assert_eq!(c.regs[1], 0xF1);
+
+        // sbfx r3, r4, #2, #6 (0xF3440385): extract bits [7:2], sign-extend.
+        let mut c = core();
+        c.regs[4] = 0x80;
+        run(&mut c, &[0xF344, 0x0385], 1);
+        assert_eq!(c.regs[3], 0xFFFF_FFE0);
+
+        // bfc r5, #4, #8 (0xF36F150B): clear bits [11:4].
+        let mut c = core();
+        c.regs[5] = 0xFFFF_FFFF;
+        run(&mut c, &[0xF36F, 0x150B], 1);
+        assert_eq!(c.regs[5], 0xFFFF_F00F);
+
+        // bfi r6, r7, #3, #5 (0xF36706C7): insert r7 bits [4:0] at [7:3].
+        let mut c = core();
+        c.regs[6] = 0x0000_0000;
+        c.regs[7] = 0x1F;
+        run(&mut c, &[0xF367, 0x06C7], 1);
+        assert_eq!(c.regs[6], 0xF8);
     }
 
     #[test]

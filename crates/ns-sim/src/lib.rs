@@ -3824,6 +3824,40 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("clz r{rd}, r{rm}");
     }
 
+    // Bit-field extract/insert/clear: SBFX (0xF340), BFI (0xF360 with
+    // Rn != PC), BFC (0xF36F), UBFX (0xF3C0).
+    if second & 0x0020 == 0
+        && (first & 0xFFF0 == 0xF340 || first & 0xFFF0 == 0xF360
+            || first == 0xF36F || first & 0xFFF0 == 0xF3C0)
+    {
+        let rn = (first & 0x0F) as usize;
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let lsb = ((((second >> 12) & 0x7) as u32) << 2) | ((second >> 6) & 0x3) as u32;
+        let mnem = if first & 0xFFF0 == 0xF340 {
+            "sbfx"
+        } else if first & 0xFFF0 == 0xF3C0 {
+            "ubfx"
+        } else if first == 0xF36F {
+            "bfc"
+        } else {
+            "bfi"
+        };
+        // SBFX/UBFX encode the width as `lsb5 + 1`; BFC/BFI encode the field's
+        // most-significant bit in `lsb5` (width = msb - lsb + 1).
+        let width = if mnem == "sbfx" || mnem == "ubfx" {
+            (second & 0x1F) as u32 + 1
+        } else {
+            (second & 0x1F) as u32 + 1 - lsb
+        };
+        return if mnem == "bfc" {
+            format!("bfc r{rd}, #{lsb}, #{width}")
+        } else if mnem == "bfi" {
+            format!("bfi r{rd}, r{rn}, #{lsb}, #{width}")
+        } else {
+            format!("{mnem} r{rd}, r{rn}, #{lsb:#x}, #{width:#x}")
+        };
+    }
+
     // Data processing (modified immediate): AND/BIC/ORR/ORN/EOR/ADD/SUB/RSB
     // plus MOV/MVN/TST/TEQ/CMP/CMN. Bits 15-11 = 11110, bit 9 = 0.
     if first & 0xFA00 == 0xF000 {
@@ -5986,6 +6020,11 @@ mod tests {
             (0xF1B0_0F40, "cmp r0, #0x40"),
             (0xF012_0FFF, "tst r2, #0xff"),
             (0xF093_4F00, "teq r3, #0x80000000"),
+            // Bit-field extract/insert/clear.
+            (0xF3C2_1107, "ubfx r1, r2, #0x4, #0x8"),
+            (0xF344_0385, "sbfx r3, r4, #0x2, #0x6"),
+            (0xF36F_150B, "bfc r5, #4, #8"),
+            (0xF362_01C7, "bfi r1, r2, #3, #5"),
         ];
         for (insn, expected) in cases {
             let bytes = [
