@@ -312,7 +312,7 @@ impl ArmCore {
             return ArmStep::Advanced;
         }
         let half = self.read_u16(pc);
-        let (insn, width) = if half & 0xE000 == 0xE000 {
+        let (insn, width) = if half & 0xF800 >= 0xE800 {
             let second = self.read_u16(pc.wrapping_add(2));
             (((half as u32) << 16) | second as u32, 4)
         } else {

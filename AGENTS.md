@@ -247,6 +247,9 @@ done
 - `periph_config_relocates_bases`：外设 UART/GPIO 基址重定位并持久化。
 - `mem_write_with_arch_creates_session`：`mem write --arch` 直接创建指定架构会话。
 - `disasm_arm_state_override`：`disasm --arm-state a32|thumb` 切换 ARM 解码并校验步进宽度。
+- `disasm_thumb_full_families`：Thumb-1/Thumb-2 全家族反汇编镜像执行内核（LSL/ADD/MOV/CMP/SUB
+  imm、PC-rel LDR、寄存器偏移 LDRH、字/字节/半字立即、SP 相对、PUSH/POP、LDMIA、SVC、条件/无条件分支、
+  BL、MOVW、ADDW、LDR/STR/LDRB/STRB 立即），并校验按编码实际宽度推进。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -326,7 +329,9 @@ done
 ### 5.2 反汇编宽度
 
 - `disasm` 通过 `ns_sim::instruction_size` 按编码实际宽度推进 PC：ARM A32 恒 4 字节，Thumb-1
-  16 位为 2 字节、Thumb-2 32 位（`0xE000` 前缀半字）为 4 字节；C166/AVR/MSP430/Xtensa 为 2 字节，
+  16 位为 2 字节、Thumb-2 32 位（首半字 `0xE800-0xFFFF`，即 `half & 0xF800 >= 0xE800`）为 4 字节；
+  注意 Thumb-1 无条件分支 `b`（`0xE000-0xE7FF`）仍是 16 位，不得误判为 32 位；
+  C166/AVR/MSP430/Xtensa 为 2 字节，
   MCS-51 按操作码变长（NOP=1、立即/相对/直接=2、LJMP/LCALL/DPTR=3），80251 按操作码变长
   （寄存器/累加器=1、相对/直接=2、`MOV Rn,#imm16`=3、24 位绝对跳转/DPTR=4），AVR 的 LDS/STS/JMP/CALL
   为 4 字节其余 2 字节，C166 的 `MOV Rn,#imm16`/`CALL` 为 3 字节、NOP/RET 为 1 字节其余 2 字节，
@@ -347,6 +352,10 @@ done
   `disasm_stm8_variable_width`/`disasm_msp430_extension_words`/`disasm_rl78_variable_width`/
   `disasm_rx_variable_width`/`disasm_rx_decodes_families`/`disasm_rl78_decodes_core_families`/
   `disasm_mcs51_ajmp_acall_addr11`/`disasm_avr_muls_lpm_spm_push` 锁定。
+  ARM Thumb 全家族（Thumb-1/Thumb-2）另由 ns-sim 单测 `disassembles_thumb_full_families`/
+  `disassembles_thumb2_wide_forms` 锁定：Thumb-1 覆盖执行内核全部 16 位家族，Thumb-2 覆盖
+  BL/BLX、MOVW/MOVT、ADDW/SUBW、LDR/STR/LDRB/STRB 12 位立即；`b`（0xE001）与 `bl 0x28`
+  （0xF000D000）分别按 2/4 字节推进。
   RL78 反汇编同时镜像核心 `execute_61` 的 `op & 0xF8` 低组优先分发（`0x61 0x59` 等被寄存器-
   寄存器家族捕获为 `and a, A`，`0x61 0xAA`/`0xAB` 经 `0xA8` 家族路由为 `mov a, ES:[imm16]`），
   与核心执行语义逐字节一致。

@@ -2989,7 +2989,7 @@ pub fn instruction_size(
             return 4;
         }
         let half = read(pc) as u16 | ((read(pc + 1) as u16) << 8);
-        return if half & 0xE000 == 0xE000 { 4 } else { 2 };
+        return if half & 0xF800 >= 0xE800 { 4 } else { 2 };
     }
     match arch {
         Arch::C166 => c166_instruction_len(read(pc)),
@@ -3226,56 +3226,312 @@ fn disassemble_arm_state(pc: u32, read: &dyn Fn(u32) -> u8, arm_state: bool) -> 
         return disassemble_a32(pc, read);
     }
     let half = read(pc) as u16 | ((read(pc + 1) as u16) << 8);
-    let (insn, width) = if half & 0xE000 == 0xE000 {
+    let (insn, width) = if half & 0xF800 >= 0xE800 {
         let second = read(pc + 2) as u16 | ((read(pc + 3) as u16) << 8);
         (((half as u32) << 16) | second as u32, 4)
     } else {
         (half as u32, 2)
     };
-    let _ = width;
-    // Thumb-1 16-bit decode (subset mirrored from ArmCore::step).
-    match half & 0xF800 {
-        0x2000 => format!("movs r{}, #{}", (half >> 8) & 7, half & 0xff),
-        0x3000 => format!("adds r{}, #{}", (half >> 8) & 7, half & 0xff),
-        // BX / BLX (register): 0x4700-0x477F. `bx lr` is a function return.
-        _ if insn & 0xFF00 == 0x4700 => {
-            let r = ((half >> 3) & 0x0f) | (((half >> 4) & 0x8));
-            let mnem = if half & 0x80 != 0 { "blx" } else { "bx" };
-            format!("{mnem} r{}", r)
-        }
-        // High-register ops / BX fallback (0x4400-0x47FF).
-        0x4400 => format!("add r{}, r{}", (half >> 8) & 7, (half >> 3) & 0xf),
-        // POP: 0xBC00-0xBDFF. A pop that restores PC leaves the function.
-        _ if insn & 0xFE00 == 0xBC00 => {
-            let mut regs: Vec<String> = (0..8)
-                .filter(|i| half & (1 << i) != 0)
-                .map(|i| format!("r{i}"))
-                .collect();
-            if half & 0x100 != 0 {
-                regs.push("pc".to_string());
-            }
-            format!("pop {{{}}}", regs.join(", "))
-        }
-        0x6000 => format!("str r{}, [r{}, #{}]", (half >> 8) & 7, (half >> 3) & 7, ((half >> 6) & 0x1f) * 4),
-        0x6800 => format!("ldr r{}, [r{}, #{}]", (half >> 8) & 7, (half >> 3) & 7, ((half >> 6) & 0x1f) * 4),
-        0xD000 => format!("b{} {:#x}", cond_suffix(((half >> 8) & 0xf) as u8), pc.wrapping_add(4 + ((half as i8 as i32) * 2) as u32)),
-        0xE000 => format!("b {:#x}", pc.wrapping_add(4 + (((half & 0x7ff) as i16) * 2) as u32)),
-        // Format-2 data-processing (ALU) 0x4000-0x43FF. NOTE: `half & 0xF800`
-        // (not `insn & 0xFFFF_8000`, which is always 0 for a 16-bit `insn`).
-        _ if half & 0xF800 == 0x4000 => {
-            let op = (half >> 6) & 0xf;
-            let name = match op {
-                0x0 => "ands", 0x1 => "eors", 0x2 => "lsls", 0x3 => "lsrs",
-                0x4 => "asrs", 0x5 => "adcs", 0x6 => "sbcs", 0x7 => "rors",
-                0x8 => "tst", 0x9 => "rsbs", 0xA => "cmp", 0xB => "cmn",
-                0xC => "orrs", 0xD => "muls", 0xE => "bics", _ => "mvns",
+    if width == 4 {
+        return disassemble_thumb2(insn, pc, read);
+    }
+    disassemble_thumb1(half, pc)
+}
+
+/// Decode a 16-bit Thumb-1 instruction, mirroring `ArmCore::execute_thumb1`.
+fn disassemble_thumb1(half: u16, pc: u32) -> String {
+    let top = half >> 12;
+    let rm = ((half >> 3) & 0x0F) as usize;
+    let rd = (half & 0x07) as usize;
+    let imm8 = (half & 0xFF) as u32;
+    let imm3 = ((half >> 6) & 0x07) as u32;
+    let imm5 = ((half >> 6) & 0x1F) as u32;
+    let reg_list = |h: u16| -> Vec<String> {
+        (0..8)
+            .filter(|i| h & (1 << i) != 0)
+            .map(|i| format!("r{i}"))
+            .collect()
+    };
+    match top {
+        // LSL/LSR/ASR immediate.
+        0x0 => {
+            let name = match (half >> 11) & 0x03 {
+                0 => "lsls",
+                1 => "lsrs",
+                _ => "asrs",
             };
-            // rd = bits 2-0, rm = bits 5-3 (not bits 10-8/6-3: that is the
-            // Format-4 shift/imm encoding, not the ALU register fields).
-            format!("{name} r{}, r{}", half & 7, (half >> 3) & 7)
+            format!("{name} r{rd}, r{}, #{imm5}", (half >> 3) & 0x07)
         }
+        // ADD/SUB register or immediate (bit 10 = sub, bit 9 = immediate).
+        0x1 => {
+            // Format-1 ADD/SUB: bits 11-9 = 100 (ADD reg), 101 (SUB reg),
+            // 110 (ADD imm3), 111 (SUB imm3); bit 9 selects SUB and bit 10
+            // selects the immediate form.
+            let sub = (half >> 9) & 1 != 0;
+            let immediate = (half >> 10) & 1 != 0;
+            let name = if sub { "subs" } else { "adds" };
+            let rn = ((half >> 3) & 0x07) as usize;
+            if immediate {
+                format!("{name} r{rd}, r{rn}, #{imm3}")
+            } else {
+                format!("{name} r{rd}, r{rn}, r{}", (half >> 6) & 0x07)
+            }
+        }
+        // MOV/CMP immediate 8-bit.
+        0x2 => {
+            let rd = ((half >> 8) & 0x07) as usize;
+            if (half >> 11) & 1 != 0 {
+                format!("cmp r{rd}, #{imm8}")
+            } else {
+                format!("movs r{rd}, #{imm8}")
+            }
+        }
+        // ADD/SUB immediate 8-bit.
+        0x3 => {
+            let rd = ((half >> 8) & 0x07) as usize;
+            let name = if (half >> 11) & 1 != 0 { "subs" } else { "adds" };
+            format!("{name} r{rd}, #{imm8}")
+        }
+        // ALU / high-register / PC-relative LDR.
+        0x4 => {
+            if half & 0x0800 != 0 {
+                // PC-relative LDR: rd = bits 10-8, imm8 scaled by 4.
+                let rd = ((half >> 8) & 0x07) as usize;
+                format!("ldr r{rd}, [pc, #{}]", imm8.wrapping_mul(4))
+            } else if half & 0x0400 != 0 {
+                // High-register ops / BX (op = bits 9-8).
+                let rd_high = rd | (((half >> 4) & 0x08) as usize);
+                let rm_high = rm | (((half >> 3) & 0x08) as usize);
+                match (half >> 8) & 0x03 {
+                    0 => format!("add r{rd_high}, r{rm_high}"),
+                    1 => format!("cmp r{rd_high}, r{rm_high}"),
+                    2 => format!("mov r{rd_high}, r{rm_high}"),
+                    _ => {
+                        let mnem = if half & 0x80 != 0 { "blx" } else { "bx" };
+                        format!("{mnem} r{rm_high}")
+                    }
+                }
+            } else {
+                // ALU (op = bits 9-6).
+                let op = (half >> 6) & 0x0F;
+                let name = match op {
+                    0x0 => "ands", 0x1 => "eors", 0x2 => "lsls", 0x3 => "lsrs",
+                    0x4 => "asrs", 0x5 => "adcs", 0x6 => "sbcs", 0x7 => "rors",
+                    0x8 => "tst", 0x9 => "rsbs", 0xA => "cmp", 0xB => "cmn",
+                    0xC => "orrs", 0xD => "muls", 0xE => "bics", _ => "mvns",
+                };
+                format!("{name} r{rd}, r{}", (half >> 3) & 7)
+            }
+        }
+        // Load/store register offset (op = bits 11-9).
+        0x5 => {
+            let op = (half >> 9) & 0x07;
+            let rd = rd;
+            let rn = ((half >> 3) & 0x07) as usize;
+            let rm = ((half >> 6) & 0x07) as usize;
+            let name = match op {
+                0 => "str", 1 => "strh", 2 => "strb", 3 => "ldrsb",
+                4 => "ldr", 5 => "ldrh", 6 => "ldrb", _ => "ldrsh",
+            };
+            format!("{name} r{rd}, [r{rn}, r{rm}]")
+        }
+        // STR/LDR word immediate (bit 11 = load).
+        0x6 => {
+            let load = (half >> 11) & 1 != 0;
+            let base = (half & 0x07) as usize;
+            let data = ((half >> 3) & 0x07) as usize;
+            if load {
+                format!("ldr r{data}, [r{base}, #{}]", imm5.wrapping_mul(4))
+            } else {
+                format!("str r{data}, [r{base}, #{}]", imm5.wrapping_mul(4))
+            }
+        }
+        // STRB/LDRB byte immediate (bit 11 = load).
+        0x7 => {
+            let load = (half >> 11) & 1 != 0;
+            let base = (half & 0x07) as usize;
+            let data = ((half >> 3) & 0x07) as usize;
+            if load {
+                format!("ldrb r{data}, [r{base}, #{imm5}]")
+            } else {
+                format!("strb r{data}, [r{base}, #{imm5}]")
+            }
+        }
+        // STRH/LDRH half immediate (bit 11 = load).
+        0x8 => {
+            let load = (half >> 11) & 1 != 0;
+            let base = (half & 0x07) as usize;
+            let data = ((half >> 3) & 0x07) as usize;
+            if load {
+                format!("ldrh r{data}, [r{base}, #{}]", imm5.wrapping_mul(2))
+            } else {
+                format!("strh r{data}, [r{base}, #{}]", imm5.wrapping_mul(2))
+            }
+        }
+        // SP-relative load/store word (bit 11 = load).
+        0x9 => {
+            let load = (half >> 11) & 1 != 0;
+            let rd = ((half >> 8) & 0x07) as usize;
+            if load {
+                format!("ldr r{rd}, [sp, #{}]", imm8.wrapping_mul(4))
+            } else {
+                format!("str r{rd}, [sp, #{}]", imm8.wrapping_mul(4))
+            }
+        }
+        // Load address: ADD rd, PC/SP, #imm8*4.
+        0xA => {
+            let rd = ((half >> 8) & 0x07) as usize;
+            let base = if (half >> 11) & 1 != 0 { "sp" } else { "pc" };
+            format!("add r{rd}, {base}, #{}", imm8.wrapping_mul(4))
+        }
+        // ADD/SUB SP (0xB0-0xB3) or PUSH/POP (0xB4-0xBF).
+        0xB => {
+            if half & 0x0C00 == 0x0000 {
+                let sub = (half >> 7) & 1 != 0;
+                let name = if sub { "sub" } else { "add" };
+                format!("{name} sp, sp, #{}", imm8.wrapping_mul(4))
+            } else {
+                let push = (half >> 11) & 1 == 0;
+                let mut regs = reg_list(half & 0xFF);
+                if push {
+                    if half & 0x100 != 0 {
+                        regs.push("lr".to_string());
+                    }
+                    format!("push {{{}}}", regs.join(", "))
+                } else {
+                    if half & 0x100 != 0 {
+                        regs.push("pc".to_string());
+                    }
+                    format!("pop {{{}}}", regs.join(", "))
+                }
+            }
+        }
+        // Multiple load/store (bit 11 = load).
+        0xC => {
+            let load = (half >> 11) & 1 != 0;
+            let rn = ((half >> 8) & 0x07) as usize;
+            let regs = reg_list(half & 0xFF);
+            if load {
+                format!("ldmia r{rn}!, {{{}}}", regs.join(", "))
+            } else {
+                format!("stmia r{rn}!, {{{}}}", regs.join(", "))
+            }
+        }
+        // Conditional branch or SVC.
+        0xD => {
+            if half & 0xFF00 == 0xDF00 {
+                format!("svc #{}", half & 0xFF)
+            } else {
+                let cond = ((half >> 8) & 0x0F) as u8;
+                format!(
+                    "b{} {:#x}",
+                    cond_suffix(cond),
+                    pc.wrapping_add(4 + ((half as i8 as i32) * 2) as u32)
+                )
+            }
+        }
+        // Unconditional branch.
+        0xE => format!(
+            "b {:#x}",
+            pc.wrapping_add(4 + (((half & 0x7FF) as i16) * 2) as u32)
+        ),
         _ => format!(".hword 0x{half:04x}"),
     }
+}
+
+/// Decode a 32-bit Thumb-2 instruction, mirroring `ArmCore::execute_wide`.
+fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
+    let first = (insn >> 16) as u16;
+    let second = insn as u16;
+
+    // BL/BLX immediate (0xF000-0xF7FF prefix, second bits 14-12 = 101).
+    if first & 0xF800 == 0xF000 && second & 0xD000 == 0xD000 {
+        let s = ((first >> 10) & 1) as u32;
+        let j1 = ((second >> 13) & 1) as u32;
+        let j2 = ((second >> 11) & 1) as u32;
+        let imm10 = (first & 0x3FF) as u32;
+        let imm11 = (second & 0x7FF) as u32;
+        let mut imm32 = (s << 24) | (j2 << 23) | (j1 << 22) | (imm10 << 12) | (imm11 << 1);
+        imm32 = sign_extend(imm32, 25);
+        let link = second & 0x4000 != 0;
+        let target = pc.wrapping_add(imm32);
+        return if link {
+            format!("bl {:#x}", target)
+        } else {
+            format!("blx {:#x}", target)
+        };
+    }
+
+    // MOVW/MOVT (0xF240-0xF2FF, second bits 15-12 = 0100).
+    if first & 0xFBF0 == 0xF240 && second & 0xF000 == 0x4000 {
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let imm16 = ((first & 0x000F) as u32) << 12
+            | ((first & 0x0F00) as u32)
+            | ((second & 0x00FF) as u32);
+        let top = second & 0x0800 != 0;
+        return if top {
+            format!("movt r{rd}, #0x{imm16:x}")
+        } else {
+            format!("movw r{rd}, #0x{imm16:x}")
+        };
+    }
+
+    // ADDW/SUBW (0xF200-0xF2FF, second bits 14-12 = 010, bit 15 = 0).
+    if first & 0xFBF0 == 0xF200 && second & 0xF000 == 0x2000 {
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rn = (first & 0x000F) as usize;
+        let imm12 = ((first & 0x0F00) as u32) << 4 | ((second & 0x00FF) as u32);
+        let sub = second & 0x0400 != 0;
+        return if sub {
+            format!("subw r{rd}, r{rn}, #0x{imm12:x}")
+        } else {
+            format!("addw r{rd}, r{rn}, #0x{imm12:x}")
+        };
+    }
+
+    // B.W unconditional (0xF000 prefix, second bits 15-14 = 10, 13-12 = 10).
+    if first & 0xF800 == 0xF000
+        && first & 0x0C00 == 0x0800
+        && second & 0xD000 == 0x8000
+    {
+        let s = ((first >> 10) & 1) as u32;
+        let j1 = ((second >> 13) & 1) as u32;
+        let j2 = ((second >> 11) & 1) as u32;
+        let imm10 = (first & 0x3FF) as u32;
+        let imm11 = (second & 0x7FF) as u32;
+        let mut imm32 = (s << 24) | (j2 << 23) | (j1 << 22) | (imm10 << 12) | (imm11 << 1);
+        imm32 = sign_extend(imm32, 25);
+        return format!("b.w {:#x}", pc.wrapping_add(imm32));
+    }
+
+    // LDR/STR (immediate 12-bit, 0xF8D0-0xF8DF / 0xF8C0-0xF8CF).
+    if first & 0xFFF0 == 0xF8D0 || first & 0xFFF0 == 0xF8C0 {
+        let load = first & 0x0010 != 0;
+        let rn = (first & 0x000F) as usize;
+        let rd = ((second >> 12) & 0x0F) as usize;
+        let imm12 = (second & 0x0FFF) as u32;
+        return if load {
+            format!("ldr r{rd}, [r{rn}, #0x{imm12:x}]")
+        } else {
+            format!("str r{rd}, [r{rn}, #0x{imm12:x}]")
+        };
+    }
+
+    // LDRB/STRB (0xF890-0xF89F / 0xF880-0xF88F).
+    if first & 0xFFF0 == 0xF890 || first & 0xFFF0 == 0xF880 {
+        let load = first & 0x0010 != 0;
+        let rn = (first & 0x000F) as usize;
+        let rd = ((second >> 12) & 0x0F) as usize;
+        let imm12 = (second & 0x0FFF) as u32;
+        return if load {
+            format!("ldrb r{rd}, [r{rn}, #0x{imm12:x}]")
+        } else {
+            format!("strb r{rd}, [r{rn}, #0x{imm12:x}]")
+        };
+    }
+
+    let _ = read;
+    format!(".word 0x{insn:08x}")
 }
 
 /// Decode a single A32 (ARM-state) instruction for the disassembly view.
@@ -4840,6 +5096,9 @@ mod tests {
         // Thumb-1 (16-bit) halfword, e.g. MOVS r0, #1 (0x2001).
         let read = |addr: u32| if addr == 0 { 0x01 } else { 0x20 };
         assert_eq!(instruction_size(Arch::Arm, 0, &read, false), 2);
+        // Thumb-1 unconditional branch (0xE001) is still 16-bit, not 32-bit.
+        let read = |addr: u32| if addr == 0 { 0x01 } else { 0xE0 };
+        assert_eq!(instruction_size(Arch::Arm, 0, &read, false), 2);
         // Thumb-2 (32-bit) starts with a 0xE000-prefixed halfword.
         let read = |addr: u32| match addr {
             0 => 0x00,
@@ -5208,6 +5467,80 @@ mod tests {
                 disassemble_one_state(Arch::Arm, 0, &read, false),
                 *expected,
                 "insn {insn:#06x}"
+            );
+        }
+    }
+
+    #[test]
+    fn disassembles_thumb_full_families() {
+        // Thumb-1 families the core executes (LSL/LSR/ASR, ADD/SUB,
+        // MOV/CMP/ADD/SUB imm, PC-rel LDR, high-reg/BX, register-offset
+        // loads/stores, word/byte/half immediate, SP-relative, PUSH/POP,
+        // STM/LDM, conditional branch, SVC) decode with real mnemonics.
+        let cases: &[(u16, &str)] = &[
+            (0x0148, "lsls r0, r1, #5"),
+            (0x1850, "adds r0, r2, r1"),
+            (0x1CC8, "adds r0, r1, #3"),
+            (0x2210, "movs r2, #16"),
+            (0x2A10, "cmp r2, #16"),
+            (0x3A10, "subs r2, #16"),
+            (0x4A10, "ldr r2, [pc, #64]"),
+            (0x5A00, "ldrh r0, [r0, r0]"),
+            (0x6801, "ldr r0, [r1, #0]"),
+            (0x7001, "strb r0, [r1, #0]"),
+            (0x8001, "strh r0, [r1, #0]"),
+            (0x9101, "str r1, [sp, #4]"),
+            (0xA001, "add r0, pc, #4"),
+            (0xB001, "add sp, sp, #4"),
+            (0xB401, "push {r0}"),
+            (0xBD01, "pop {r0, pc}"),
+            (0xC801, "ldmia r0!, {r0}"),
+            (0xDF00, "svc #0"),
+            (0xD001, "beq 0x6"),
+            (0xE001, "b 0x6"),
+        ];
+        for (half, expected) in cases {
+            let bytes = [*half as u8, (*half >> 8) as u8];
+            let read = |addr: u32| {
+                let i = addr as usize;
+                if i < 2 { bytes[i] } else { 0 }
+            };
+            assert_eq!(
+                disassemble_one_state(Arch::Arm, 0, &read, false),
+                *expected,
+                "insn {half:#06x}"
+            );
+        }
+    }
+
+    #[test]
+    fn disassembles_thumb2_wide_forms() {
+        // Thumb-2 32-bit forms the core executes (BL/BLX, MOVW/MOVT,
+        // ADDW/SUBW, LDR/STR/LDRB/STRB immediate) decode with real mnemonics.
+        let cases: &[(u32, &str)] = &[
+            (0xF000_D000, "bl 0x0"),
+            (0xF240_4000, "movw r0, #0x200"),
+            (0xF200_2000, "addw r0, r0, #0x2000"),
+            (0xF8D0_0000, "ldr r0, [r0, #0x0]"),
+            (0xF8C0_0000, "str r0, [r0, #0x0]"),
+            (0xF890_0000, "ldrb r0, [r0, #0x0]"),
+            (0xF880_0000, "strb r0, [r0, #0x0]"),
+        ];
+        for (insn, expected) in cases {
+            let bytes = [
+                (*insn >> 16) as u8,
+                (*insn >> 24) as u8,
+                *insn as u8,
+                (*insn >> 8) as u8,
+            ];
+            let read = |addr: u32| {
+                let i = addr as usize;
+                if i < 4 { bytes[i] } else { 0 }
+            };
+            assert_eq!(
+                disassemble_one_state(Arch::Arm, 0, &read, false),
+                *expected,
+                "insn {insn:#010x}"
             );
         }
     }

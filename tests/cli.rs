@@ -1595,6 +1595,79 @@ fn disasm_arm_state_override() {
 }
 
 #[test]
+fn disasm_thumb_full_families() {
+    let dir = tmpdir();
+    let binfile = dir.join("thumb-families.bin");
+    let sess = dir.join("thumb-families.json");
+    // Thumb-1: LSL/ADD-reg/ADD-imm, MOV/CMP/SUB imm, PC-rel LDR,
+    // register-offset LDRH, word/byte/half immediate, SP-relative,
+    // PUSH/POP, LDMIA, SVC, BEQ, B. Thumb-2: BL, MOVW, ADDW,
+    // LDR/STR/LDRB/STRB immediate.
+    let bytes: &[u8] = &[
+        // ---- Thumb-1 (each 2 bytes) ----
+        0x48, 0x01, // lsls r0, r1, #5
+        0x50, 0x18, // adds r0, r2, r1
+        0xC8, 0x1C, // adds r0, r1, #3
+        0x10, 0x22, // movs r2, #16
+        0x10, 0x2A, // cmp r2, #16
+        0x10, 0x3A, // subs r2, #16
+        0x10, 0x4A, // ldr r2, [pc, #64]
+        0x00, 0x5A, // ldrh r0, [r0, r0]
+        0x01, 0x68, // ldr r0, [r1, #0]
+        0x01, 0x70, // strb r0, [r1, #0]
+        0x01, 0x80, // strh r0, [r1, #0]
+        0x01, 0x91, // str r1, [sp, #4]
+        0x01, 0xA0, // add r0, pc, #4
+        0x01, 0xB0, // add sp, sp, #4
+        0x01, 0xB4, // push {r0}
+        0x01, 0xBD, // pop {r0, pc}
+        0x01, 0xC8, // ldmia r0!, {r0}
+        0x00, 0xDF, // svc #0
+        0x01, 0xD0, // beq 0x2a
+        0x01, 0xE0, // b 0x2c
+        // ---- Thumb-2 (each 4 bytes) ----
+        0x00, 0xF0, 0x00, 0xD0, // bl 0x28
+        0x40, 0xF2, 0x00, 0x40, // movw r0, #0x200
+        0x00, 0xF2, 0x00, 0x20, // addw r0, r0, #0x2000
+        0xD0, 0xF8, 0x00, 0x00, // ldr r0, [r0, #0x0]
+        0xC0, 0xF8, 0x00, 0x00, // str r0, [r0, #0x0]
+        0x90, 0xF8, 0x00, 0x00, // ldrb r0, [r0, #0x0]
+        0x80, 0xF8, 0x00, 0x00, // strb r0, [r0, #0x0]
+    ];
+    std::fs::write(&binfile, bytes).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "27", "--arm-state", "thumb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "0x00000000: lsls r0, r1, #5",
+        "0x00000002: adds r0, r2, r1",
+        "0x00000004: adds r0, r1, #3",
+        "0x00000006: movs r2, #16",
+        "0x0000000c: ldr r2, [pc, #64]",
+        "0x0000001c: push {r0}",
+        "0x0000001e: pop {r0, pc}",
+        "0x00000024: beq 0x2a",
+        "0x00000026: b 0x2c",
+        "0x00000028: bl 0x28",
+        "0x0000002c: movw r0, #0x200",
+        "0x00000030: addw r0, r0, #0x2000",
+        "0x00000034: ldr r0, [r0, #0x0]",
+        "0x00000038: str r0, [r0, #0x0]",
+        "0x0000003c: ldrb r0, [r0, #0x0]",
+        "0x00000040: strb r0, [r0, #0x0]",
+    ] {
+        assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
+    }
+}
+
+#[test]
 fn disasm_source_annotates_lines() {
     let dir = tmpdir();
     let sess = dir.join("dsrc.json");
