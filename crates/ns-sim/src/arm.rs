@@ -1158,6 +1158,57 @@ impl ArmCore {
             return;
         }
 
+        // LDREX/STREX (exclusive access). Bits 11-8 = 1000, bit 5 = 0, and
+        // bits 7-6 are 01 (word) or 11 (byte/half). Word forms: second bits
+        // 7-0 = 0, Rt = bits 15-12, and the status register is bits 11-8
+        // (store) or unused (load). Byte/half forms: second bits 7-4 =
+        // 0100 (byte) / 0101 (half), bits 11-8 = 1111, Rt = bits 15-12, and
+        // the status register is bits 3-0 (store) or unused (load). On the
+        // single-core Cortex-M the exclusive monitor always grants, so STREX
+        // writes and records success (Rd = 0).
+        if first & 0x0F00 == 0x0800
+            && first & 0x0020 == 0
+            && ((first & 0x00C0 == 0x0040 && second & 0x00FF == 0)
+                || (first & 0x00C0 == 0x00C0 && second & 0x00C0 == 0x0040))
+        {
+            let rn = (first & 0x0F) as usize;
+            let rt = ((second >> 12) & 0x0F) as usize;
+            let byte_half = first & 0x00C0 == 0x00C0;
+            let size = if byte_half {
+                (second >> 4) & 0x1 // 0 = byte, 1 = half
+            } else {
+                2 // word
+            };
+            let is_store = first & 0x0010 == 0;
+            // The status register is bits 11-8 for word stores and bits 3-0
+            // for byte/half stores; loads do not use it.
+            let rd = if is_store && byte_half {
+                (second & 0x0F) as usize
+            } else if is_store {
+                ((second >> 8) & 0x0F) as usize
+            } else {
+                0
+            };
+            let addr = self.regs[rn];
+            if is_store {
+                let value = self.regs[rt];
+                match size {
+                    0 => self.write_u8(addr, value as u8),
+                    1 => self.write_u16(addr, value as u16),
+                    _ => self.write_u32(addr, value),
+                }
+                self.regs[rd] = 0; // exclusive store succeeds
+            } else {
+                let value = match size {
+                    0 => self.read_u8(addr) as u32,
+                    1 => self.read_u16(addr) as u32,
+                    _ => self.read_u32(addr),
+                };
+                self.regs[rt] = value;
+            }
+            return;
+        }
+
         // LDRD/STRD (bits 15-9 = 1110100, bit 6 = 1, second bits 15-12 is the
         // first of a register pair, so != 1111): doubleword transfer with an
         // 8-bit scaled immediate offset.
@@ -2883,6 +2934,56 @@ mod tests {
         c.regs[5] = 0x8000_0000;
         run(&mut c, &[0xFA4F, 0xF4B5], 1);
         assert_eq!(c.regs[4], 0xFFFF_FF80);
+    }
+
+    #[test]
+    fn thumb2_ldrex_strex() {
+        // ldrex r0, [r1] (0xE8510F00): reads the word at r1.
+        let mut c = core();
+        c.regs[1] = 0x100;
+        c.write_u32(0x100, 0xDEAD_BEEF);
+        run(&mut c, &[0xE851, 0x0F00], 1);
+        assert_eq!(c.regs[0], 0xDEAD_BEEF);
+        assert_eq!(c.regs[PC], 4);
+
+        // strex r2, r3, [r4] (0xE8443200): stores the word and records success.
+        let mut c = core();
+        c.regs[4] = 0x100;
+        c.regs[3] = 0xCAFE_BABE;
+        run(&mut c, &[0xE844, 0x3200], 1);
+        assert_eq!(c.regs[2], 0, "exclusive store succeeds on Cortex-M");
+        assert_eq!(c.read_u32(0x100), 0xCAFE_BABE);
+
+        // ldrexb r5, [r6] (0xE8D65F4F): reads the byte at r6.
+        let mut c = core();
+        c.regs[6] = 0x100;
+        c.write_u8(0x100, 0x7F);
+        run(&mut c, &[0xE8D6, 0x5F4F], 1);
+        assert_eq!(c.regs[5], 0x7F);
+
+        // strexb r7, r8, [r9] (0xE8C98F47): stores the byte and records success.
+        let mut c = core();
+        c.regs[9] = 0x100;
+        c.regs[8] = 0xAB;
+        run(&mut c, &[0xE8C9, 0x8F47], 1);
+        assert_eq!(c.regs[7], 0, "exclusive byte store succeeds");
+        assert_eq!(c.read_u8(0x100), 0xAB);
+
+        // ldrexh r10, [r11] (0xE8DBAF5F): reads the halfword at r11.
+        let mut c = core();
+        c.regs[11] = 0x100;
+        c.write_u16(0x100, 0xBEEF);
+        run(&mut c, &[0xE8DB, 0xAF5F], 1);
+        assert_eq!(c.regs[10], 0xBEEF);
+
+        // strexh r12, r0, [r1] (0xE8C10F5C): stores the halfword and records
+        // success.
+        let mut c = core();
+        c.regs[1] = 0x100;
+        c.regs[0] = 0x1234;
+        run(&mut c, &[0xE8C1, 0x0F5C], 1);
+        assert_eq!(c.regs[12], 0, "exclusive halfword store succeeds");
+        assert_eq!(c.read_u16(0x100), 0x1234);
     }
 
     #[test]

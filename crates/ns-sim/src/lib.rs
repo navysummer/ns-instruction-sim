@@ -3659,6 +3659,48 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("{mnem} [r{rn}, r{rm}]");
     }
 
+    // LDREX/STREX (exclusive access). Bits 11-8 = 1000, bit 5 = 0, and bits
+    // 7-6 are 01 (word) or 11 (byte/half). Word forms: second bits 7-0 = 0,
+    // Rt = bits 15-12, and the status register is bits 11-8 (store) or unused
+    // (load). Byte/half forms: second bits 7-4 = 0100 (byte) / 0101 (half),
+    // bits 11-8 = 1111, Rt = bits 15-12, and the status register is bits 3-0
+    // (store) or unused (load).
+    if first & 0x0F00 == 0x0800
+        && first & 0x0020 == 0
+        && ((first & 0x00C0 == 0x0040 && second & 0x00FF == 0)
+            || (first & 0x00C0 == 0x00C0 && second & 0x00C0 == 0x0040))
+    {
+        let rn = (first & 0x0F) as usize;
+        let rt = ((second >> 12) & 0x0F) as usize;
+        let byte_half = first & 0x00C0 == 0x00C0;
+        let size = if byte_half {
+            (second >> 4) & 0x1 // 0 = byte, 1 = half
+        } else {
+            2 // word
+        };
+        let is_store = first & 0x0010 == 0;
+        let rd = if is_store && byte_half {
+            (second & 0x0F) as usize
+        } else if is_store {
+            ((second >> 8) & 0x0F) as usize
+        } else {
+            0
+        };
+        let suffix = match (size, is_store) {
+            (0, false) => "ldrexb",
+            (0, true) => "strexb",
+            (1, false) => "ldrexh",
+            (1, true) => "strexh",
+            (_, false) => "ldrex",
+            (_, true) => "strex",
+        };
+        return if is_store {
+            format!("{suffix} r{rd}, r{rt}, [r{rn}]")
+        } else {
+            format!("{suffix} r{rt}, [r{rn}]")
+        };
+    }
+
     // LDRD/STRD (bits 15-9 = 1110100, bit 6 = 1, second bits 15-12 != 1111).
     if first & 0xFE40 == 0xE840 && second & 0xF000 != 0xF000 {
         let rn = (first & 0x0F) as usize;
@@ -6077,6 +6119,13 @@ mod tests {
             (0xFA5F_F091, "uxtb.w r0, r1, ror #8"),
             (0xFA1F_F2A3, "uxth.w r2, r3, ror #16"),
             (0xFA4F_F4B5, "sxtb.w r4, r5, ror #24"),
+            // Exclusive access.
+            (0xE851_0F00, "ldrex r0, [r1]"),
+            (0xE844_3200, "strex r2, r3, [r4]"),
+            (0xE8D6_5F4F, "ldrexb r5, [r6]"),
+            (0xE8C9_8F47, "strexb r7, r8, [r9]"),
+            (0xE8DB_AF5F, "ldrexh r10, [r11]"),
+            (0xE8C1_0F5C, "strexh r12, r0, [r1]"),
         ];
         for (insn, expected) in cases {
             let bytes = [

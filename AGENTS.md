@@ -338,6 +338,16 @@ done
 - `disasm_thumb2_rev_extend`：`disasm --arm-state thumb` 将
   `rev.w`/`rev16.w`/`revsh.w`/`rbit`/`uxtb.w`/`sxtb.w`/`uxth.w`/`sxth.w`
   反汇编为真实助记符。
+- `run_arm_thumb2_ldrex_strex`：端到端分六次 `step --session` 执行
+  `ldrex r0,[r1]`（0xE8510F00，读 0x20000000 得 0xDEADBEEF）、
+  `strex r2,r3,[r4]`（0xE8443200，写 0x20000004 得 0xCAFEBABE，r2=0 表示成功）、
+  `ldrexb r5,[r6]`（0xE8D65F4F，读 0x7F）、`strexb r7,r8,[r9]`（0xE8C98F47，
+  写 0xAB，r7=0）、`ldrexh r10,[r11]`（0xE8DBAF5F，读 0xBEEF）、
+  `strexh r12,r0,[r1]`（0xE8C10F5C，写 0x1234，r12=0），`state --json` 与
+  `mem read` 校验寄存器与存储结果，锁定 Thumb-2 独占访问执行（单核 Cortex-M
+  独占监视恒授予，STREX 写并记录成功）。
+- `disasm_thumb2_ldrex_strex`：`disasm --arm-state thumb` 将
+  `ldrex`/`strex`/`ldrexb`/`strexb`/`ldrexh`/`strexh` 反汇编为真实助记符。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -576,6 +586,13 @@ done
   `1111 Rd 10RR Rm`，RR=bits5-4 旋转 `ROR #8RR`）现按旋转后结果有/零扩展。由 ns-sim
   单测 `thumb2_rev_family_and_extend` 与 CLI `run_arm_thumb2_rev_extend`/
   `disasm_thumb2_rev_extend` 锁定。
+  Thumb-2 独占访问 `LDREX`/`STREX`/`LDREXB`/`STREXB`/`LDREXH`/`STREXH`（首半字
+  bits11-8=`1000`、bit5=0、bits7-6=01（字）或 11（字节/半字）；字形式第二半字
+  bits7-0=0、Rt=bits15-12、状态寄存器=bits11-8（存）/不用（载）；字节/半字形式
+  第二半字 bits7-4=`0100`/`0101`、bits11-8=`1111`、Rt=bits15-12、状态寄存器=bits3-0
+  （存）/不用（载））现执行与反汇编；单核 Cortex-M 独占监视恒授予，故 STREX 无条件
+  写并在状态寄存器记录 0（成功）。由 ns-sim 单测 `thumb2_ldrex_strex` 与 CLI
+  `run_arm_thumb2_ldrex_strex`/`disasm_thumb2_ldrex_strex` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

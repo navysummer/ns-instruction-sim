@@ -2589,6 +2589,124 @@ fn run_arm_thumb2_rev_extend() {
 }
 
 #[test]
+fn run_arm_thumb2_ldrex_strex() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-ldrex.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: ldrex r0,[r1]; strex r2,r3,[r4]; ldrexb r5,[r6]; strexb r7,r8,[r9];
+    // ldrexh r10,[r11]; strexh r12,r0,[r1].
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x51", "0xE8", "0x00", "0x0F", // ldrex r0, [r1]
+               "0x44", "0xE8", "0x00", "0x32", // strex r2, r3, [r4]
+               "0xD6", "0xE8", "0x4F", "0x5F", // ldrexb r5, [r6]
+               "0xC9", "0xE8", "0x47", "0x8F", // strexb r7, r8, [r9]
+               "0xDB", "0xE8", "0x5F", "0xAF", // ldrexh r10, [r11]
+               "0xC1", "0xE8", "0x5C", "0x0F"]) // strexh r12, r0, [r1]
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Seed the exclusive load targets.
+    for (addr, bytes) in [
+        (0x2000_0000u64, vec![0xEFu8, 0xBE, 0xAD, 0xDE]), // 0xDEADBEEF
+        (0x2000_0008u64, vec![0x7Fu8]),                   // 0x7F
+        (0x2000_0010u64, vec![0xEFu8, 0xBE]),             // 0xBEEF
+    ] {
+        let mut args: Vec<String> = vec![
+            "mem".into(), "write".into(), "--session".into(), sess.to_str().unwrap().into(),
+            "--addr".into(), format!("0x{addr:X}"), "--bytes".into(),
+        ];
+        for b in &bytes {
+            args.push(format!("0x{b:02X}"));
+        }
+        let out = Command::new(bin()).args(&args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [
+        ("r1", "0x20000000"), ("r3", "0xCAFEBABE"), ("r4", "0x20000004"),
+        ("r6", "0x20000008"), ("r8", "0x000000AB"), ("r9", "0x2000000C"),
+        ("r11", "0x20000010"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..5 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    // Before the final strexh, relocate r1 to a fresh word and give r0 the
+    // value to store (r1 was the ldrex base and r0 the loaded word).
+    for (name, value) in [("r1", "0x20000014"), ("r0", "0x00001234")] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0028u64);
+    assert_eq!(json["registers"]["r0"], 0x1234u64);         // reloaded before strexh
+    assert_eq!(json["registers"]["r2"], 0u64);              // strex success
+    assert_eq!(json["registers"]["r5"], 0x7Fu64);           // ldrexb
+    assert_eq!(json["registers"]["r7"], 0u64);              // strexb success
+    assert_eq!(json["registers"]["r10"], 0xBEEFu64);        // ldrexh
+    assert_eq!(json["registers"]["r12"], 0u64);             // strexh success
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x20000004",
+               "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mem: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(mem["bytes"], serde_json::json!([0xBE, 0xBA, 0xFE, 0xCA]));
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x2000000C",
+               "--len", "1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mem: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(mem["bytes"], serde_json::json!([0xAB]));
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x20000014",
+               "--len", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mem: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(mem["bytes"], serde_json::json!([0x34, 0x12]));
+}
+
+#[test]
 fn run_arm_thumb1_it_bkpt() {
     let dir = tmpdir();
     let sess = dir.join("arm-itbkpt.json");
@@ -2792,6 +2910,43 @@ fn disasm_thumb2_rev_extend() {
         "0x00000014: sxtb.w r10, r11",
         "0x00000018: uxth.w r0, r1",
         "0x0000001c: sxth.w r2, r3",
+    ] {
+        assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
+    }
+}
+
+#[test]
+fn disasm_thumb2_ldrex_strex() {
+    let dir = tmpdir();
+    let binfile = dir.join("thumb2-ldrex.bin");
+    let sess = dir.join("thumb2-ldrex.json");
+    // Thumb-2 exclusive-access forms the core executes.
+    let bytes: &[u8] = &[
+        0x51, 0xE8, 0x00, 0x0F, // ldrex r0, [r1]
+        0x44, 0xE8, 0x00, 0x32, // strex r2, r3, [r4]
+        0xD6, 0xE8, 0x4F, 0x5F, // ldrexb r5, [r6]
+        0xC9, 0xE8, 0x47, 0x8F, // strexb r7, r8, [r9]
+        0xDB, 0xE8, 0x5F, 0xAF, // ldrexh r10, [r11]
+        0xC1, 0xE8, 0x5C, 0x0F, // strexh r12, r0, [r1]
+    ];
+    std::fs::write(&binfile, bytes).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "6", "--arm-state", "thumb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "0x00000000: ldrex r0, [r1]",
+        "0x00000004: strex r2, r3, [r4]",
+        "0x00000008: ldrexb r5, [r6]",
+        "0x0000000c: strexb r7, r8, [r9]",
+        "0x00000010: ldrexh r10, [r11]",
+        "0x00000014: strexh r12, r0, [r1]",
     ] {
         assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
     }
