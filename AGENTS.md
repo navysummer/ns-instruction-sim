@@ -265,6 +265,8 @@ done
   0xCAFEBABE、`add r2,pc,#4` 得 0x08000018），锁定 16 位 PC 相对寻址修复。
 - `disasm_thumb2_bl_branch_target`：Thumb-2 `BL`/`B.W` 分支目标按架构 PC（当前 +4）计算
   （`bl 0x8` 自 0x0、`b.w 0x10` 自 0x4），锁定分支目标基址与 `B.W` 解码修复。
+- `run_arm_thumb1_asr_immediate`：端到端执行 Thumb-1 `ASRS r0,r1,#5`（0x1148）→
+  r0=0xFC000000，锁定 `ASR` 立即分类（top=1 且 bit11 清 0）与移位量语义。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -392,6 +394,11 @@ done
   Thumb-1 加减运算（`ADD/SUB` 立即/寄存器、`CMP/CMN/ADC/SBC/RSB`）现计算溢出标志 V
   （原恒为 0，使 `VS/VC/GE/LT/GT/LE` 有符号条件分支失效）；由 ns-sim 单测
   `thumb1_add_sub_sets_v_flag` 锁定。
+  Thumb-1 移位（`LSL/LSR/ASR` 立即与寄存器）现对 `ASR #0`/`LSR #0`（即移位 32）与
+  寄存器移位量 ≥32 按 ARM 语义处理（原 `asrs` 立即与寄存器移位量 ≥32 会因 Rust 移位
+  溢出 panic，且 `ASR` 立即被误判为 `ADD/SUB` 组——`top=1` 且 bit11 清 0）。由 ns-sim
+  单测 `thumb1_shift_zero_and_wide_amounts`/`disassembles_thumb_full_families` 与 CLI
+  `run_arm_thumb1_asr_immediate` 锁定。
   Thumb-1 的 PC 相对寻址（`LDR r,[pc,#imm]` 与 `ADD rd,pc,#imm`）现按架构 PC（当前地址
   +4，两条半字）取字对齐作为基址（原把下一指令地址按半字对齐，在 4 字节对齐/2 字节对齐
   两种边界各偏 4 字节），由 ns-sim 单测 `thumb1_pc_relative_uses_architectural_pc` 与

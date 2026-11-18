@@ -3253,7 +3253,7 @@ fn disassemble_thumb1(half: u16, pc: u32) -> String {
             .collect()
     };
     match top {
-        // LSL/LSR/ASR immediate.
+        // LSL/LSR immediate (top = 0).
         0x0 => {
             let name = match (half >> 11) & 0x03 {
                 0 => "lsls",
@@ -3261,6 +3261,10 @@ fn disassemble_thumb1(half: u16, pc: u32) -> String {
                 _ => "asrs",
             };
             format!("{name} r{rd}, r{}, #{imm5}", (half >> 3) & 0x07)
+        }
+        // ASR immediate: top = 1 with bit 11 clear (bits 15-11 = 00010).
+        0x1 if half & 0x0800 == 0 => {
+            format!("asrs r{rd}, r{}, #{imm5}", (half >> 3) & 0x07)
         }
         // ADD/SUB register or immediate (bit 10 = sub, bit 9 = immediate).
         0x1 => {
@@ -5519,6 +5523,7 @@ mod tests {
         // STM/LDM, conditional branch, SVC) decode with real mnemonics.
         let cases: &[(u16, &str)] = &[
             (0x0148, "lsls r0, r1, #5"),
+            (0x1148, "asrs r0, r1, #5"),
             (0x1850, "adds r0, r2, r1"),
             (0x1CC8, "adds r0, r1, #3"),
             (0x2210, "movs r2, #16"),

@@ -1799,6 +1799,46 @@ fn run_arm_thumb1_pc_relative() {
 }
 
 #[test]
+fn run_arm_thumb1_asr_immediate() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-asr.json");
+    // Cortex-M vector table at 0x08000000 (SP=0x20000000, reset PC=0x08000011).
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // asrs r0, r1, #5 (0x1148).
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes", "0x48", "0x11"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", "r1", "--value", "0x80000000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0012u64);
+    // 0x80000000 as i32 >> 5 = 0xFC000000.
+    assert_eq!(json["registers"]["r0"], 0xFC00_0000u64);
+}
+
+#[test]
 fn disasm_thumb2_ldrh_strh_barriers() {
     let dir = tmpdir();
     let binfile = dir.join("thumb2-wide.bin");

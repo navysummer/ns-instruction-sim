@@ -380,33 +380,22 @@ impl ArmCore {
                 let shift = imm5;
                 let rm = ((insn >> 3) & 0x07) as usize;
                 let value = self.regs[rm];
-                let r = match shift_op {
-                    0 => {
-                        let r = if shift == 0 { value } else { value << shift };
-                        if shift != 0 {
-                            self.xpsr = (self.xpsr & !0x2000_0000)
-                                | (((value >> (32 - shift)) & 1) << 29);
-                        }
-                        r
-                    }
-                    1 => {
-                        let r = if shift == 0 { 0 } else { value >> shift };
-                        if shift != 0 {
-                            self.xpsr = (self.xpsr & !0x2000_0000)
-                                | (((value >> (shift - 1)) & 1) << 29);
-                        }
-                        r
-                    }
-                    _ => {
-                        let shift = if shift == 0 { 32 } else { shift };
-                        let r = ((value as i32) >> shift) as u32;
-                        if shift != 32 {
-                            self.xpsr = (self.xpsr & !0x2000_0000)
-                                | (((value >> (shift - 1)) & 1) << 29);
-                        }
-                        r
-                    }
-                };
+                let (r, carry, changed) = thumb_shift_value(value, shift, shift_op as u32);
+                if changed {
+                    self.xpsr = (self.xpsr & !0x2000_0000) | ((carry as u32) << 29);
+                }
+                self.set_nz(r);
+                self.regs[rd] = r;
+            }
+            // ASR immediate: top = 1 with bit 11 clear (bits 15-11 = 00010).
+            0x1 if insn & 0x0800 == 0 => {
+                let shift = imm5;
+                let rm = ((insn >> 3) & 0x07) as usize;
+                let value = self.regs[rm];
+                let (r, carry, changed) = thumb_shift_value(value, shift, 2);
+                if changed {
+                    self.xpsr = (self.xpsr & !0x2000_0000) | ((carry as u32) << 29);
+                }
                 self.set_nz(r);
                 self.regs[rd] = r;
             }
@@ -756,31 +745,27 @@ impl ArmCore {
             2 => {
                 // LSL Rd,Rs
                 let shift = b & 0xFF;
-                let r = if shift == 0 { a } else { a << shift };
-                if shift != 0 {
-                    self.xpsr = (self.xpsr & !0x2000_0000)
-                        | (((a >> (32 - shift)) & 1) << 29);
+                let (r, carry, changed) = thumb_shift_value(a, shift, 0);
+                if changed {
+                    self.xpsr = (self.xpsr & !0x2000_0000) | ((carry as u32) << 29);
                 }
                 (r, true, true)
             }
             3 => {
                 // LSR Rd,Rs
                 let shift = b & 0xFF;
-                let r = if shift == 0 { a } else { a >> shift };
-                if shift != 0 {
-                    self.xpsr = (self.xpsr & !0x2000_0000)
-                        | (((a >> (shift - 1)) & 1) << 29);
+                let (r, carry, changed) = thumb_shift_value(a, shift, 1);
+                if changed {
+                    self.xpsr = (self.xpsr & !0x2000_0000) | ((carry as u32) << 29);
                 }
                 (r, true, true)
             }
             4 => {
                 // ASR Rd,Rs
                 let shift = b & 0xFF;
-                let shift = if shift == 0 { 32 } else { shift };
-                let r = ((a as i32) >> shift) as u32;
-                if shift != 32 {
-                    self.xpsr = (self.xpsr & !0x2000_0000)
-                        | (((a >> (shift - 1)) & 1) << 29);
+                let (r, carry, changed) = thumb_shift_value(a, shift, 2);
+                if changed {
+                    self.xpsr = (self.xpsr & !0x2000_0000) | ((carry as u32) << 29);
                 }
                 (r, true, true)
             }
@@ -1524,6 +1509,48 @@ fn shift_ror(value: u32, amount: u32, carry_in: bool) -> (u32, bool) {
     }
 }
 
+/// Compute a Thumb shift result and carry-out. `amount` is the raw shift
+/// amount; for LSR/ASR a value of 0 means 32 (ARM semantics). Returns
+/// `(result, carry_out, carry_changed)`. For LSL #0 the carry is unchanged.
+fn thumb_shift_value(value: u32, amount: u32, kind: u32) -> (u32, bool, bool) {
+    match kind {
+        0 => {
+            // LSL
+            if amount == 0 {
+                (value, false, false)
+            } else if amount < 32 {
+                (value << amount, (value >> (32 - amount)) & 1 != 0, true)
+            } else {
+                (0, false, true)
+            }
+        }
+        1 => {
+            // LSR (amount 0 means 32)
+            let amount = if amount == 0 { 32 } else { amount };
+            if amount < 32 {
+                (value >> amount, (value >> (amount - 1)) & 1 != 0, true)
+            } else if amount == 32 {
+                (0, value >> 31 != 0, true)
+            } else {
+                (0, false, true)
+            }
+        }
+        _ => {
+            // ASR (amount 0 means 32)
+            let amount = if amount == 0 { 32 } else { amount };
+            if amount < 32 {
+                (((value as i32) >> amount) as u32, (value >> (amount - 1)) & 1 != 0, true)
+            } else if amount == 32 {
+                (((value as i32) >> 31) as u32, value & 0x8000_0000 != 0, true)
+            } else if value & 0x8000_0000 != 0 {
+                (0xFFFF_FFFF, true, true)
+            } else {
+                (0, false, true)
+            }
+        }
+    }
+}
+
 fn sign_extend_thumb(value: u32, bits: u32) -> u32 {
     let shift = 32 - bits;
     ((value << shift) as i32 >> shift) as u32
@@ -1735,6 +1762,37 @@ mod tests {
         assert_eq!(c.regs[0], 0x7FFF_FFFF);
         assert!(c.flag_v());
         assert!(!c.flag_n() && !c.flag_z());
+    }
+
+    #[test]
+    fn thumb1_shift_zero_and_wide_amounts() {
+        // ASRS r0, r1, #0 (0x1008) = ASR #32: result sign-extends, C = bit 31.
+        let mut c = core();
+        c.regs[1] = 0x8000_0000;
+        run(&mut c, &[0x1008], 1);
+        assert_eq!(c.regs[0], 0xFFFF_FFFF);
+        assert!(c.flag_n() && c.flag_c());
+
+        // LSRS r0, r1, #0 (0x0808) = LSR #32: result 0, C = bit 31.
+        let mut c = core();
+        c.regs[1] = 0x8000_0000;
+        run(&mut c, &[0x0808], 1);
+        assert_eq!(c.regs[0], 0);
+        assert!(c.flag_z() && c.flag_c());
+
+        // LSLS r0, r1, #0 (0x0008): no shift, carry unchanged.
+        let mut c = core();
+        c.regs[1] = 5;
+        run(&mut c, &[0x0008], 1);
+        assert_eq!(c.regs[0], 5);
+
+        // Register shift with a wide amount must not panic: LSRS r0, r1
+        // (0x40C8) with r1 = 40 yields 0.
+        let mut c = core();
+        c.regs[1] = 40;
+        run(&mut c, &[0x40C8], 1);
+        assert_eq!(c.regs[0], 0);
+        assert!(c.flag_z());
     }
 
     #[test]
