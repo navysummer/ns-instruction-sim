@@ -299,6 +299,12 @@ done
   `add.w r3,r1,r2`（0xEB010203，5+7=12）、`and.w r4,r3,r5`（0xEA030504，12&14=12）、
   `cmp.w r0,r1`（0xEBB00F01，9-5 置 C 清 N/Z）、`mov.w r6,r7`（0xEA4F0607，r6=0x1234），
   `state --json` 校验寄存器与 `armXpsr` 标志，锁定 Thumb-2 数据处理（寄存器）执行。
+- `run_arm_thumb2_ldrd_strd_tbb`：端到端分三次 `step --session` 执行 `ldrd r0,r1,[r2]`
+  （0xE9D20100，读 0x20000000/0x20000004 得 0x11111111/0x22222222）、
+  `strd r4,r5,[r6,#16]`（0xE9C64504，写 0x20000020/0x20000024 得 0xCAFE/0xBEEF）、
+  `tbb [r7,r8]`（0xE8D7F008，r7=0x20000030/r8=2，索引字节 0x20 → 目标 0x0800005C），
+  校验寄存器、PC 与 STRD 内存写跨会话持久化（`mem read`），锁定 Thumb-2 双字传送
+  与表分支执行；同时校验 ARM 运行时内存写进入会话 `memory_overlay`（跨进程 step 可续跑）。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -493,6 +499,17 @@ done
   `thumb2_data_processing_register`/`thumb2_mov_mvn_compare`/
   `thumb2_data_processing_shifted_register` 与 CLI `run_arm_thumb2_data_processing_register`
   锁定。
+  Thumb-2 表分支 `TBB`/`TBH`（`0xE8D0-0xE8DF` 前缀、second bits15-12=1111，bit4 选
+  TBH；Rn=first bits3-0、Rm=second bits3-0；表基址 = Align(PC,4)，PC 为当前地址 +4；
+  TBB 读 `[Rn+Rm]` 字节索引、TBH 读 `[Rn+Rm,LSL #1]` 半字索引，目标 = 基址 + 2×索引）
+  现正确执行（TBB 编码 `0xE8D7F008` = `tbb [r7,r8]`，基址按已前进的 PC 取字对齐，
+  与 BL/LDR 字面量/PC 相对寻址的架构 PC 约定一致）；`LDRD`/`STRD`（bits15-9 =
+  `1110100`、bit6=1、second bits15-12 ≠ 1111；Rn=first bits3-0、Rt=second bits15-12、
+  Rt2=second bits11-8、偏移 = imm8×4、P=bit8/U=bit7/W=bit5/L=bit4）现执行双字传送
+  （载入到 Rt/Rt2 或自 Rt/Rt2 存储，前/后索引与写回，载入时若 Rn 在寄存器对中则不写回），
+  编码 `0xE9D20100` = `ldrd r0,r1,[r2]`。ARM 运行时数据空间写现记入会话
+  `memory_overlay`（跨进程 `step --session` 可续跑并读回）。由 ns-sim 单测
+  `thumb2_tbb_tbh`/`thumb2_ldrd_strd` 与 CLI `run_arm_thumb2_ldrd_strd_tbb` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

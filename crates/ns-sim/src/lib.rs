@@ -1565,17 +1565,26 @@ impl Simulator {
              self.cycle_count += self.last_instruction_cycles as u64;
              self.halted = core.halted;
             let store_events = std::mem::take(&mut core.store_events);
-             let result = match result {
-                 arm::ArmStep::Advanced => StepResult::Advanced,
-                 arm::ArmStep::Breakpoint => StepResult::Breakpoint,
-                 arm::ArmStep::Halted => StepResult::Halted,
-             };
+            let result = match result {
+                arm::ArmStep::Advanced => StepResult::Advanced,
+                arm::ArmStep::Breakpoint => StepResult::Breakpoint,
+                arm::ArmStep::Halted => StepResult::Halted,
+            };
             for (address, byte) in store_events {
                 self.peripheral_write(address, byte);
+                // Record runtime data-space writes so they survive session
+                // reloads (the ARM core keeps its own memory image, so it is
+                // not mirrored into `self.memory`; only this overlay is
+                // replayed when a session is restored).
+                if let Some(entry) = self.memory_overlay.iter_mut().find(|(a, _)| *a == address) {
+                    entry.1 = byte;
+                } else {
+                    self.memory_overlay.push((address, byte));
+                }
             }
-             self.tick_peripherals_for(self.last_instruction_cycles as u64);
-             return result;
-         }
+            self.tick_peripherals_for(self.last_instruction_cycles as u64);
+            return result;
+        }
         if let Some(core) = self.x51.as_mut() {
             let bps: Vec<u32> = self.breakpoints.iter().filter(|bp| bp.enabled).map(|bp| bp.address).collect();
             let result = core.step(&bps);
@@ -3607,6 +3616,47 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let mnem = if load { "ldm" } else { "stm" };
         let wbs = if wb { "!" } else { "" };
         return format!("{mnem}{mode} r{rn}{wbs}, {{{}}}", regs.join(", "));
+    }
+
+    // TBB/TBH (0xE8D0-0xE8DF prefix, second bits 15-12 = 1111).
+    if first & 0xFFF0 == 0xE8D0 && second & 0xF000 == 0xF000 {
+        let rn = (first & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let mnem = if second & 0x0010 != 0 { "tbh" } else { "tbb" };
+        return format!("{mnem} [r{rn}, r{rm}]");
+    }
+
+    // LDRD/STRD (bits 15-9 = 1110100, bit 6 = 1, second bits 15-12 != 1111).
+    if first & 0xFE40 == 0xE840 && second & 0xF000 != 0xF000 {
+        let rn = (first & 0x0F) as usize;
+        let rt = ((second >> 12) & 0x0F) as usize;
+        let rt2 = ((second >> 8) & 0x0F) as usize;
+        let imm8 = (second & 0xFF) as u32;
+        let pre = first & 0x0100 != 0;
+        let up = first & 0x0080 != 0;
+        let wb = first & 0x0020 != 0;
+        let load = first & 0x0010 != 0;
+        let mnem = if load { "ldrd" } else { "strd" };
+        let off = imm8.wrapping_mul(4);
+        let off_str = if off == 0 {
+            String::new()
+        } else if up {
+            format!(", #{off}")
+        } else {
+            format!(", #-{off}")
+        };
+        let regs = format!("r{rt}, r{rt2}");
+        if pre {
+            let wbs = if wb { "!" } else { "" };
+            return format!("{mnem} {regs}, [r{rn}{off_str}]{wbs}");
+        }
+        // Post-index always carries an offset (even when imm8 is zero).
+        let post = if up {
+            format!("#{off}")
+        } else {
+            format!("#-{off}")
+        };
+        return format!("{mnem} {regs}, [r{rn}], {post}");
     }
 
     // LDR (literal): LDR Rt, [PC, #imm12] (0xF8DF).
@@ -5840,6 +5890,12 @@ mod tests {
             (0xF3BF_8F5F, "dmb sy"),
             (0xF3BF_8F6F, "dsb sy"),
             (0xF3BF_8F7F, "isb sy"),
+            (0xE8D7_F008, "tbb [r7, r8]"),
+            (0xE8D7_F018, "tbh [r7, r8]"),
+            (0xE9D2_0100, "ldrd r0, r1, [r2]"),
+            (0xE9F2_0102, "ldrd r0, r1, [r2, #8]!"),
+            (0xE9C6_4504, "strd r4, r5, [r6, #16]"),
+            (0xE8E6_4504, "strd r4, r5, [r6], #16"),
         ];
         for (insn, expected) in cases {
             let bytes = [

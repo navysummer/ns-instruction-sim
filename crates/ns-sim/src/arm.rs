@@ -1069,6 +1069,73 @@ impl ArmCore {
             return;
         }
 
+        // TBB/TBH (0xE8D0-0xE8DF prefix, second bits 15-12 = 1111): table
+        // branch. TBB reads a byte index at [Rn, Rm]; TBH reads a halfword
+        // index at [Rn, Rm, LSL #1]. The target is Align(PC, 4) + 2*index.
+        if first & 0xFFF0 == 0xE8D0 && second & 0xF000 == 0xF000 {
+            let rn = (first & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let table_addr = if second & 0x0010 != 0 {
+                self.regs[rn].wrapping_add(self.regs[rm].wrapping_shl(1))
+            } else {
+                self.regs[rn].wrapping_add(self.regs[rm])
+            };
+            let index = if second & 0x0010 != 0 {
+                (self.read_u16(table_addr) as u32) << 1
+            } else {
+                (self.read_u8(table_addr) as u32) << 1
+            };
+            // `pc` is the already-advanced next-instruction address (current+4);
+            // ARMv7-M defines PC = current+4 in Thumb state, so the TBB/TBH
+            // table base is Align(PC, 4) = Align(current+4, 4).
+            self.regs[PC] = (pc & !3).wrapping_add(index);
+            self.set_thumb(true);
+            return;
+        }
+
+        // LDRD/STRD (bits 15-9 = 1110100, bit 6 = 1, second bits 15-12 is the
+        // first of a register pair, so != 1111): doubleword transfer with an
+        // 8-bit scaled immediate offset.
+        if first & 0xFE40 == 0xE840 && second & 0xF000 != 0xF000 {
+            let rn = (first & 0x0F) as usize;
+            let rt = ((second >> 12) & 0x0F) as usize;
+            let rt2 = ((second >> 8) & 0x0F) as usize;
+            let imm8 = (second & 0xFF) as u32;
+            let pre = first & 0x0100 != 0; // P
+            let up = first & 0x0080 != 0; // U
+            let wb = first & 0x0020 != 0; // W
+            let load = first & 0x0010 != 0; // L
+            let offset = imm8.wrapping_mul(4);
+            let base = self.regs[rn];
+            let addr = if up {
+                base.wrapping_add(offset)
+            } else {
+                base.wrapping_sub(offset)
+            };
+            let effective = if pre { addr } else { base };
+            if load {
+                let v0 = self.read_u32(effective);
+                let v1 = self.read_u32(effective.wrapping_add(4));
+                if rt == PC {
+                    self.branch_exchange_value(v0);
+                } else {
+                    self.regs[rt] = v0;
+                }
+                if rt2 == PC {
+                    self.branch_exchange_value(v1);
+                } else {
+                    self.regs[rt2] = v1;
+                }
+            } else {
+                self.write_u32(effective, self.regs[rt]);
+                self.write_u32(effective.wrapping_add(4), self.regs[rt2]);
+            }
+            if (wb || !pre) && rn != PC && !(load && (rn == rt || rn == rt2)) {
+                self.regs[rn] = addr;
+            }
+            return;
+        }
+
         // LDR (literal): LDR Rt, [PC, #imm12] (0xF8DF). The base is the
         // architectural PC (current + 4) aligned down to a word.
         if first == 0xF8DF {
@@ -2676,6 +2743,77 @@ mod tests {
         run(&mut c, &[0xEB16, 0x0694], 1);
         assert_eq!(c.regs[6], 0x40);
         assert!(!c.flag_z());
+    }
+
+    #[test]
+    fn thumb2_tbb_tbh() {
+        // TBB [r3, r4] (0xE8D3F004): index byte at r3 + r4.
+        let mut c = core();
+        c.write_u16(0x1000, 0xE8D3); // TBB at 0x1000.
+        c.write_u16(0x1002, 0xF004);
+        c.regs[PC] = 0x1000;
+        c.set_thumb(true);
+        c.regs[3] = 0x1100;
+        c.regs[4] = 0x02;
+        c.write_u8(0x1102, 0x20);
+        c.step(&[]);
+        // ARMv7-M: PC = current+4 (0x1004), base = Align(PC,4) = 0x1004.
+        assert_eq!(c.regs[PC], 0x1004 + 0x40);
+
+        // TBH [r3, r4, lsl #1] (0xE8D3F014): halfword index at r3 + r4<<1.
+        let mut c = core();
+        c.write_u16(0x2000, 0xE8D3); // TBH at 0x2000.
+        c.write_u16(0x2002, 0xF014);
+        c.regs[PC] = 0x2000;
+        c.set_thumb(true);
+        c.regs[3] = 0x2100;
+        c.regs[4] = 0x02;
+        c.write_u16(0x2104, 0x10);
+        c.step(&[]);
+        // PC = current+4 (0x2004), base = Align(PC,4) = 0x2004.
+        assert_eq!(c.regs[PC], 0x2004 + 0x20);
+    }
+
+    #[test]
+    fn thumb2_ldrd_strd() {
+        // LDRD r0, r1, [r2] (0xE9D20100): no writeback, offset 0.
+        let mut c = core();
+        c.regs[2] = 0x200;
+        c.write_u32(0x200, 0x1111_1111);
+        c.write_u32(0x204, 0x2222_2222);
+        run(&mut c, &[0xE9D2, 0x0100], 1);
+        assert_eq!(c.regs[0], 0x1111_1111);
+        assert_eq!(c.regs[1], 0x2222_2222);
+        assert_eq!(c.regs[2], 0x200); // no writeback.
+        assert_eq!(c.regs[PC], 4);
+
+        // LDRD r0, r1, [r2, #8]! (0xE9F20102): pre-index with writeback.
+        let mut c = core();
+        c.regs[2] = 0x200;
+        c.write_u32(0x208, 0xAAAA_AAAA);
+        c.write_u32(0x20C, 0xBBBB_BBBB);
+        run(&mut c, &[0xE9F2, 0x0102], 1);
+        assert_eq!(c.regs[0], 0xAAAA_AAAA);
+        assert_eq!(c.regs[1], 0xBBBB_BBBB);
+        assert_eq!(c.regs[2], 0x208); // writeback to 0x200 + 8.
+
+        // LDRD r8, r9, [r10, #-4] (0xE95A8901): negative offset, no writeback.
+        let mut c = core();
+        c.regs[10] = 0x300;
+        c.write_u32(0x2FC, 0x1234_5678);
+        c.write_u32(0x300, 0x9ABC_DEF0);
+        run(&mut c, &[0xE95A, 0x8901], 1);
+        assert_eq!(c.regs[8], 0x1234_5678);
+        assert_eq!(c.regs[9], 0x9ABC_DEF0);
+
+        // STRD r4, r5, [r6, #16] (0xE9C64504): store pair, no writeback.
+        let mut c = core();
+        c.regs[4] = 0xCAFE;
+        c.regs[5] = 0xBEEF;
+        c.regs[6] = 0x300;
+        run(&mut c, &[0xE9C6, 0x4504], 1);
+        assert_eq!(c.read_u32(0x310), 0xCAFE);
+        assert_eq!(c.read_u32(0x314), 0xBEEF);
     }
 
     #[test]

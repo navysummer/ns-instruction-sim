@@ -2289,6 +2289,92 @@ fn run_arm_thumb2_data_processing_register() {
 }
 
 #[test]
+fn run_arm_thumb2_ldrd_strd_tbb() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-t2ldrd.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: ldrd r0,r1,[r2]; strd r4,r5,[r6,#16]; tbb [r7,r8].
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0xD2", "0xE9", "0x00", "0x01",
+               "0xC6", "0xE9", "0x04", "0x45",
+               "0xD7", "0xE8", "0x08", "0xF0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Data: the LDRD source pair and the STRD destination pair.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--bytes",
+               "0x11", "0x11", "0x11", "0x11",
+               "0x22", "0x22", "0x22", "0x22",
+               "0x20", "0x00", "0x00", "0x00"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [
+        ("r2", "0x20000000"), ("r6", "0x20000010"),
+        ("r4", "0x0000CAFE"), ("r5", "0x0000BEEF"),
+        ("r7", "0x20000030"), ("r8", "0x00000002"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    // The TBB index byte is at 0x20000030 + 0x02 = 0x20000032.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000032", "--bytes", "0x20"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for _ in 0..3 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["registers"]["r0"], 0x1111_1111u64); // ldrd r0, r1, [r2]
+    assert_eq!(json["registers"]["r1"], 0x2222_2222u64);
+    assert_eq!(json["registers"]["r4"], 0xCAFEu64);      // strd r4, r5, [r6, #16]
+    assert_eq!(json["registers"]["r5"], 0xBEEFu64);
+    // TBB: Align(PC,4) at 0x0800001C (PC = current+4) + 2*0x20 = 0x0800005C.
+    assert_eq!(json["pc"], 0x0800_005Cu64);
+    // The STRD wrote the pair at 0x20000020/0x20000024.
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000020", "--len", "2", "--width", "word"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("0x20000020: 0x0000cafe"), "STRD 未写入 0x20000020: {text}");
+    assert!(text.contains("0x20000024: 0x0000beef"), "STRD 未写入 0x20000024: {text}");
+}
+
+#[test]
 fn disasm_thumb2_ldrh_strh_barriers() {
     let dir = tmpdir();
     let binfile = dir.join("thumb2-wide.bin");
