@@ -878,10 +878,9 @@ impl ArmCore {
             return;
         }
 
-        // B.W unconditional (0xF000 prefix, second bits 15-14 = 10, 13-12 = 10).
+        // B.W unconditional (0xF000 prefix, second bits 15-14 = 10, bit 12 = 1).
         if first & 0xF800 == 0xF000
-            && first & 0x0C00 == 0x0800
-            && second & 0xD000 == 0x8000
+            && second & 0xD000 == 0x9000
         {
             let s = ((first >> 10) & 1) as u32;
             let j1 = ((second >> 13) & 1) as u32;
@@ -1712,6 +1711,19 @@ mod tests {
         assert_eq!(r, ArmStep::Advanced);
         assert_eq!(c.regs[LR], 4);
         assert_eq!(c.regs[PC], 4);
+    }
+
+    #[test]
+    fn bw_unconditional_branches() {
+        // B.W at address 0 with imm32=8: target = (current + 4) + 8 = 0xc.
+        // first=0xF000, second=0x9004 (imm11=4, j1=j2=s=0).
+        let mut c = core();
+        c.write_u16(0, 0xF000);
+        c.write_u16(2, 0x9004);
+        c.regs[PC] = 0;
+        c.set_thumb(true);
+        assert_eq!(c.step(&[]), ArmStep::Advanced);
+        assert_eq!(c.regs[PC], 0xc);
     }
 
     #[test]

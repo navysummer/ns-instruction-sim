@@ -1648,7 +1648,7 @@ fn disasm_thumb_full_families() {
         0x01, 0xD0, // beq 0x2a
         0x01, 0xE0, // b 0x2c
         // ---- Thumb-2 (each 4 bytes) ----
-        0x00, 0xF0, 0x00, 0xD0, // bl 0x28
+        0x00, 0xF0, 0x00, 0xD0, // bl 0x2c
         0x40, 0xF2, 0x00, 0x40, // movw r0, #0x200
         0x00, 0xF2, 0x00, 0x20, // addw r0, r0, #0x2000
         0xD0, 0xF8, 0x00, 0x00, // ldr r0, [r0, #0x0]
@@ -1677,7 +1677,7 @@ fn disasm_thumb_full_families() {
         "0x0000001e: pop {r0, pc}",
         "0x00000024: beq 0x2a",
         "0x00000026: b 0x2c",
-        "0x00000028: bl 0x28",
+        "0x00000028: bl 0x2c",
         "0x0000002c: movw r0, #0x200",
         "0x00000030: addw r0, r0, #0x2000",
         "0x00000034: ldr r0, [r0, #0x0]",
@@ -1828,6 +1828,37 @@ fn disasm_thumb2_ldrh_strh_barriers() {
         "0x00000008: dmb sy",
         "0x0000000c: dsb sy",
         "0x00000010: isb sy",
+    ] {
+        assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
+    }
+}
+
+#[test]
+fn disasm_thumb2_bl_branch_target() {
+    let dir = tmpdir();
+    let binfile = dir.join("thumb2-branch.bin");
+    let sess = dir.join("thumb2-branch.json");
+    // Thumb-2 BL and B.W with non-zero offsets: the branch target base is
+    // current + 4 (architectural PC), so BL at 0x0 with imm32=4 targets 0x8
+    // and B.W at 0x4 with imm32=8 targets 0x10.
+    let bytes: &[u8] = &[
+        0x00, 0xF0, 0x02, 0xD0, // bl 0x8
+        0x00, 0xF0, 0x04, 0x90, // b.w 0x10
+    ];
+    std::fs::write(&binfile, bytes).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "2", "--arm-state", "thumb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "0x00000000: bl 0x8",
+        "0x00000004: b.w 0x10",
     ] {
         assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
     }

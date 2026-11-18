@@ -3454,7 +3454,9 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let mut imm32 = (s << 24) | (j2 << 23) | (j1 << 22) | (imm10 << 12) | (imm11 << 1);
         imm32 = sign_extend(imm32, 25);
         let link = second & 0x4000 != 0;
-        let target = pc.wrapping_add(imm32);
+        // Thumb-2 is 4 bytes wide, so the architectural PC used for branch
+        // targets is current + 4 (like the Thumb-1 branches below).
+        let target = pc.wrapping_add(4).wrapping_add(imm32);
         return if link {
             format!("bl {:#x}", target)
         } else {
@@ -3489,10 +3491,9 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         };
     }
 
-    // B.W unconditional (0xF000 prefix, second bits 15-14 = 10, 13-12 = 10).
+    // B.W unconditional (0xF000 prefix, second bits 15-14 = 10, bit 12 = 1).
     if first & 0xF800 == 0xF000
-        && first & 0x0C00 == 0x0800
-        && second & 0xD000 == 0x8000
+        && second & 0xD000 == 0x9000
     {
         let s = ((first >> 10) & 1) as u32;
         let j1 = ((second >> 13) & 1) as u32;
@@ -3501,7 +3502,7 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let imm11 = (second & 0x7FF) as u32;
         let mut imm32 = (s << 24) | (j2 << 23) | (j1 << 22) | (imm10 << 12) | (imm11 << 1);
         imm32 = sign_extend(imm32, 25);
-        return format!("b.w {:#x}", pc.wrapping_add(imm32));
+        return format!("b.w {:#x}", pc.wrapping_add(4).wrapping_add(imm32));
     }
 
     // LDR/STR (immediate 12-bit, 0xF8D0-0xF8DF / 0xF8C0-0xF8CF).
@@ -5558,7 +5559,8 @@ mod tests {
         // ADDW/SUBW, LDR/STR/LDRB/STRB/LDRH/STRH immediate, DMB/DSB/ISB)
         // decode with real mnemonics.
         let cases: &[(u32, &str)] = &[
-            (0xF000_D000, "bl 0x0"),
+            (0xF000_D000, "bl 0x4"),
+            (0xF000_9004, "b.w 0xc"),
             (0xF240_4000, "movw r0, #0x200"),
             (0xF200_2000, "addw r0, r0, #0x2000"),
             (0xF8D0_0000, "ldr r0, [r0, #0x0]"),

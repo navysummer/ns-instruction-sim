@@ -263,6 +263,8 @@ done
 - `run_arm_thumb1_pc_relative`：端到端执行 Thumb-1 `LDR r,[pc,#imm]` 与 `ADD rd,pc,#imm`，
   校验 PC 相对基址按架构 PC（当前 +4）取字对齐（`ldr r0,[pc,#0]` 读取 4 字对齐字面量
   0xCAFEBABE、`add r2,pc,#4` 得 0x08000018），锁定 16 位 PC 相对寻址修复。
+- `disasm_thumb2_bl_branch_target`：Thumb-2 `BL`/`B.W` 分支目标按架构 PC（当前 +4）计算
+  （`bl 0x8` 自 0x0、`b.w 0x10` 自 0x4），锁定分支目标基址与 `B.W` 解码修复。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -373,6 +375,11 @@ done
   内存屏障；`b`（0xE001）与 `bl 0x28`（0xF000D000）分别按 2/4 字节推进。屏障（0xF3BF
   0x8F5F/8F6F/8F7F）在执行内核中为 no-op（原仅 DMB 被识别，DSB/ISB 会误 halt），
   由 ns-sim 单测 `execute_wide_ldrh_strh_and_barriers` 与 CLI `disasm_thumb2_ldrh_strh_barriers` 锁定。
+  Thumb-2 分支目标现以架构 PC（当前 +4）为基址（原 `BL/BLX` 与 `B.W` 反汇编按当前地址算，
+  比执行内核偏 4 字节）；`B.W` 解码修复为可到达（原 `first & 0x0C00 == 0x0800` 与
+  `first & 0xF800 == 0xF000` 矛盾，使 `B.W` 永不匹配），现按 `second & 0xD000 == 0x9000`
+  识别。由 ns-sim 单测 `disassembles_thumb2_wide_forms`/`bw_unconditional_branches` 与 CLI
+  `disasm_thumb2_bl_branch_target` 锁定。
   Thumb-1 执行内核的字段提取同步修复为与编码一致：格式 0 取 Rm=bits5-3（bit6 属移位量）、
   格式 1 以 bit9 选 SUB/bit10 选立即且 Rn=bits5-3/Rm=bits8-6、格式 4 ALU 取 Rm=bits5-3、
   格式 5 取 Rn=bits5-3/Rm=bits8-6、格式 9/0xA 取 Rd=bits10-8、格式 0xC 取 Rn=bits10-8
