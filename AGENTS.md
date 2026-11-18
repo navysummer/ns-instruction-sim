@@ -300,6 +300,8 @@ done
 - `state_reports_pc_symbol`：`state --json` 报告 PC 处最近符号（pcSymbol）。
 - `symbol_list_shows_symbols`：`symbol list --json` 列出 ELF 符号（名称/地址）。
 - `device_svd_by_device_key`：`device svd --device` 从内置 SVD 解析；缺源报错。
+- `disasm_rx_fc_fd_long_forms`：RX `0xFC`/`0xFD` 长操作码族反汇编文本与实际宽度推进。
+- `step_rx_fc_fd_long_forms`：RX `0xFC`/`0xFD` 长操作码族执行（ADC/SHLR/SBB）与 PC/寄存器变化。
 
 ### 5.2 反汇编宽度
 
@@ -328,13 +330,26 @@ done
   寄存器家族捕获为 `and a, A`，`0x61 0xAA`/`0xAB` 经 `0xA8` 家族路由为 `mov a, ES:[imm16]`），
   与核心执行语义逐字节一致。
 
-- RX 长操作码族（`0xFC`/`0xFD`，寄存器-寄存器与立即数长格式）在核心 `execute_fc`/`execute_fd`
-  中为**部分实现**：若干 `match` 分支已实现（`MOV #imm16, rd`、`MVFC/MVTC`、`SHLL/SHLR/SHAR`、
-  `DIV/DIVU` 等），但其 `hi` 选择子当前从首字节低半字节取值（恒为 `0xC`/`0xD`），导致多数
-  分支实际不可达；反汇编器对这些长格式输出原始 `0xFCxx`/`0xFDxx` 占位符。**完整补齐需要
-  权威 RX 指令集编码参考**（操作数字段布局），在取得参考前不做猜测性改动，以免引入错误语义。
-  当前 CLI `disasm` 对这类指令按 2 字节操作码字推进，`step` 对已实现分支可执行、未实现分支
-  如实停机。后续若取得参考编码，应在此同步更新状态并新增 `disasm`/`step` 端到端用例。
+- RX 长操作码族（`0xFC`/`0xFD`，寄存器-寄存器与立即数长格式）已按 binutils 权威编码表
+  （`rx-decode.c`/`rx.h`）完整补齐。核心 `execute_fc`/`execute_fd` 的 `hi` 选择子改为从**第二
+  字节**（操作选择子）取值、寄存器字段从**第三字节**（`op[2]`）读取，不再恒为 `0xC`/`0xD`。
+  已实现的寄存器-寄存器整数家族：`SBB/NEG/ADC/ABS`、`MAX/MIN/EMUL/EMULU/DIV/DIVU/TST/XOR/NOT`、
+  `XCHG/STZ/STNZ`、`BSET/BCLR/BTST/BNOT`（寄存器位操作）、`SHLR/SHAR/SHLL/ROTR/ROTL/REVW/REVL`、
+  `MVTC/MVFC`、`MOV`（寄存器-寄存器，带 b/w/l 符号扩展）、`SC`（条件存寄存器）与立即数家族：`ROTR/ROTL #imm`、
+  `SHLR/SHAR/SHLL #imm,rs,rd`、`ADC/MAX/MIN/EMULU/DIVU/TST/XOR/STZ #imm`、`MVTC #imm,cr`、
+  `BM/BNOT #imm,rd`。`BM` 按 `cond` 将目标位写为条件值、`BNOT` 翻转目标位；`MVTC/MVFC` 按
+  `c*16+rdst`/`s*16+rsrc` 解析控制寄存器，CR0 即 `psw`。内存寻址形式（`ss/sd != 3`）、浮点
+  （`FSUB/FCMP/FADD/FMUL/FDIV/FTOI/ROUND/FSQRT/FTOU`）、64 位累加器（`MULHI/MULLO/MACHI/MACLO`
+  等）、`MOVU/MOVCO/MOVLI` 与 DSP（`DMOV/SAVE/RSTR/MVFAC*`）因仿真器无 FPU/64 位累加器/
+  原子内存模型而如实停机，不产生错误语义。反汇编器镜像同一家族：`0xFC`/`0xFD` 各分支输出
+  对应助记符与操作数，`instruction_len`
+  对 `0xFC` 返回 3 字节（操作码字+操作数），对 `0xFD` 返回 3 字节、立即数 ALU/MVTC 形式按 `im`
+  字段返回 4/5/6/7 字节（`imm8`/`imm16`/`imm24`/`imm32`）。核心修正 `set_pc`/`reset`/
+  `load_image`/RTS/中断返回/寄存器跳转的 `pc & !1` Thumb 对齐掩码（RX 的 `BRA.s` 为 1 字节，
+  合法 PC 可为奇地址）。该行为由 ns-sim 单测 `fc_alu_register_forms`/`fc_bit_register_forms`/
+  `fc_bm_sc_immediate`/`fd_shift_rotate_forms`/`fd_imm_shifts_and_rotates`/`fd_mvtc_mvfc`/
+  `fd_imm_alu`/`fd_bm_immediate`/`disassembles_fc_fd_long_forms`/`instruction_len_fc_fd` 与 CLI
+  端到端 `disasm_rx_fc_fd_long_forms`/`step_rx_fc_fd_long_forms` 锁定。
 
 - `step-over`/`step-out` 通过 `is_call_mnemonic`/`is_return_mnemonic` 识别调用与返回，并用
   `instruction_size` 计算返回地址。RX 的 `bsr.w`/`bsr.a` 已纳入调用助记符，`step-over` 在

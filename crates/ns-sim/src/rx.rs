@@ -119,18 +119,18 @@ impl RxCore {
     pub fn reset(&mut self, entry: u32) {
         self.regs = [0; 16];
         self.psw = Psw::default();
-        self.pc = entry & !1;
+        self.pc = entry;
         self.halted = false;
     }
 
     pub fn set_pc(&mut self, pc: u32) {
-        self.pc = pc & !1;
+        self.pc = pc;
     }
 
     /// Load a program image at `base` and start the PC there.
     pub fn load_image(&mut self, base: u32, image: &[u8]) {
         self.write_bytes(base, image);
-        self.pc = base & !1;
+        self.pc = base;
         self.halted = false;
     }
 
@@ -415,7 +415,7 @@ impl RxCore {
         if insn == 0x0002 {
             // RTS
             let ret = self.pop();
-            self.pc = ret & !1;
+            self.pc = ret;
             return;
         }
         if insn == 0x0003 {
@@ -511,7 +511,7 @@ impl RxCore {
                 self.regs[r] = self.pop();
                 r += 1;
             }
-            self.pc = self.pop() & !1;
+            self.pc = self.pop();
             return;
         }
         // 0100 00.. = SUB dsp[rs].ub / SUB rs,rd
@@ -835,17 +835,17 @@ impl RxCore {
             let kind = (low >> 4) & 0x0F;
             let rs = (low & 0x0F) as usize;
             match kind {
-                0 => { self.pc = self.regs[rs] & !1; }
+                0 => { self.pc = self.regs[rs]; }
                 1 => {
                     let ret = self.pc;
                     self.push(ret);
-                    self.pc = self.regs[rs] & !1;
+                    self.pc = self.regs[rs];
                 }
-                4 => { self.pc = self.regs[rs] & !1; }
+                4 => { self.pc = self.regs[rs]; }
                 5 => {
                     let ret = self.pc;
                     self.push(ret);
-                    self.pc = self.regs[rs] & !1;
+                    self.pc = self.regs[rs];
                 }
                 _ => {
                     // Unknown; halt to avoid runaway.
@@ -970,7 +970,7 @@ impl RxCore {
             return;
         }
         // 1111 1100 = register-register / memory forms (long opcodes)
-        if (op & 0xFC) == 0xFC {
+        if op == 0xFC {
             self.execute_fc(insn);
             return;
         }
@@ -1031,193 +1031,339 @@ impl RxCore {
         }
     }
 
-    /// 1111 1100 opcodes: register-register arithmetic and bit ops.
+    /// 1111 1100 opcodes: register-register arithmetic and bit ops. The
+    /// second byte (`b1`) is the operation selector and the third byte (`b2`)
+    /// carries the register fields, matching the binutils decoder table. Only
+    /// the register-addressed forms (ss/sd == 3) are modeled; memory-addressed
+    /// and floating-point/DSP variants halt as unsupported.
     fn execute_fc(&mut self, insn: u16) {
-        let low = insn & 0xFF;
-        let hi = (insn >> 8) & 0x0F; // upper nibble of second byte
-        let rd = (low & 0x0F) as usize;
-        let rs = ((low >> 4) & 0x0F) as usize;
-        match hi {
-            0x0 => {
-                // ABS/SUB/ADC/SBB reg forms; and the 48-bit dsp forms.
-                let sub = (insn >> 4) & 0x0F;
-                match sub & 0x0F {
-                    0x3 => {
-                        // SBB rs, rd
-                        let a = self.regs[rd];
-                        let r = self.sub_flags(a, self.regs[rs], self.psw.c as u32);
-                        self.regs[rd] = r;
-                    }
-                    0x7 => {
-                        // NEG rd (reg form)
-                        let v = self.regs[rd];
-                        let r = self.sub_flags(0, v, 0);
-                        self.regs[rd] = r;
-                    }
-                    0xB => {
-                        // ADC rs, rd
-                        let a = self.regs[rd];
-                        let r = self.add_flags(a, self.regs[rs], self.psw.c as u32);
-                        self.regs[rd] = r;
-                    }
-                    0xF => {
-                        // ABS rd (reg form)
-                        let v = self.regs[rd];
-                        let r = if (v as i32) < 0 {
-                            self.sub_flags(0, v, 0)
-                        } else {
-                            v
-                        };
-                        self.regs[rd] = r;
-                    }
-                    _ => {
-                        self.halted = true;
-                    }
-                }
+        let b1 = (insn & 0xFF) as u8;
+        let b2 = self.fetch8();
+        match b1 {
+            0x03 => {
+                // SBB rs, rd
+                let rs = ((b2 >> 4) & 0x0F) as usize;
+                let rd = (b2 & 0x0F) as usize;
+                let r = self.sub_flags(self.regs[rd], self.regs[rs], self.psw.c as u32);
+                self.regs[rd] = r;
             }
-            0x1 => {
-                // MAX/MIN/EMUL/EMULU reg-ub forms
-                let sub = (insn >> 4) & 0x0F;
-                let a = self.regs[rd];
-                match sub {
-                    0x0 => {
-                        // MAX rs, rd (ub memory form handled by ld bits)
-                        let b = self.regs[rs];
-                        let r = if (a as i32) < (b as i32) { b } else { a };
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0x1 => {
-                        let b = self.regs[rs];
-                        let r = if (a as i32) > (b as i32) { b } else { a };
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0x2 => {
-                        // EMUL rs, rd
-                        let b = self.regs[rs];
-                        let r = (a as u32 as u64).wrapping_mul(b as u32 as u64) as u32;
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    _ => {
-                        // EMULU
-                        let b = self.regs[rs];
-                        let r = (a as u64).wrapping_mul(b as u64) as u32;
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                }
+            0x07 => {
+                // NEG rd
+                let rd = (b2 & 0x0F) as usize;
+                let r = self.sub_flags(0, self.regs[rd], 0);
+                self.regs[rd] = r;
             }
-            0x2 => {
-                // DIV/DIVU reg-ub forms
-                let sub = (insn >> 4) & 0x0F;
-                let a = self.regs[rd];
-                let b = self.regs[rs];
-                match sub {
-                    0x0 => {
-                        if b != 0 {
-                            let r = (a as i32).wrapping_div(b as i32) as u32;
-                            self.regs[rd] = r;
-                            self.set_nz(r);
-                        }
-                    }
-                    _ => {
-                        if b != 0 {
-                            let r = a.wrapping_div(b);
-                            self.regs[rd] = r;
-                            self.set_nz(r);
-                        }
-                    }
-                }
+            0x0B => {
+                // ADC rs, rd
+                let rs = ((b2 >> 4) & 0x0F) as usize;
+                let rd = (b2 & 0x0F) as usize;
+                let r = self.add_flags(self.regs[rd], self.regs[rs], self.psw.c as u32);
+                self.regs[rd] = r;
             }
-            0x3 => {
-                // AND/OR reg forms (and TST ub)
-                let sub = (insn >> 4) & 0x0F;
-                let a = self.regs[rd];
-                match sub {
-                    0x0 => {
-                        let r = a & self.regs[rs];
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0x1 => {
-                        let r = a | self.regs[rs];
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0xB => {
-                        // NOT rd (reg form)
-                        let r = !a;
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    _ => {
-                        self.halted = true;
-                    }
-                }
-            }
-            0x4 => {
-                // XCHG / BSET etc register forms
-                let sub = (insn >> 4) & 0x0F;
-                match sub {
-                    0x3 => {
-                        // XCHG rs, rd
-                        let tmp = self.regs[rs];
-                        self.regs[rs] = self.regs[rd];
-                        self.regs[rd] = tmp;
-                    }
-                    _ => {
-                        self.halted = true;
-                    }
-                }
-            }
-            0x6 => {
-                // BSET/BCLR/BTST/BNOT reg forms
-                let sub = (insn >> 4) & 0x0F;
+            0x0F => {
+                // ABS rd
+                let rd = (b2 & 0x0F) as usize;
                 let v = self.regs[rd];
-                match sub {
-                    0x3 => {
-                        let bit = self.regs[rs] & 0x1F;
-                        self.regs[rd] = v | (1u32 << bit);
-                    }
-                    0x7 => {
-                        let bit = self.regs[rs] & 0x1F;
-                        self.regs[rd] = v & !(1u32 << bit);
-                    }
-                    0xB => {
-                        let bit = self.regs[rs] & 0x1F;
-                        self.psw.z = (v & (1u32 << bit)) == 0;
-                    }
-                    0xF => {
-                        let bit = self.regs[rs] & 0x1F;
-                        self.regs[rd] = v ^ (1u32 << bit);
-                    }
-                    _ => {
-                        self.halted = true;
-                    }
+                self.regs[rd] = if (v as i32) < 0 { self.sub_flags(0, v, 0) } else { v };
+            }
+            0x13 | 0x17 | 0x1B | 0x1F | 0x23 | 0x27 | 0x33 | 0x37 => {
+                // MAX/MIN/EMUL/EMULU/DIV/DIVU/TST/XOR with a register source
+                // (ss == 3). Operand byte is rsrc:rdst.
+                let rs = ((b2 >> 4) & 0x0F) as usize;
+                let rd = (b2 & 0x0F) as usize;
+                self.fc_alu_reg(b1, rs, rd);
+            }
+            0x3B => {
+                // NOT rd
+                let rd = (b2 & 0x0F) as usize;
+                let r = !self.regs[rd];
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0x43 => {
+                // XCHG rs, rd
+                let rs = ((b2 >> 4) & 0x0F) as usize;
+                let rd = (b2 & 0x0F) as usize;
+                self.regs.swap(rs, rd);
+            }
+            0x4B => {
+                // STZ rs, rd
+                let rs = ((b2 >> 4) & 0x0F) as usize;
+                let rd = (b2 & 0x0F) as usize;
+                if self.psw.z {
+                    self.regs[rd] = self.regs[rs];
                 }
             }
-            0xC => {
-                // DIV/DIVU reg forms (long)
-                let sub = (insn >> 4) & 0x0F;
-                let a = self.regs[rd];
-                let b = self.regs[rs];
-                match sub {
-                    0x0 => {
-                        if b != 0 {
-                            let r = (a as i32).wrapping_div(b as i32) as u32;
-                            self.regs[rd] = r;
-                            self.set_nz(r);
-                        }
-                    }
-                    _ => {
-                        if b != 0 {
-                            let r = a.wrapping_div(b);
-                            self.regs[rd] = r;
-                            self.set_nz(r);
-                        }
-                    }
+            0x4F => {
+                // STNZ rs, rd
+                let rs = ((b2 >> 4) & 0x0F) as usize;
+                let rd = (b2 & 0x0F) as usize;
+                if !self.psw.z {
+                    self.regs[rd] = self.regs[rs];
+                }
+            }
+            0x63 | 0x67 | 0x6B | 0x6F => {
+                // BSET/BCLR/BTST/BNOT rs, rd (sd == 3). Operand byte is rdst:rsrc.
+                let rd = ((b2 >> 4) & 0x0F) as usize;
+                let rs = (b2 & 0x0F) as usize;
+                self.fc_bit_reg(b1, rs, rd);
+            }
+            _ if (b1 & 0xE0) == 0xE0 && (b1 & 0x03) == 3 => {
+                // BM #imm, rd / BNOT #imm, rd (sd == 3). Operand byte is rdst:cond.
+                let bit = ((b1 >> 2) & 0x07) as u32;
+                let rd = ((b2 >> 4) & 0x0F) as usize;
+                let cond = b2 & 0x0F;
+                if cond == 0x0F {
+                    self.regs[rd] ^= 1u32 << bit;
+                } else if self.cond_true(cond) {
+                    self.regs[rd] |= 1u32 << bit;
+                } else {
+                    self.regs[rd] &= !(1u32 << bit);
+                }
+            }
+            0xD0..=0xDF if (b1 & 0x03) == 3 => {
+                // SC cond, rd (store condition, register destination).
+                let rd = ((b2 >> 4) & 0x0F) as usize;
+                let cond = b2 & 0x0F;
+                self.regs[rd] = if self.cond_true(cond) { 1 } else { 0 };
+            }
+            _ => {
+                self.halted = true;
+            }
+        }
+    }
+
+    /// Execute a register-source ALU op from the 0xFC `00ss`/`01ss` families.
+    fn fc_alu_reg(&mut self, b1: u8, rs: usize, rd: usize) {
+        let a = self.regs[rd];
+        let b = self.regs[rs];
+        match b1 {
+            0x13 => {
+                // MAX rs, rd
+                let r = if (a as i32) < (b as i32) { b } else { a };
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0x17 => {
+                // MIN rs, rd
+                let r = if (a as i32) > (b as i32) { b } else { a };
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0x1B => {
+                // EMUL rs, rd (signed 32x32 -> 32)
+                let r = ((a as i32 as i64).wrapping_mul(b as i32 as i64)) as u32;
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0x1F => {
+                // EMULU rs, rd
+                let r = (a as u64).wrapping_mul(b as u64) as u32;
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0x23 => {
+                // DIV rs, rd (signed)
+                if b != 0 {
+                    let r = (a as i32).wrapping_div(b as i32) as u32;
+                    self.regs[rd] = r;
+                    self.set_nz(r);
+                }
+            }
+            0x27 => {
+                // DIVU rs, rd
+                if b != 0 {
+                    let r = a.wrapping_div(b);
+                    self.regs[rd] = r;
+                    self.set_nz(r);
+                }
+            }
+            0x33 => {
+                // TST rs, rd
+                self.set_nz(a & b);
+            }
+            0x37 => {
+                // XOR rs, rd
+                let r = a ^ b;
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            _ => self.halted = true,
+        }
+    }
+
+    /// Execute a register bit op from the 0xFC `0110` family (sd == 3).
+    fn fc_bit_reg(&mut self, b1: u8, rs: usize, rd: usize) {
+        let v = self.regs[rd];
+        let bit = self.regs[rs] & 0x1F;
+        match b1 {
+            0x63 => self.regs[rd] = v | (1u32 << bit),   // BSET
+            0x67 => self.regs[rd] = v & !(1u32 << bit),  // BCLR
+            0x6B => self.psw.z = (v & (1u32 << bit)) == 0, // BTST
+            0x6F => self.regs[rd] = v ^ (1u32 << bit),   // BNOT
+            _ => self.halted = true,
+        }
+    }
+
+    /// Read the sign-extended immediate selected by the `im` field (0=imm32,
+    /// 1=imm8, 2=imm16, 3=imm24), matching the binutils `immediate` helper.
+    fn read_imm_im(&mut self, im: u8) -> u32 {
+        match im {
+            0 => {
+                let b0 = self.fetch8() as u32;
+                let b1 = self.fetch8() as u32;
+                let b2 = self.fetch8() as u32;
+                let b3 = self.fetch8() as u32;
+                b0 | (b1 << 8) | (b2 << 16) | ((b3 as u8 as i8 as i32 as u32) << 24)
+            }
+            1 => self.fetch8() as i8 as i32 as u32,
+            2 => self.fetch16() as i16 as i32 as u32,
+            _ => {
+                let b0 = self.fetch8() as u32;
+                let b1 = self.fetch8() as u32;
+                let b2 = self.fetch8() as u32;
+                let v = b0 | (b1 << 8) | (b2 << 16);
+                if v & 0x800000 != 0 { v | 0xFF00_0000 } else { v }
+            }
+        }
+    }
+
+    /// 1111 1101 opcodes: immediate/long forms (li_10, MVFC/MVTC, shifts, etc.).
+    fn execute_fd(&mut self, insn: u16) {
+        let b1 = (insn & 0xFF) as u8;
+        let b2 = self.fetch8();
+        let rd = (b2 & 0x0F) as usize;
+        let rs = ((b2 >> 4) & 0x0F) as usize;
+        match b1 {
+            0x20..=0x2E if b1 != 0x27 => {
+                // MOV sz rsrc, rdst (register-register). For 0x20-0x27 the
+                // operand byte is rdst:rsrc; for 0x28-0x2E it is rsrc:rdst.
+                let sz = b1 & 0x03;
+                let (src, dst) = if b1 < 0x28 {
+                    ((b2 & 0x0F) as usize, ((b2 >> 4) & 0x0F) as usize)
+                } else {
+                    (((b2 >> 4) & 0x0F) as usize, (b2 & 0x0F) as usize)
+                };
+                let v = self.regs[src];
+                self.regs[dst] = match sz {
+                    0 => v as u8 as i8 as i32 as u32,
+                    1 => v as u16 as i16 as i32 as u32,
+                    _ => v,
+                };
+            }
+            0x60 | 0x61 | 0x62 => {
+                // SHLR/SHAR/SHLL rs, rd (register shift count).
+                let n = self.regs[rs] & 0x1F;
+                let v = self.regs[rd];
+                let r = match b1 {
+                    0x60 => v >> n,
+                    0x61 => ((v as i32) >> n) as u32,
+                    _ => v.wrapping_shl(n),
+                };
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0x64 | 0x66 => {
+                // ROTR/ROTL rs, rd (register rotate count).
+                let n = self.regs[rs] & 0x1F;
+                let v = self.regs[rd];
+                let r = if b1 == 0x64 {
+                    v.rotate_right(n)
+                } else {
+                    v.rotate_left(n)
+                };
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0x65 => {
+                // REVW rs, rd
+                self.regs[rd] = self.regs[rs].swap_bytes();
+            }
+            0x67 => {
+                // REVL rs, rd
+                let b = self.regs[rs].to_le_bytes();
+                self.regs[rd] = u32::from_le_bytes([b[3], b[2], b[1], b[0]]);
+            }
+            0x68 | 0x69 => {
+                // MVTC rs, cr: cr = (b1 & 1)*16 + (b2 & 0x0F); CR0 is the PSW.
+                let cr = ((b1 as u32 & 0x01) << 4) | (b2 & 0x0F) as u32;
+                if cr == 0 {
+                    self.psw = Psw::from_u32(self.regs[rs]);
+                }
+            }
+            0x6A | 0x6B => {
+                // MVFC cr, rd: cr = (b1 & 1)*16 + (b2 >> 4); CR0 is the PSW.
+                let cr = ((b1 as u32 & 0x01) << 4) | ((b2 >> 4) & 0x0F) as u32;
+                self.regs[rd] = if cr == 0 {
+                    self.psw.to_u32()
+                } else {
+                    0 // Unmodeled control register reads as zero.
+                };
+            }
+            0x6C | 0x6D => {
+                // ROTR #imm, rd (i = b1 & 1, imm = (b2 >> 4) & 0x0F).
+                let imm = (((b2 >> 4) & 0x0F) as u32) | ((b1 as u32 & 0x01) << 4);
+                let r = self.regs[rd].rotate_right(imm);
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0x6E | 0x6F => {
+                // ROTL #imm, rd
+                let imm = (((b2 >> 4) & 0x0F) as u32) | ((b1 as u32 & 0x01) << 4);
+                let r = self.regs[rd].rotate_left(imm);
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0x70 | 0x74 | 0x78 | 0x7C => {
+                // ADC/MAX/MIN/EMULU/DIVU/TST/XOR/STZ #imm, rd. The high nibble
+                // of b2 selects the operation; `im` selects the immediate width.
+                let op = b2 & 0xF0;
+                let im = (b1 >> 2) & 0x03;
+                let rd = (b2 & 0x0F) as usize;
+                let imm = self.read_imm_im(im);
+                self.fd_imm_alu(op, rd, imm);
+            }
+            0x73 | 0x77 | 0x7B | 0x7F => {
+                // MVTC #imm, cr (crdst = b2 & 0x1F; CR0 is the PSW).
+                let cr = b2 & 0x1F;
+                let im = (b1 >> 2) & 0x03;
+                let imm = self.read_imm_im(im);
+                if cr == 0 {
+                    self.psw = Psw::from_u32(imm);
+                }
+            }
+            0x80..=0x9F => {
+                // SHLR #imm, rs, rd
+                let imm = (b1 & 0x1F) as u32;
+                let r = self.regs[rs] >> imm;
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0xA0..=0xBF => {
+                // SHAR #imm, rs, rd
+                let imm = (b1 & 0x1F) as u32;
+                let r = ((self.regs[rs] as i32) >> imm) as u32;
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0xC0..=0xDF => {
+                // SHLL #imm, rs, rd
+                let imm = (b1 & 0x1F) as u32;
+                let r = self.regs[rs].wrapping_shl(imm);
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0xE0..=0xFF => {
+                // BM #imm, rd / BNOT #imm, rd (cond = b2 >> 4, rd = b2 & 0x0F).
+                let bit = (b1 & 0x1F) as u32;
+                let cond = (b2 >> 4) & 0x0F;
+                let rd = (b2 & 0x0F) as usize;
+                if cond == 0x0F {
+                    self.regs[rd] ^= 1u32 << bit;
+                } else if self.cond_true(cond) {
+                    self.regs[rd] |= 1u32 << bit;
+                } else {
+                    self.regs[rd] &= !(1u32 << bit);
                 }
             }
             _ => {
@@ -1226,234 +1372,59 @@ impl RxCore {
         }
     }
 
-    /// 1111 1101 opcodes: immediate/long forms (li_10, MVFC/MVTC, etc.)
-    fn execute_fd(&mut self, insn: u16) {
-        let low = insn & 0xFF;
-        let hi = (insn >> 8) & 0x0F;
-        let rd = (low & 0x0F) as usize;
-        match hi {
-            0x0 => {
-                // MULHI/MULLO/MACHI/MACLO and SHL/SHR reg forms
-                let sub = (insn >> 4) & 0x0F;
-                let rs = ((low >> 4) & 0x0F) as usize;
-                match sub {
-                    0x0 | 0x1 => {
-                        // MULHI/MULLO: 32x32 low product
-                        let a = self.regs[rd];
-                        let b = self.regs[rs];
-                        let r = a.wrapping_mul(b);
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0x2 => {
-                        // SHLL rd, rs (register shift)
-                        let v = self.regs[rd];
-                        let n = self.regs[rs] & 0x1F;
-                        let r = v << n;
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    _ => {
-                        self.halted = true;
-                    }
+    /// Execute an immediate ALU op from the 0xFD `0111 im00` family. `op` is
+    /// the high nibble of the operand byte (0x2=adc, 0x4=max, 0x5=min, 0x7=emulu,
+    /// 0x9=divu, 0xC=tst, 0xD=xor, 0xE=stz).
+    fn fd_imm_alu(&mut self, op: u8, rd: usize, imm: u32) {
+        let v = self.regs[rd];
+        match op {
+            0x20 => {
+                // ADC #imm, rd
+                self.regs[rd] = self.add_flags(v, imm, self.psw.c as u32);
+            }
+            0x40 => {
+                // MAX #imm, rd
+                let r = if (v as i32) < (imm as i32) { imm } else { v };
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0x50 => {
+                // MIN #imm, rd
+                let r = if (v as i32) > (imm as i32) { imm } else { v };
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0x70 => {
+                // EMULU #imm, rd
+                let r = (v as u64).wrapping_mul(imm as u64) as u32;
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0x90 => {
+                // DIVU #imm, rd
+                if imm != 0 {
+                    let r = v.wrapping_div(imm);
+                    self.regs[rd] = r;
+                    self.set_nz(r);
                 }
             }
-            0x1 => {
-                // SHLR/SHAR reg forms and ROTL/ROTR
-                let sub = (insn >> 4) & 0x0F;
-                let rs = ((low >> 4) & 0x0F) as usize;
-                let v = self.regs[rd];
-                let n = self.regs[rs] & 0x1F;
-                match sub {
-                    0x0 => {
-                        let r = v >> n;
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0x2 => {
-                        // SHAR (arithmetic)
-                        let r = ((v as i32) >> n) as u32;
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0x5 => {
-                        // REVW
-                        let r = v.swap_bytes();
-                        self.regs[rd] = r;
-                    }
-                    0x7 => {
-                        // REVL
-                        let b = v.to_le_bytes();
-                        let r = u32::from_le_bytes([b[3], b[2], b[1], b[0]]);
-                        self.regs[rd] = r;
-                    }
-                    _ => {
-                        self.halted = true;
-                    }
+            0xC0 => {
+                // TST #imm, rd
+                self.set_nz(v & imm);
+            }
+            0xD0 => {
+                // XOR #imm, rd
+                let r = v ^ imm;
+                self.regs[rd] = r;
+                self.set_nz(r);
+            }
+            0xE0 => {
+                // STZ #imm, rd
+                if self.psw.z {
+                    self.regs[rd] = imm;
                 }
             }
-            0x2 => {
-                // MVTC rs, cr
-                let cr = (low >> 4) & 0x0F;
-                let rs = (low & 0x0F) as usize;
-                if cr == 0 {
-                    self.psw = Psw::from_u32(self.regs[rs]);
-                }
-            }
-            0x3 => {
-                // SHLL/SHLR/SHAR #imm5, rd, rd2 (three-operand) or MVTIPL
-                let sub = (insn >> 4) & 0x0F;
-                if sub == 0x7 && low == 0x00 {
-                    // MVTIPL #imm4
-                    let imm = (insn >> 8) & 0x0F;
-                    self.psw.i = imm as u8;
-                    return;
-                }
-                let imm = ((insn >> 4) & 0x1F) as u32;
-                let rs = (low & 0x0F) as usize;
-                let v = self.regs[rs];
-                match sub {
-                    0x0 | 0x1 => {
-                        // SHLL #imm, rd
-                        let r = v << imm;
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0x2 | 0x3 => {
-                        // SHLR #imm, rd
-                        let r = v >> imm;
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0x4 | 0x5 => {
-                        // SHAR #imm, rd
-                        let r = ((v as i32) >> imm) as u32;
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    _ => {
-                        self.halted = true;
-                    }
-                }
-            }
-            0x4 => {
-                // MOV #imm16, rd
-                let imm = self.fetch16() as u32;
-                self.regs[rd] = imm;
-            }
-            0x5 => {
-                // INT #uimm8 / MVTIPL
-                let imm = self.fetch8();
-                if (low & 0xF0) == 0x00 {
-                    self.psw.i = imm & 0x0F;
-                } else {
-                    self.halted = true;
-                }
-            }
-            0x6 => {
-                // MVFC cr, rd
-                let cr = (low >> 4) & 0x0F;
-                if cr == 0 {
-                    self.regs[rd] = self.psw.to_u32();
-                } else if cr == 1 {
-                    self.regs[rd] = 0x2000; // ISP stub
-                } else if cr == 2 {
-                    self.regs[rd] = 0x2000; // USP stub
-                } else {
-                    self.regs[rd] = 0;
-                }
-            }
-            0x7 => {
-                // TST/STZ/STNZ/MAX/MIN/DIV/DIVU/EMUL/EMULU/ADC #imm, rd
-                let sub = (insn >> 4) & 0x0F;
-                let imm = self.fetch16() as u32;
-                let v = self.regs[rd];
-                match sub {
-                    0x0 | 0x1 | 0x2 | 0x3 => {
-                        // FSUB/FCMP/FADD/FMUL - floating stubs (treat as int)
-                        self.regs[rd] = v;
-                    }
-                    0x4 => {
-                        let r = if (v as i32) < (imm as i32) { imm } else { v };
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0x5 => {
-                        let r = if (v as i32) > (imm as i32) { imm } else { v };
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0x6 => {
-                        // EMUL
-                        let r = (v as u64).wrapping_mul(imm as u64) as u32;
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0x7 => {
-                        let r = (v as u64).wrapping_mul(imm as u64) as u32;
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0x8 => {
-                        if imm != 0 {
-                            let r = (v as i32).wrapping_div(imm as i32) as u32;
-                            self.regs[rd] = r;
-                            self.set_nz(r);
-                        }
-                    }
-                    0x9 => {
-                        if imm != 0 {
-                            let r = v.wrapping_div(imm);
-                            self.regs[rd] = r;
-                            self.set_nz(r);
-                        }
-                    }
-                    0xA => {
-                        // ADC #imm, rd
-                        let r = self.add_flags(v, imm, self.psw.c as u32);
-                        self.regs[rd] = r;
-                    }
-                    0xB => {
-                        // SBB #imm, rd
-                        let r = self.sub_flags(v, imm, self.psw.c as u32);
-                        self.regs[rd] = r;
-                    }
-                    0xC => {
-                        // TST
-                        self.set_nz(v & imm);
-                    }
-                    0xD => {
-                        // XOR
-                        let r = v ^ imm;
-                        self.regs[rd] = r;
-                        self.set_nz(r);
-                    }
-                    0xE => {
-                        // STZ: rd = imm if Z set
-                        if self.psw.z {
-                            self.regs[rd] = imm;
-                        }
-                    }
-                    _ => {
-                        // STNZ
-                        if !self.psw.z {
-                            self.regs[rd] = imm;
-                        }
-                    }
-                }
-            }
-            0x8 => {
-                // MVTC #imm, cr (48-bit)
-                let cr = (low >> 4) & 0x0F;
-                let imm = self.fetch16();
-                if cr == 0 {
-                    self.psw = Psw::from_u32(imm as u32);
-                }
-            }
-            _ => {
-                // Unknown; halt.
-                self.halted = true;
-            }
+            _ => self.halted = true,
         }
     }
 }
@@ -1560,8 +1531,28 @@ pub fn instruction_len(pc: u32, read: &dyn Fn(u32) -> u8) -> u32 {
         };
     }
     // MOV [ri+rb], rd / MOV rd, [ri+rb]: no extra operand.
-    if matches!(op & 0xFC, 0xF8 | 0xFA | 0xFC) {
+    if (op & 0xFC) == 0xF8 || (op & 0xFC) == 0xFA {
         return base;
+    }
+    // 0xFC long opcodes: opcode word plus one operand byte (registers).
+    if op == 0xFC {
+        return base + 1;
+    }
+    // 0xFD long opcodes: opcode word plus one operand byte, except the
+    // immediate-ALU/MVTC forms whose immediate width is selected by `im`.
+    if op == 0xFD {
+        let b1 = read(pc + 1) as u8;
+        if matches!(b1, 0x70 | 0x74 | 0x78 | 0x7C | 0x73 | 0x77 | 0x7B | 0x7F) {
+            let im = (b1 >> 2) & 0x03;
+            let imm_bytes = match im {
+                0 => 4,
+                1 => 1,
+                2 => 2,
+                _ => 3,
+            };
+            return base + 1 + imm_bytes;
+        }
+        return base + 1;
     }
     // Unknown: the core fetches the opcode word then halts.
     base
@@ -1827,7 +1818,202 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             format!("mov.{} r{}, {}", sz_name(sz), rd, mem)
         };
     }
+    // 0xFC long opcodes: register-register arithmetic/bit ops.
+    if op == 0xFC {
+        return disasm_fc(pc, read, low);
+    }
+    // 0xFD long opcodes: immediate/register forms.
+    if op == 0xFD {
+        return disasm_fd(pc, read, low);
+    }
     format!("0x{:04x}", insn)
+}
+
+/// Read the sign-extended immediate selected by the `im` field (0=imm32,
+/// 1=imm8, 2=imm16, 3=imm24) for the 0xFD immediate-ALU forms.
+fn read_imm_im_static(pc: u32, read: &dyn Fn(u32) -> u8, im: u8) -> u32 {
+    match im {
+        0 => {
+            let b0 = read(pc) as u32;
+            let b1 = read(pc + 1) as u32;
+            let b2 = read(pc + 2) as u32;
+            let b3 = read(pc + 3) as u32;
+            b0 | (b1 << 8) | (b2 << 16) | ((b3 as u8 as i8 as i32 as u32) << 24)
+        }
+        1 => read(pc) as i8 as i32 as u32,
+        2 => {
+            let w = (read(pc) as u16) | ((read(pc + 1) as u16) << 8);
+            w as i16 as i32 as u32
+        }
+        _ => {
+            let b0 = read(pc) as u32;
+            let b1 = read(pc + 1) as u32;
+            let b2 = read(pc + 2) as u32;
+            let v = b0 | (b1 << 8) | (b2 << 16);
+            if v & 0x800000 != 0 { v | 0xFF00_0000 } else { v }
+        }
+    }
+}
+
+/// Control-register name for the RX `mvtc`/`mvfc` control register number.
+fn cr_name(cr: u32) -> &'static str {
+    match cr {
+        0 => "psw",
+        1 => "pc",
+        2 => "usp",
+        3 => "fpsw",
+        8 => "bpsw",
+        9 => "bpc",
+        10 => "isp",
+        11 => "fintv",
+        12 => "intb",
+        13 => "extb",
+        16 => "a0",
+        17 => "a1",
+        _ => "cr",
+    }
+}
+
+/// Disassemble a 0xFC long opcode (register-register arithmetic/bit ops).
+fn disasm_fc(pc: u32, read: &dyn Fn(u32) -> u8, b1: u8) -> String {
+    let b2 = read(pc + 2);
+    let rs = ((b2 >> 4) & 0x0F) as usize;
+    let rd = (b2 & 0x0F) as usize;
+    match b1 {
+        0x03 => format!("sbb r{}, r{}", rs, rd),
+        0x07 => format!("neg r{}", rd),
+        0x0B => format!("adc r{}, r{}", rs, rd),
+        0x0F => format!("abs r{}", rd),
+        0x13 => format!("max r{}, r{}", rs, rd),
+        0x17 => format!("min r{}, r{}", rs, rd),
+        0x1B => format!("emul r{}, r{}", rs, rd),
+        0x1F => format!("emulu r{}, r{}", rs, rd),
+        0x23 => format!("div r{}, r{}", rs, rd),
+        0x27 => format!("divu r{}, r{}", rs, rd),
+        0x33 => format!("tst r{}, r{}", rs, rd),
+        0x37 => format!("xor r{}, r{}", rs, rd),
+        0x3B => format!("not r{}", rd),
+        0x43 => format!("xchg r{}, r{}", rs, rd),
+        0x4B => format!("stz r{}, r{}", rs, rd),
+        0x4F => format!("stnz r{}, r{}", rs, rd),
+        0x63 | 0x67 | 0x6B | 0x6F => {
+            // op[2] = rdst:rsrc for the register bit ops.
+            let rd = ((b2 >> 4) & 0x0F) as usize;
+            let rs = (b2 & 0x0F) as usize;
+            let n = match b1 {
+                0x63 => "bset",
+                0x67 => "bclr",
+                0x6B => "btst",
+                _ => "bnot",
+            };
+            format!("{} r{}, r{}", n, rs, rd)
+        }
+        0xD0..=0xDF if (b1 & 0x03) == 3 => {
+            let sz = (b1 >> 2) & 0x03;
+            let rd = ((b2 >> 4) & 0x0F) as usize;
+            let cond = b2 & 0x0F;
+            format!("sc{}.{} r{}", cond_name(cond), sz_name(sz), rd)
+        }
+        _ if (b1 & 0xE0) == 0xE0 && (b1 & 0x03) == 3 => {
+            let bit = (b1 >> 2) & 0x07;
+            let rd = ((b2 >> 4) & 0x0F) as usize;
+            let cond = b2 & 0x0F;
+            if cond == 0x0F {
+                format!("bnot #{}, r{}", bit, rd)
+            } else {
+                format!("bm{} #{}, r{}", cond_name(cond), bit, rd)
+            }
+        }
+        _ => format!("0x{:04x}", (0xFCu16 << 8) | b1 as u16),
+    }
+}
+
+/// Disassemble a 0xFD long opcode (immediate/register forms).
+fn disasm_fd(pc: u32, read: &dyn Fn(u32) -> u8, b1: u8) -> String {
+    let b2 = read(pc + 2);
+    let rs = ((b2 >> 4) & 0x0F) as usize;
+    let rd = (b2 & 0x0F) as usize;
+    match b1 {
+        0x20..=0x2E if b1 != 0x27 => {
+            let sz = b1 & 0x03;
+            let (src, dst) = if b1 < 0x28 {
+                ((b2 & 0x0F) as usize, ((b2 >> 4) & 0x0F) as usize)
+            } else {
+                (((b2 >> 4) & 0x0F) as usize, (b2 & 0x0F) as usize)
+            };
+            format!("mov.{} r{}, r{}", sz_name(sz), src, dst)
+        }
+        0x60 => format!("shlr r{}, r{}", rs, rd),
+        0x61 => format!("shar r{}, r{}", rs, rd),
+        0x62 => format!("shll r{}, r{}", rs, rd),
+        0x64 => format!("rotr r{}, r{}", rs, rd),
+        0x65 => format!("revw r{}, r{}", rs, rd),
+        0x66 => format!("rotl r{}, r{}", rs, rd),
+        0x67 => format!("revl r{}, r{}", rs, rd),
+        0x68 | 0x69 => {
+            let cr = ((b1 as u32 & 0x01) << 4) | (b2 & 0x0F) as u32;
+            format!("mvtc r{}, {}", rs, cr_name(cr))
+        }
+        0x6A | 0x6B => {
+            let cr = ((b1 as u32 & 0x01) << 4) | ((b2 >> 4) & 0x0F) as u32;
+            format!("mvfc {}, r{}", cr_name(cr), rd)
+        }
+        0x6C | 0x6D => {
+            let imm = ((b2 >> 4) & 0x0F) | ((b1 & 0x01) << 4);
+            format!("rotr #{}, r{}", imm, rd)
+        }
+        0x6E | 0x6F => {
+            let imm = ((b2 >> 4) & 0x0F) | ((b1 & 0x01) << 4);
+            format!("rotl #{}, r{}", imm, rd)
+        }
+        0x70 | 0x74 | 0x78 | 0x7C => {
+            let op = b2 & 0xF0;
+            let im = (b1 >> 2) & 0x03;
+            let rd = (b2 & 0x0F) as usize;
+            let imm = read_imm_im_static(pc + 3, read, im);
+            let n = match op {
+                0x20 => "adc",
+                0x40 => "max",
+                0x50 => "min",
+                0x70 => "emulu",
+                0x90 => "divu",
+                0xC0 => "tst",
+                0xD0 => "xor",
+                0xE0 => "stz",
+                _ => "?",
+            };
+            format!("{} #0x{:x}, r{}", n, imm, rd)
+        }
+        0x73 | 0x77 | 0x7B | 0x7F => {
+            let cr = (b2 & 0x1F) as u32;
+            let im = (b1 >> 2) & 0x03;
+            let imm = read_imm_im_static(pc + 3, read, im);
+            format!("mvtc #0x{:x}, {}", imm, cr_name(cr))
+        }
+        0x80..=0x9F => {
+            let imm = b1 & 0x1F;
+            format!("shlr #{}, r{}, r{}", imm, rs, rd)
+        }
+        0xA0..=0xBF => {
+            let imm = b1 & 0x1F;
+            format!("shar #{}, r{}, r{}", imm, rs, rd)
+        }
+        0xC0..=0xDF => {
+            let imm = b1 & 0x1F;
+            format!("shll #{}, r{}, r{}", imm, rs, rd)
+        }
+        0xE0..=0xFF => {
+            let bit = b1 & 0x1F;
+            let cond = (b2 >> 4) & 0x0F;
+            let rd = (b2 & 0x0F) as usize;
+            if cond == 0x0F {
+                format!("bnot #{}, r{}", bit, rd)
+            } else {
+                format!("bm{} #{}, r{}", cond_name(cond), bit, rd)
+            }
+        }
+        _ => format!("0x{:04x}", (0xFDu16 << 8) | b1 as u16),
+    }
 }
 
 fn cond_name(cond: u8) -> &'static str {
@@ -1961,7 +2147,9 @@ mod tests {
         assert_step_width(&[0xF8, 0x00]); // mov [r0+r0], r0
         assert_step_width(&[0x40, 0x00]); // sub r0, r0 (register source)
         assert_step_width(&[0x43, 0x00]); // sub r0, r0 (ld=3 register)
-        assert_step_width(&[0xFC, 0x00]); // divu r0, r0 (execute_fc)
+        assert_step_width(&[0xFC, 0x27, 0x00]); // divu r0, r0 (execute_fc)
+        assert_step_width(&[0xFD, 0x60, 0x00]); // shlr r0, r0 (execute_fd)
+        assert_step_width(&[0xFD, 0x6C, 0x00]); // rotr #0, r0 (execute_fd)
         // 3-byte: one 8-bit displacement/immediate.
         assert_step_width(&[0x3C, 0x00, 0x10]); // mov.b #0x10, 0[r4]
         assert_step_width(&[0x41, 0x00, 0x10]); // sub dsp8[r0], r0
@@ -2151,5 +2339,381 @@ mod tests {
         c.regs[3] = 7;
         c.step(&[]);
         assert_eq!(c.regs[3], 42);
+    }
+
+    #[test]
+    fn fc_alu_register_forms() {
+        // SBB r5, r3 (0xFC 0x03 0x53).
+        let mut c = core_with(&[0xFC, 0x03, 0x53]);
+        c.regs[3] = 10;
+        c.regs[5] = 3;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 7);
+
+        // ADC r5, r3 (0xFC 0x0B 0x53).
+        let mut c = core_with(&[0xFC, 0x0B, 0x53]);
+        c.regs[3] = 10;
+        c.regs[5] = 3;
+        c.psw.c = true;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 14);
+
+        // NEG r3 (0xFC 0x07 0x03).
+        let mut c = core_with(&[0xFC, 0x07, 0x03]);
+        c.regs[3] = 5;
+        c.step(&[]);
+        assert_eq!(c.regs[3] as i32, -5);
+
+        // ABS r3 (0xFC 0x0F 0x03).
+        let mut c = core_with(&[0xFC, 0x0F, 0x03]);
+        c.regs[3] = 0xFFFF_FFFBu32;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 5);
+
+        // MAX r5, r3 (0xFC 0x13 0x53).
+        let mut c = core_with(&[0xFC, 0x13, 0x53]);
+        c.regs[3] = 4;
+        c.regs[5] = 9;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 9);
+
+        // MIN r5, r3 (0xFC 0x17 0x53).
+        let mut c = core_with(&[0xFC, 0x17, 0x53]);
+        c.regs[3] = 4;
+        c.regs[5] = 9;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 4);
+
+        // EMULU r5, r3 (0xFC 0x1F 0x53).
+        let mut c = core_with(&[0xFC, 0x1F, 0x53]);
+        c.regs[3] = 1000;
+        c.regs[5] = 2000;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 2_000_000);
+
+        // DIVU r5, r3 (0xFC 0x27 0x53).
+        let mut c = core_with(&[0xFC, 0x27, 0x53]);
+        c.regs[3] = 100;
+        c.regs[5] = 7;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 14);
+
+        // XOR r5, r3 (0xFC 0x37 0x53).
+        let mut c = core_with(&[0xFC, 0x37, 0x53]);
+        c.regs[3] = 0x0F0F;
+        c.regs[5] = 0x00FF;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0x0FF0);
+
+        // NOT r3 (0xFC 0x3B 0x03).
+        let mut c = core_with(&[0xFC, 0x3B, 0x03]);
+        c.regs[3] = 0x0F0F;
+        c.step(&[]);
+        assert_eq!(c.regs[3], !0x0F0Fu32);
+
+        // XCHG r5, r3 (0xFC 0x43 0x53).
+        let mut c = core_with(&[0xFC, 0x43, 0x53]);
+        c.regs[3] = 11;
+        c.regs[5] = 22;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 22);
+        assert_eq!(c.regs[5], 11);
+
+        // STZ r5, r3 (0xFC 0x4B 0x53).
+        let mut c = core_with(&[0xFC, 0x4B, 0x53]);
+        c.regs[3] = 0;
+        c.regs[5] = 99;
+        c.psw.z = true;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 99);
+
+        // STNZ r5, r3 (0xFC 0x4F 0x53).
+        let mut c = core_with(&[0xFC, 0x4F, 0x53]);
+        c.regs[3] = 0;
+        c.regs[5] = 99;
+        c.psw.z = false;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 99);
+    }
+
+    #[test]
+    fn fc_bit_register_forms() {
+        // BSET r5, r3 (0xFC 0x63 0x35): rd=3, rs=5.
+        let mut c = core_with(&[0xFC, 0x63, 0x35]);
+        c.regs[3] = 0;
+        c.regs[5] = 4;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 1 << 4);
+
+        // BCLR r5, r3 (0xFC 0x67 0x35).
+        let mut c = core_with(&[0xFC, 0x67, 0x35]);
+        c.regs[3] = 0xFFFF_FFFF;
+        c.regs[5] = 4;
+        c.step(&[]);
+        assert_eq!(c.regs[3], !(1u32 << 4));
+
+        // BTST r5, r3 (0xFC 0x6B 0x35): Z set when bit 4 is clear.
+        let mut c = core_with(&[0xFC, 0x6B, 0x35]);
+        c.regs[3] = 0;
+        c.regs[5] = 4;
+        c.step(&[]);
+        assert!(c.psw.z);
+
+        // BNOT r5, r3 (0xFC 0x6F 0x35).
+        let mut c = core_with(&[0xFC, 0x6F, 0x35]);
+        c.regs[3] = 0;
+        c.regs[5] = 4;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 1 << 4);
+    }
+
+    #[test]
+    fn fc_bm_sc_immediate() {
+        // BNOT #0, r3 (0xFC 0xE3 0x3F): bit=0, rd=3, cond=0xF.
+        let mut c = core_with(&[0xFC, 0xE3, 0x3F]);
+        c.regs[3] = 0;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 1);
+
+        // BMNE #1, r3 (0xFC 0xE7 0x31): bit=1, rd=3, cond=1 (ne).
+        let mut c = core_with(&[0xFC, 0xE7, 0x31]);
+        c.regs[3] = 0;
+        c.psw.z = false;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 1 << 1);
+
+        // SCEQ.b r3 (0xFC 0xD3 0x30): cond=0 (eq), rd=3, sz=0.
+        let mut c = core_with(&[0xFC, 0xD3, 0x30]);
+        c.psw.z = true;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 1);
+    }
+
+    #[test]
+    fn fd_shift_rotate_forms() {
+        // SHLR r5, r3 (0xFD 0x60 0x53).
+        let mut c = core_with(&[0xFD, 0x60, 0x53]);
+        c.regs[3] = 0x8000_0000;
+        c.regs[5] = 4;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0x0800_0000);
+
+        // SHAR r5, r3 (0xFD 0x61 0x53).
+        let mut c = core_with(&[0xFD, 0x61, 0x53]);
+        c.regs[3] = 0x8000_0000;
+        c.regs[5] = 4;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0xF800_0000);
+
+        // SHLL r5, r3 (0xFD 0x62 0x53).
+        let mut c = core_with(&[0xFD, 0x62, 0x53]);
+        c.regs[3] = 0x0000_0001;
+        c.regs[5] = 4;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0x0000_0010);
+
+        // ROTR r5, r3 (0xFD 0x64 0x53).
+        let mut c = core_with(&[0xFD, 0x64, 0x53]);
+        c.regs[3] = 0x8000_0001;
+        c.regs[5] = 1;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0xC000_0000);
+
+        // ROTL r5, r3 (0xFD 0x66 0x53).
+        let mut c = core_with(&[0xFD, 0x66, 0x53]);
+        c.regs[3] = 0x8000_0001;
+        c.regs[5] = 1;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0x0000_0003);
+
+        // REVW r5, r3 (0xFD 0x65 0x53).
+        let mut c = core_with(&[0xFD, 0x65, 0x53]);
+        c.regs[5] = 0x1122_3344;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0x4433_2211);
+
+        // REVL r5, r3 (0xFD 0x67 0x53).
+        let mut c = core_with(&[0xFD, 0x67, 0x53]);
+        c.regs[5] = 0x1122_3344;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0x4433_2211);
+    }
+
+    #[test]
+    fn fd_imm_shifts_and_rotates() {
+        // SHLR #4, r5, r3 (0xFD 0x84 0x53).
+        let mut c = core_with(&[0xFD, 0x84, 0x53]);
+        c.regs[5] = 0x8000_0000;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0x0800_0000);
+
+        // SHLL #4, r5, r3 (0xFD 0xC4 0x53).
+        let mut c = core_with(&[0xFD, 0xC4, 0x53]);
+        c.regs[5] = 0x0000_0001;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0x0000_0010);
+
+        // ROTR #1, r3 (0xFD 0x6C 0x13): imm=1, rd=3.
+        let mut c = core_with(&[0xFD, 0x6C, 0x13]);
+        c.regs[3] = 0x8000_0001;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0xC000_0000);
+
+        // ROTL #1, r3 (0xFD 0x6E 0x13).
+        let mut c = core_with(&[0xFD, 0x6E, 0x13]);
+        c.regs[3] = 0x8000_0001;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0x0000_0003);
+    }
+
+    #[test]
+    fn fd_mvtc_mvfc() {
+        // MVTC r5, psw (0xFD 0x68 0x50): cr = 0*16 + 0 = 0, rs=5.
+        let mut c = core_with(&[0xFD, 0x68, 0x50]);
+        c.regs[5] = 0x2; // Z flag set.
+        c.step(&[]);
+        assert!(c.psw.z);
+        assert_eq!(c.pc, 0x1003);
+
+        // MVFC psw, r5 (0xFD 0x6A 0x05): cr = 0*16 + 0 = 0, rd=5.
+        let mut c = core_with(&[0xFD, 0x6A, 0x05]);
+        c.psw.c = true;
+        c.psw.z = true;
+        c.step(&[]);
+        assert_eq!(c.regs[5] & 0x3, 0x3);
+    }
+
+    #[test]
+    fn fd_mov_reg_register() {
+        // MOV.l r3, r5 (0xFD 0x22 0x53): b1=0x22 (p=0, sz=2), op[2]=rdst:rsrc.
+        let mut c = core_with(&[0xFD, 0x22, 0x53]);
+        c.regs[3] = 0x1234_5678;
+        c.step(&[]);
+        assert_eq!(c.regs[5], 0x1234_5678);
+
+        // MOV.b r3, r5 sign-extends the low byte (0xFD 0x20 0x53).
+        let mut c = core_with(&[0xFD, 0x20, 0x53]);
+        c.regs[3] = 0x80;
+        c.step(&[]);
+        assert_eq!(c.regs[5], 0xFFFF_FF80);
+
+        // MOV.w r5, r3 (0xFD 0x2A 0x53): b1=0x2A (0x28-family, sz=2),
+        // op[2]=rsrc:rdst so src=5, dst=3.
+        let mut c = core_with(&[0xFD, 0x2A, 0x53]);
+        c.regs[5] = 0xDEAD_BEEF;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn fd_imm_alu() {
+        // ADC #5, r3 (0xFD 0x74 0x23 0x05): im=1 (imm8), op=0x20, rd=3.
+        let mut c = core_with(&[0xFD, 0x74, 0x23, 0x05]);
+        c.regs[3] = 10;
+        c.psw.c = true;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 16);
+
+        // MAX #5, r3 (0xFD 0x74 0x43 0x05).
+        let mut c = core_with(&[0xFD, 0x74, 0x43, 0x05]);
+        c.regs[3] = 10;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 10);
+
+        // MIN #5, r3 (0xFD 0x74 0x53 0x05).
+        let mut c = core_with(&[0xFD, 0x74, 0x53, 0x05]);
+        c.regs[3] = 10;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 5);
+
+        // EMULU #5, r3 (0xFD 0x74 0x73 0x05).
+        let mut c = core_with(&[0xFD, 0x74, 0x73, 0x05]);
+        c.regs[3] = 100;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 500);
+
+        // DIVU #5, r3 (0xFD 0x74 0x93 0x05).
+        let mut c = core_with(&[0xFD, 0x74, 0x93, 0x05]);
+        c.regs[3] = 100;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 20);
+
+        // TST #5, r3 (0xFD 0x74 0xC3 0x05).
+        let mut c = core_with(&[0xFD, 0x74, 0xC3, 0x05]);
+        c.regs[3] = 0;
+        c.step(&[]);
+        assert!(c.psw.z);
+
+        // XOR #5, r3 (0xFD 0x74 0xD3 0x05).
+        let mut c = core_with(&[0xFD, 0x74, 0xD3, 0x05]);
+        c.regs[3] = 0x1F;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 0x1A);
+
+        // STZ #5, r3 (0xFD 0x74 0xE3 0x05).
+        let mut c = core_with(&[0xFD, 0x74, 0xE3, 0x05]);
+        c.regs[3] = 0;
+        c.psw.z = true;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 5);
+    }
+
+    #[test]
+    fn fd_bm_immediate() {
+        // BNOT #1, r3 (0xFD 0xE1 0xF3): bittt=1, cond=0xF, rd=3.
+        let mut c = core_with(&[0xFD, 0xE1, 0xF3]);
+        c.regs[3] = 0;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 1 << 1);
+
+        // BMNE #1, r3 (0xFD 0xE1 0x13): bittt=1, cond=1 (ne), rd=3.
+        let mut c = core_with(&[0xFD, 0xE1, 0x13]);
+        c.regs[3] = 0;
+        c.psw.z = false;
+        c.step(&[]);
+        assert_eq!(c.regs[3], 1 << 1);
+    }
+
+    #[test]
+    fn disassembles_fc_fd_long_forms() {
+        let read = |a: u32| -> u8 {
+            let code = [
+                0xFC, 0x03, 0x53, // sbb r5, r3
+                0xFC, 0x27, 0x00, // divu r0, r0
+                0xFC, 0x63, 0x35, // bset r5, r3
+                0xFD, 0x60, 0x53, // shlr r5, r3
+                0xFD, 0x6A, 0x05, // mvfc psw, r5
+                0xFD, 0x74, 0x23, 0x05, // adc #5, r3
+            ];
+            code.get(a as usize).copied().unwrap_or(0)
+        };
+        assert_eq!(disassemble(0, &read), "sbb r5, r3");
+        assert_eq!(disassemble(3, &read), "divu r0, r0");
+        assert_eq!(disassemble(6, &read), "bset r5, r3");
+        assert_eq!(disassemble(9, &read), "shlr r5, r3");
+        assert_eq!(disassemble(12, &read), "mvfc psw, r5");
+        assert_eq!(disassemble(15, &read), "adc #0x5, r3");
+    }
+
+    #[test]
+    fn instruction_len_fc_fd() {
+        // 0xFC/0xFD register forms consume the opcode word plus one operand byte.
+        let read = |a: u32| -> u8 {
+            let code = [0xFD, 0x60, 0x53];
+            code.get(a as usize).copied().unwrap_or(0)
+        };
+        assert_eq!(instruction_len(0, &read), 3);
+        // The immediate-ALU forms add the immediate width selected by `im`
+        // (im=1 -> imm8, im=0 -> imm32).
+        let read8 = |a: u32| -> u8 {
+            let code = [0xFD, 0x74, 0x23, 0x05];
+            code.get(a as usize).copied().unwrap_or(0)
+        };
+        assert_eq!(instruction_len(0, &read8), 4);
+        let read32 = |a: u32| -> u8 {
+            let code = [0xFD, 0x70, 0x23, 0x01, 0x00, 0x00, 0x00];
+            code.get(a as usize).copied().unwrap_or(0)
+        };
+        assert_eq!(instruction_len(0, &read32), 7);
     }
 }

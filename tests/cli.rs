@@ -3223,3 +3223,99 @@ fn rx_step_over_uses_call_width() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["pc"], 0x8004u64);
 }
+
+#[test]
+fn disasm_rx_fc_fd_long_forms() {
+    // RX 0xFC/0xFD long opcodes decode the register-register and immediate
+    // forms, advancing by the actual operand width (3 bytes, or 4 for imm8).
+    let dir = tmpdir();
+    let sess = dir.join("rxfc.json");
+    let code = dir.join("rxfc.bin");
+    std::fs::write(&code, [
+        0xFC, 0x03, 0x53,             // sbb r5, r3
+        0xFC, 0x27, 0x00,             // divu r0, r0
+        0xFC, 0x63, 0x35,             // bset r5, r3
+        0xFD, 0x60, 0x53,             // shlr r5, r3
+        0xFD, 0x6A, 0x05,             // mvfc psw, r5
+        0xFD, 0x74, 0x23, 0x05,       // adc #0x5, r3
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "rx", "--firmware", code.to_str().unwrap(), "--base", "0x8000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(),
+               "--addr", "0x8000", "--count", "6", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000u64);
+    assert_eq!(json[0]["text"], "sbb r5, r3");
+    assert_eq!(json[1]["address"], 0x8003u64);
+    assert_eq!(json[1]["text"], "divu r0, r0");
+    assert_eq!(json[2]["address"], 0x8006u64);
+    assert_eq!(json[2]["text"], "bset r5, r3");
+    assert_eq!(json[3]["address"], 0x8009u64);
+    assert_eq!(json[3]["text"], "shlr r5, r3");
+    assert_eq!(json[4]["address"], 0x800Cu64);
+    assert_eq!(json[4]["text"], "mvfc psw, r5");
+    assert_eq!(json[5]["address"], 0x800Fu64);
+    assert_eq!(json[5]["text"], "adc #0x5, r3");
+}
+
+#[test]
+fn step_rx_fc_fd_long_forms() {
+    // Step through RX 0xFC/0xFD long opcodes and observe register changes.
+    let dir = tmpdir();
+    let sess = dir.join("rxfcstep.json");
+    let code = dir.join("rxfcstep.bin");
+    std::fs::write(&code, [
+        0xFD, 0x74, 0x23, 0x05, // adc #0x5, r3
+        0xFD, 0x60, 0x53,       // shlr r5, r3
+        0xFC, 0x03, 0x53,       // sbb r5, r3
+    ]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(),
+               "--arch", "rx", "--firmware", code.to_str().unwrap(), "--base", "0x8000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [("r3", "10"), ("r5", "4")] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(),
+                   "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    // adc #0x5, r3: r3 = 10 + 5 = 15, pc advances 4.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8004u64);
+    assert_eq!(json["registers"]["r3"], 15u64);
+    // shlr r5, r3: r3 = 15 >> 4 = 0, pc advances 3.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8007u64);
+    assert_eq!(json["registers"]["r3"], 0u64);
+    // sbb r5, r3: r3 = 0 - 4 = -4, pc advances 3.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x800Au64);
+    assert_eq!(json["registers"]["r3"], 0xFFFF_FFFCu64);
+}
