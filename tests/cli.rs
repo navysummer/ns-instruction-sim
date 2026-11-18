@@ -1839,6 +1839,48 @@ fn run_arm_thumb1_asr_immediate() {
 }
 
 #[test]
+fn run_arm_thumb1_branch_target() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-branch.json");
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // movs r0, #0 (0x2000); beq +2 (0xD001); movs r0, #1 (0x2001).
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes", "0x00", "0x20", "0x01", "0xD0",
+               "0x01", "0x20"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Step 1: movs r0,#0 (sets Z). Step 2: beq taken → target = 0x08000018.
+    for _ in 0..2 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0018u64);
+    assert_eq!(json["registers"]["r0"], 0);
+}
+
+#[test]
 fn disasm_thumb2_ldrh_strh_barriers() {
     let dir = tmpdir();
     let binfile = dir.join("thumb2-wide.bin");

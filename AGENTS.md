@@ -267,6 +267,9 @@ done
   （`bl 0x8` 自 0x0、`b.w 0x10` 自 0x4），锁定分支目标基址与 `B.W` 解码修复。
 - `run_arm_thumb1_asr_immediate`：端到端执行 Thumb-1 `ASRS r0,r1,#5`（0x1148）→
   r0=0xFC000000，锁定 `ASR` 立即分类（top=1 且 bit11 清 0）与移位量语义。
+- `run_arm_thumb1_branch_target`：端到端分两次 `step --session`（跨会话保存/恢复）执行
+  `movs r0,#0`（置 Z）后 `beq +2`（0xD001）命中，PC 停在 0x08000018（架构 PC = 当前 +4 基址），
+  锁定 Thumb-1 分支目标基址与 ARM 条件标志（xPSR）跨会话持久化。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -406,6 +409,14 @@ done
   +4，两条半字）取字对齐作为基址（原把下一指令地址按半字对齐，在 4 字节对齐/2 字节对齐
   两种边界各偏 4 字节），由 ns-sim 单测 `thumb1_pc_relative_uses_architectural_pc` 与
   CLI `run_arm_thumb1_pc_relative` 锁定。
+  Thumb-1 条件分支（`0xD000-0xDFFF`）与无条件分支（`0xE000-0xE7FF`）目标现以架构 PC
+  （当前地址 +4）为基址（原用下一指令地址按半字对齐，使分支目标偏低 2 字节），与
+  PC 相对寻址及 Thumb-2 分支基址一致；由 ns-sim 单测 `unconditional_branch`/
+  `conditional_branch_target_base` 与 CLI `run_arm_thumb1_branch_target` 锁定。
+  ARM 条件标志（xPSR 的 N/Z/C/V 与 Thumb 位）与指令集状态（A32/Thumb）现随会话
+  保存/恢复（`Session::capture`/`apply` 新增 `arm_xpsr`/`arm_arm_state` 字段），使
+  `step --session` 分次调用仍能正确评估条件分支；由 CLI `run_arm_thumb1_branch_target`
+  锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

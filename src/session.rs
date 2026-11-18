@@ -96,6 +96,15 @@ pub struct Session {
     pub pc: u32,
     /// (register index, value) pairs, in display order.
     pub registers: Vec<(usize, u32)>,
+    /// ARM xPSR (condition flags / Thumb bit / exception number), when the
+    /// session belongs to an ARM core. Kept separate from `registers` so the
+    /// 16-register view stays stable while condition flags survive a session
+    /// round-trip.
+    #[serde(default)]
+    pub arm_xpsr: Option<u32>,
+    /// ARM instruction-set state (true = A32, false = Thumb), when ARM.
+    #[serde(default)]
+    pub arm_arm_state: Option<bool>,
     pub breakpoints: Vec<BpState>,
     pub cycle_count: u64,
     pub halted: bool,
@@ -145,6 +154,16 @@ impl Session {
             arch: arch_name(sim.arch).to_string(),
             pc: sim.program_counter(),
             registers,
+            arm_xpsr: if sim.arch == Arch::Arm {
+                sim.arm_xpsr()
+            } else {
+                None
+            },
+            arm_arm_state: if sim.arch == Arch::Arm {
+                Some(sim.arm_state())
+            } else {
+                None
+            },
             breakpoints: sim
                 .breakpoints
                 .iter()
@@ -235,6 +254,15 @@ impl Session {
         // Restore register file (all architectures route through write_reg).
         for (index, value) in &self.registers {
             sim.write_reg(*index, *value);
+        }
+        // Restore ARM instruction-set state and condition flags. The state is
+        // applied first because it re-derives the xPSR Thumb bit; the saved
+        // xPSR is then written back verbatim so flags are exact.
+        if let Some(arm_state) = self.arm_arm_state {
+            sim.set_arm_state(arm_state);
+        }
+        if let Some(xpsr) = self.arm_xpsr {
+            sim.set_arm_xpsr(xpsr);
         }
         // PC is a register in some cores (ARM/XTENSA), so apply after regs.
         sim.set_program_counter(self.pc);

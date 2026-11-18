@@ -668,14 +668,18 @@ impl ArmCore {
                     let cond = (insn >> 8) & 0x0F;
                     if self.condition_true(cond as u32) {
                         let offset = sign_extend_thumb((insn & 0xFF) as u32, 8) * 2;
-                        self.regs[PC] = (self.regs[PC] & !1).wrapping_add(offset as u32);
+                        // Architectural PC is current + 4; `step` left PC at
+                        // current + 2, so add 2 to reach the branch base.
+                        self.regs[PC] =
+                            ((self.regs[PC].wrapping_add(2)) & !1).wrapping_add(offset as u32);
                     }
                 }
             }
             // 0xE: unconditional branch (0xE000-0xEFFF)
             0xE => {
                 let offset = sign_extend_thumb((insn & 0x7FF) as u32, 11) * 2;
-                self.regs[PC] = (self.regs[PC] & !1).wrapping_add(offset as u32);
+                self.regs[PC] =
+                    ((self.regs[PC].wrapping_add(2)) & !1).wrapping_add(offset as u32);
             }
             // 0xF: long branch / SVC
             0xF => {
@@ -1863,8 +1867,24 @@ mod tests {
     #[test]
     fn unconditional_branch() {
         let mut c = core();
-        // B .+4: 0xE001 (offset 1 halfword)
+        // B .+6: 0xE001 (offset 1 halfword = 2 bytes, base = current + 4).
         run(&mut c, &[0xE001, 0xE000], 1);
+        assert_eq!(c.regs[PC], 6);
+    }
+
+    #[test]
+    fn conditional_branch_target_base() {
+        // BEQ 0xD001 at address 2 (offset 2 bytes): with Z set the target is
+        // current + 4 + 2 = 8 (architectural PC base, not current + 2).
+        let mut c = core();
+        c.regs[0] = 0;
+        run(&mut c, &[0x2000, 0xD001], 2); // MOVS r0,#0 sets Z, then BEQ taken.
+        assert_eq!(c.regs[PC], 8);
+
+        // The same BEQ with Z clear falls through to current + 2 = 2.
+        let mut c = core();
+        c.regs[0] = 1;
+        run(&mut c, &[0x2001, 0xD001], 2); // MOVS r0,#1 clears Z, BEQ not taken.
         assert_eq!(c.regs[PC], 4);
     }
 

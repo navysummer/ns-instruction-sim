@@ -1784,6 +1784,28 @@ impl Simulator {
         self.arm.as_ref().map(|core| core.arm_state).unwrap_or(false)
     }
 
+    /// Set the ARM-family core instruction-set state (A32 vs Thumb). Only
+    /// meaningful when `arch == Arch::Arm`; ignored otherwise.
+    pub fn set_arm_state(&mut self, arm: bool) {
+        if let Some(core) = self.arm.as_mut() {
+            core.set_arm_state(arm);
+        }
+    }
+
+    /// Read the ARM xPSR (condition flags, Thumb bit, exception number), or
+    /// `None` when the core is not ARM.
+    pub fn arm_xpsr(&self) -> Option<u32> {
+        self.arm.as_ref().map(|core| core.xpsr)
+    }
+
+    /// Write the ARM xPSR directly (condition flags, Thumb bit, exception
+    /// number). Only meaningful when `arch == Arch::Arm`; ignored otherwise.
+    pub fn set_arm_xpsr(&mut self, value: u32) {
+        if let Some(core) = self.arm.as_mut() {
+            core.xpsr = value;
+        }
+    }
+
     /// Set the program counter, routing to the active architecture core so the
     /// PC stays consistent (ARM/Xtensa keep their own PC register).
     pub fn set_program_counter(&mut self, pc: u32) {
