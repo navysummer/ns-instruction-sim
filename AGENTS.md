@@ -389,6 +389,9 @@ done
   Thumb-1 格式 4 ALU 指令（`LSL/LSR/ASR/ADC/SBC/ROR/RSB/MUL`）现更新 N/Z 标志
   （原只更新 C 或完全不更新），与反汇编 `*s` 后缀一致；由 ns-sim 单测
   `thumb1_alu_sets_nz_flags` 锁定。
+  Thumb-1 加减运算（`ADD/SUB` 立即/寄存器、`CMP/CMN/ADC/SBC/RSB`）现计算溢出标志 V
+  （原恒为 0，使 `VS/VC/GE/LT/GT/LE` 有符号条件分支失效）；由 ns-sim 单测
+  `thumb1_add_sub_sets_v_flag` 锁定。
   Thumb-1 的 PC 相对寻址（`LDR r,[pc,#imm]` 与 `ADD rd,pc,#imm`）现按架构 PC（当前地址
   +4，两条半字）取字对齐作为基址（原把下一指令地址按半字对齐，在 4 字节对齐/2 字节对齐
   两种边界各偏 4 字节），由 ns-sim 单测 `thumb1_pc_relative_uses_architectural_pc` 与

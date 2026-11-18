@@ -106,6 +106,25 @@ impl ArmCore {
         }
     }
 
+    /// Set the overflow (V) flag, bit 28 of xPSR.
+    fn set_v(&mut self, v: bool) {
+        if v {
+            self.xpsr |= 0x1000_0000;
+        } else {
+            self.xpsr &= !0x1000_0000;
+        }
+    }
+
+    /// Compute and set V for an add/sub operation from the operands and result.
+    fn set_add_sub_v(&mut self, a: u32, b: u32, result: u32, sub: bool) {
+        let v = if sub {
+            (a ^ b) & (a ^ result) & 0x8000_0000 != 0
+        } else {
+            (a ^ result) & (b ^ result) & 0x8000_0000 != 0
+        };
+        self.set_v(v);
+    }
+
     /// The Thumb bit of xPSR (bit 24).
     pub fn thumb(&self) -> bool {
         self.xpsr & 0x0100_0000 != 0
@@ -412,6 +431,7 @@ impl ArmCore {
                     value.wrapping_add(operand)
                 };
                 self.set_nz(r);
+                self.set_add_sub_v(value, operand, r, sub);
                 self.regs[rd] = r;
             }
             // 0x2: MOV/CMP immediate 8-bit (bit 11 = CMP)
@@ -421,7 +441,9 @@ impl ArmCore {
                 if cmp {
                     let value = self.regs[rd];
                     self.set_add_carry(value, imm8, true);
-                    self.set_nz(value.wrapping_sub(imm8));
+                    let r = value.wrapping_sub(imm8);
+                    self.set_nz(r);
+                    self.set_add_sub_v(value, imm8, r, true);
                 } else {
                     // MOVS: writes the register and updates N/Z.
                     self.regs[rd] = imm8;
@@ -441,6 +463,7 @@ impl ArmCore {
                     value.wrapping_add(imm8)
                 };
                 self.set_nz(r);
+                self.set_add_sub_v(value, imm8, r, sub);
                 self.regs[rd] = r;
             }
             // 0x4: ALU (0x4000-0x43FF), high-register/BX (0x4400-0x47FF),
@@ -767,6 +790,7 @@ impl ArmCore {
                 let (r, c) = a.overflowing_add(b);
                 let (r, c2) = r.overflowing_add(carry);
                 self.xpsr = (self.xpsr & !0x2000_0000) | ((c || c2) as u32) << 29;
+                self.set_add_sub_v(a, b, r, false);
                 (r, true, true)
             }
             6 => {
@@ -775,6 +799,7 @@ impl ArmCore {
                 let (r, c) = a.overflowing_sub(b);
                 let (r, c2) = r.overflowing_sub(carry);
                 self.xpsr = (self.xpsr & !0x2000_0000) | ((c || c2) as u32) << 29;
+                self.set_add_sub_v(a, b, r, true);
                 (r, true, true)
             }
             7 => {
@@ -792,18 +817,21 @@ impl ArmCore {
                 // NEG Rd,0,Rm
                 let (r, c) = 0u32.overflowing_sub(b);
                 self.xpsr = (self.xpsr & !0x2000_0000) | ((c as u32) << 29);
+                self.set_add_sub_v(0, b, r, true);
                 (r, true, true)
             }
             10 => {
                 // CMP Rd,Rm
                 let (r, c) = a.overflowing_sub(b);
                 self.xpsr = (self.xpsr & !0x2000_0000) | ((c as u32) << 29);
+                self.set_add_sub_v(a, b, r, true);
                 (r, false, true)
             }
             11 => {
                 // CMN Rd,Rm
                 let (r, c) = a.overflowing_add(b);
                 self.xpsr = (self.xpsr & !0x2000_0000) | ((c as u32) << 29);
+                self.set_add_sub_v(a, b, r, false);
                 (r, false, true)
             }
             12 => (a | b, true, true),           // ORR
@@ -1686,6 +1714,27 @@ mod tests {
         run(&mut c, &[0x4348], 1);
         assert_eq!(c.regs[0], 3u32.wrapping_mul(0x8000_0000));
         assert!(c.flag_n());
+    }
+
+    #[test]
+    fn thumb1_add_sub_sets_v_flag() {
+        // ADDS r0, r1, r2 (0x1888): 0x7FFFFFFF + 1 = 0x80000000 overflows.
+        let mut c = core();
+        c.regs[1] = 0x7FFF_FFFF;
+        c.regs[2] = 1;
+        run(&mut c, &[0x1888], 1);
+        assert_eq!(c.regs[0], 0x8000_0000);
+        assert!(c.flag_v());
+        assert!(c.flag_n() && !c.flag_z()); // result N set.
+
+        // SUBS r0, r1, r2 (0x1A88): 0x80000000 - 1 = 0x7FFFFFFF overflows.
+        let mut c = core();
+        c.regs[1] = 0x8000_0000;
+        c.regs[2] = 1;
+        run(&mut c, &[0x1A88], 1);
+        assert_eq!(c.regs[0], 0x7FFF_FFFF);
+        assert!(c.flag_v());
+        assert!(!c.flag_n() && !c.flag_z());
     }
 
     #[test]
