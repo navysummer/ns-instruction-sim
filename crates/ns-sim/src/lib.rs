@@ -3557,6 +3557,35 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     format!(".word 0x{insn:08x}")
 }
 
+/// Format the ARM operand-2 register (optionally shifted) for a data
+/// processing / single-transfer instruction, mirroring `ArmCore::arm_operand2`.
+fn arm_operand2_shift_str(insn: u32) -> String {
+    let rm = (insn & 0x0F) as usize;
+    let shift_type = (insn >> 5) & 0x03;
+    let shift_name = match shift_type {
+        0 => "lsl",
+        1 => "lsr",
+        2 => "asr",
+        _ => "ror",
+    };
+    if insn & 0x10 != 0 {
+        // Register-specified shift: RS in bits 11-8.
+        let rs = ((insn >> 8) & 0x0F) as usize;
+        return format!("r{rm}, {shift_name} r{rs}");
+    }
+    let amount = (insn >> 7) & 0x1F;
+    match (shift_type, amount) {
+        (0, 0) => format!("r{rm}"),
+        (1, 0) => format!("r{rm}, lsr #32"),
+        (2, 0) => format!("r{rm}, asr #32"),
+        (3, 0) => format!("r{rm}, rrx"),
+        (0, a) => format!("r{rm}, lsl #{a}"),
+        (1, a) => format!("r{rm}, lsr #{a}"),
+        (2, a) => format!("r{rm}, asr #{a}"),
+        (_, a) => format!("r{rm}, ror #{a}"),
+    }
+}
+
 /// Decode a single A32 (ARM-state) instruction for the disassembly view.
 fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     let insn = read(pc) as u32
@@ -3617,12 +3646,7 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             (false, true) => "strb",
         };
         let offset = if reg_off {
-            let shift_imm = (insn >> 7) & 0x1F;
-            if shift_imm != 0 {
-                format!("{}, lsl #{shift_imm}", rname(rm))
-            } else {
-                rname(rm)
-            }
+            arm_operand2_shift_str(insn)
         } else {
             format!("#{}", insn & 0x0FFF)
         };
@@ -3724,23 +3748,7 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             let rotate = ((insn >> 8) & 0x0F) * 2;
             format!("#{:#x}", imm.rotate_right(rotate))
         } else {
-            let shift_type = (insn >> 5) & 0x03;
-            let amount = (insn >> 7) & 0x1F;
-            let shift = match (shift_type, amount) {
-                (0, 0) => String::new(),
-                (1, 0) => "lsr #32".to_string(),
-                (2, 0) => "asr #32".to_string(),
-                (3, 0) => "rrx".to_string(),
-                (0, a) => format!("lsl #{a}"),
-                (1, a) => format!("lsr #{a}"),
-                (2, a) => format!("asr #{a}"),
-                (_, a) => format!("ror #{a}"),
-            };
-            if shift.is_empty() {
-                rname(rm)
-            } else {
-                format!("{}, {}", rname(rm), shift)
-            }
+            arm_operand2_shift_str(insn)
         };
         if opcode >= 8 && opcode <= 11 {
             // Compare/test: no destination.
@@ -5568,6 +5576,33 @@ mod tests {
             };
             assert_eq!(
                 disassemble_one_state(Arch::Arm, 0, &read, false),
+                *expected,
+                "insn {insn:#010x}"
+            );
+        }
+    }
+
+    #[test]
+    fn disassembles_a32_operand2_shifts() {
+        // ARM-state operand-2 shifts mirror `ArmCore::arm_operand2`: LSL/LSR/
+        // ASR/ROR immediate, RRX, and register-specified shifts.
+        let cases: &[(u32, &str)] = &[
+            (0xE790_0182, "ldr r0, [r0, r2, lsl #3]"),
+            (0xE791_0102, "ldr r0, [r1, r2, lsl #2]"),
+            (0xE791_0000, "ldr r0, [r1, r0]"),
+            (0xE790_0110, "ldr r0, [r0, r0, lsl r1]"),
+            (0xE1A0_0201, "mov r0, r1, lsl #4"),
+            (0xE1A0_0661, "mov r0, r1, ror #12"),
+            (0xE1A0_0061, "mov r0, r1, rrx"),
+        ];
+        for (insn, expected) in cases {
+            let bytes = insn.to_le_bytes();
+            let read = |addr: u32| {
+                let i = addr as usize;
+                if i < 4 { bytes[i] } else { 0 }
+            };
+            assert_eq!(
+                disassemble_one_state(Arch::Arm, 0, &read, true),
                 *expected,
                 "insn {insn:#010x}"
             );

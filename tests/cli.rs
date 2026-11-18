@@ -1765,6 +1765,40 @@ fn disasm_thumb2_ldrh_strh_barriers() {
 }
 
 #[test]
+fn disasm_a32_operand2_shifts() {
+    let dir = tmpdir();
+    let binfile = dir.join("a32-shifts.bin");
+    let sess = dir.join("a32-shifts.json");
+    // ARM-state operand-2 shifts: LSL/LSR/ASR/ROR immediate, RRX, and
+    // register-specified shifts for single-transfer and data-processing.
+    let bytes: &[u8] = &[
+        0x82, 0x01, 0x90, 0xE7, // ldr r0, [r0, r2, lsl #3]
+        0x10, 0x01, 0x90, 0xE7, // ldr r0, [r0, r0, lsl r1]
+        0x01, 0x02, 0xA0, 0xE1, // mov r0, r1, lsl #4
+        0x61, 0x00, 0xA0, 0xE1, // mov r0, r1, rrx
+    ];
+    std::fs::write(&binfile, bytes).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "4", "--arm-state", "a32"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "0x00000000: ldr r0, [r0, r2, lsl #3]",
+        "0x00000004: ldr r0, [r0, r0, lsl r1]",
+        "0x00000008: mov r0, r1, lsl #4",
+        "0x0000000c: mov r0, r1, rrx",
+    ] {
+        assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
+    }
+}
+
+#[test]
 fn disasm_source_annotates_lines() {
     let dir = tmpdir();
     let sess = dir.join("dsrc.json");

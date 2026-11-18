@@ -252,6 +252,8 @@ done
   BL、MOVW、ADDW、LDR/STR/LDRB/STRB 立即），并校验按编码实际宽度推进。
 - `disasm_thumb2_ldrh_strh_barriers`：Thumb-2 `LDRH/STRH` 立即与 `DMB/DSB/ISB` 屏障反汇编，
   校验宽度与助记符。
+- `disasm_a32_operand2_shifts`：A32 数据传送/数据处理操作数 2 的移位（LSL/LSR/ASR/ROR、
+  RRX、寄存器指定位移）反汇编镜像执行内核。
 - `run_arm_thumb1_field_extraction`：端到端执行 Thumb-1 `LSL`/`SUBS reg`/`SUBS imm3`，
   校验内核按编码提取 Rn/Rm/Rd（`lsls r0,r1,#5`→r0=0x400、`subs r0,r2,r1`→r0=5-32、
   `subs r0,r2,#3`→r0=2），锁定格式 0/1 字段提取修复。
@@ -373,6 +375,10 @@ done
   `thumb1_register_offset_addressing` 与 CLI `run_arm_thumb1_field_extraction` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
+  A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI
+  `disasm_a32_operand2_shifts` 锁定：数据传送与数据处理操作数 2 现按
+  `ArmCore::arm_operand2` 解码 LSL/LSR/ASR/ROR 立即、RRX 与寄存器指定位移（原仅显示
+  `lsl #imm` 且忽略移位类型与寄存器移位）。
   RL78 反汇编同时镜像核心 `execute_61` 的 `op & 0xF8` 低组优先分发（`0x61 0x59` 等被寄存器-
   寄存器家族捕获为 `and a, A`，`0x61 0xAA`/`0xAB` 经 `0xA8` 家族路由为 `mov a, ES:[imm16]`），
   与核心执行语义逐字节一致。
