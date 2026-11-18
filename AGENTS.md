@@ -276,6 +276,9 @@ done
 - `run_arm_thumb1_high_cmp_v_flag`：端到端分三次 `step --session` 执行 `cmp r0,r1`（0x4508，
   0x80000000 - 1 溢出）后 `bvs +2`（0xD601）命中，PC 停在 0x0800001a 且 r2=2，
   锁定高寄存器 CMP 更新 V 标志（原不更新，使 `VS/VC` 有符号条件分支失效）。
+- `run_arm_thumb1_cbz_branch`：端到端分三次 `step --session` 执行 `movs r0,#0` 后 `cbz r0,+4`
+  （0xB110）命中，PC 停在 0x0800001c 且 r2=1（r1 未被触碰），锁定 CBZ/CBNZ 分支执行
+  （原被误当作 `ADD/SUB SP`，导致栈与 PC 损坏）。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -426,6 +429,13 @@ done
   Thumb-1 高寄存器 `CMP rD,rM`（`0x4500-0x45FF`）现更新溢出标志 V（原只更新 N/Z/C），
   与 A32/Thumb `CMP` 的 N/Z/C/V 语义一致；由 ns-sim 单测 `thumb1_high_cmp_sets_v_flag`
   与 CLI `run_arm_thumb1_high_cmp_v_flag` 锁定。
+  Thumb-1 `CBZ`/`CBNZ`（`0xB1xx`/`0xB9xx`，编码 `1011 i 0 0 1 imm5 Rn`）现按 Rn 为零/
+  非零条件分支（目标 = 当前地址 + 4 + imm5*2），原被误当作 `ADD/SUB SP`（`insn & 0x0C00
+  == 0` 判据过宽），会错误改写 SP；`ADD/SUB SP` 立即数现正确屏蔽 bit7（子/加标志），
+  使 `sub sp,#imm` 不再把 0x200 混入偏移；`NOP`（0xBF00）现为空操作（原被当作 `POP`，
+  会错误读取并改写 SP/PC）。由 ns-sim 单测 `thumb1_cbz_cbnz_branch`/
+  `thumb1_add_sub_sp_immediate`/`thumb1_nop_no_effect` 与 CLI `run_arm_thumb1_cbz_branch`
+  锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

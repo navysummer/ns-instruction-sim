@@ -3412,10 +3412,22 @@ fn disassemble_thumb1(half: u16, pc: u32) -> String {
         }
         // ADD/SUB SP (0xB0-0xB3) or PUSH/POP (0xB4-0xBF).
         0xB => {
-            if half & 0x0C00 == 0x0000 {
+            // CBZ/CBNZ (1011 i 0 0 1 imm5 Rn): 0xB1xx CBZ, 0xB9xx CBNZ.
+            if half & 0x0F00 == 0x0100 || half & 0x0F00 == 0x0900 {
+                let cbz = half & 0x0800 == 0;
+                let imm5 = ((half >> 3) & 0x1F) as u32;
+                let rn = (half & 0x07) as usize;
+                format!(
+                    "{} r{rn}, {:#x}",
+                    if cbz { "cbz" } else { "cbnz" },
+                    pc.wrapping_add(4).wrapping_add(imm5 * 2)
+                )
+            } else if half & 0xFF00 == 0xB000 {
                 let sub = (half >> 7) & 1 != 0;
                 let name = if sub { "sub" } else { "add" };
-                format!("{name} sp, sp, #{}", imm8.wrapping_mul(4))
+                format!("{name} sp, sp, #{}", (imm8 & 0x7F).wrapping_mul(4))
+            } else if half == 0xBF00 {
+                format!("nop")
             } else {
                 let push = (half >> 11) & 1 == 0;
                 let mut regs = reg_list(half & 0xFF);

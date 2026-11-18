@@ -594,16 +594,38 @@ impl ArmCore {
                 };
                 self.regs[rd] = base.wrapping_add(imm8.wrapping_mul(4));
             }
-            // 0xB: add/sub SP (0xB0-0xB3) or PUSH/POP (0xB4-0xBF)
+            // 0xB: CBZ/CBNZ (0xB1xx/0xB9xx), ADD/SUB SP (0xB0-0xB3),
+            // NOP (0xBF00) or PUSH/POP (0xB4-0xBF).
             0xB => {
-                if insn & 0x0C00 == 0x0000 {
+                // CBZ/CBNZ (1011 i 0 0 1 imm5 Rn): 0xB1xx CBZ, 0xB9xx CBNZ.
+                if insn & 0x0F00 == 0x0100 || insn & 0x0F00 == 0x0900 {
+                    let cbz = insn & 0x0800 == 0;
+                    let imm5 = ((insn >> 3) & 0x1F) as u32;
+                    let rn = (insn & 0x07) as usize;
+                    let taken = if cbz {
+                        self.regs[rn] == 0
+                    } else {
+                        self.regs[rn] != 0
+                    };
+                    if taken {
+                        // Architectural PC = current + 4; `step` left PC at
+                        // current + 2, so add 2 to reach the branch base.
+                        let arch_pc = self.regs[PC].wrapping_add(2);
+                        self.regs[PC] = (arch_pc.wrapping_add(imm5 * 2)) & !1;
+                    }
+                } else if insn & 0xFF00 == 0xB000 {
+                    // ADD/SUB SP (1011 0000 0/1 imm7): bit 7 = sub, bits 6-0
+                    // = imm7 (scaled by 4). The low byte includes the sub bit,
+                    // so mask it off when forming the byte offset.
                     let sub = (insn >> 7) & 1 != 0;
-                    let value = imm8.wrapping_mul(4);
+                    let value = (imm8 & 0x7F).wrapping_mul(4);
                     self.regs[SP] = if sub {
                         self.regs[SP].wrapping_sub(value)
                     } else {
                         self.regs[SP].wrapping_add(value)
                     };
+                } else if insn == 0xBF00 {
+                    // NOP: no effect.
                 } else {
                     let push = (insn >> 11) & 1 == 0;
                     let rlist = (insn & 0xFF) as u32;
@@ -1794,6 +1816,63 @@ mod tests {
         assert!(!c.flag_v());
         assert!(!c.flag_n() && !c.flag_z());
         assert!(c.flag_c());
+    }
+
+    #[test]
+    fn thumb1_cbz_cbnz_branch() {
+        // CBZ r0, +6 (0xB100 | (3 << 3) = 0xB118) at address 0: taken when
+        // r0 == 0 → target = 0 + 4 + 3*2 = 0xA.
+        let mut c = core();
+        c.regs[0] = 0;
+        run(&mut c, &[0xB118], 1);
+        assert_eq!(c.regs[PC], 10);
+
+        // Not taken when r0 != 0 → falls through to current + 2 = 2.
+        let mut c = core();
+        c.regs[0] = 1;
+        run(&mut c, &[0xB118], 1);
+        assert_eq!(c.regs[PC], 2);
+
+        // CBNZ r2, +2 (0xB900 | (1 << 3) | (2 << 0) = 0xB90A): taken when
+        // r2 != 0 → target = 0 + 4 + 1*2 = 6.
+        let mut c = core();
+        c.regs[2] = 5;
+        run(&mut c, &[0xB90A], 1);
+        assert_eq!(c.regs[PC], 6);
+
+        // CBNZ not taken when r2 == 0 → falls through to current + 2 = 2.
+        let mut c = core();
+        c.regs[2] = 0;
+        run(&mut c, &[0xB90A], 1);
+        assert_eq!(c.regs[PC], 2);
+    }
+
+    #[test]
+    fn thumb1_add_sub_sp_immediate() {
+        // ADD sp, sp, #8 (0xB002): SP += 8.
+        let mut c = core();
+        c.regs[SP] = 0x2000_0000;
+        run(&mut c, &[0xB002], 1);
+        assert_eq!(c.regs[SP], 0x2000_0008);
+
+        // SUB sp, sp, #16 (0xB084): the low byte 0x84 includes the sub bit,
+        // so the offset must be (0x84 & 0x7F) * 4 = 16.
+        let mut c = core();
+        c.regs[SP] = 0x2000_0000;
+        run(&mut c, &[0xB084], 1);
+        assert_eq!(c.regs[SP], 0x2000_0000 - 16);
+    }
+
+    #[test]
+    fn thumb1_nop_no_effect() {
+        // NOP (0xBF00) must advance PC by 2 without touching SP or registers.
+        let mut c = core();
+        c.regs[SP] = 0x2000_0000;
+        c.regs[0] = 0x1234_5678;
+        run(&mut c, &[0xBF00], 1);
+        assert_eq!(c.regs[PC], 2);
+        assert_eq!(c.regs[SP], 0x2000_0000);
+        assert_eq!(c.regs[0], 0x1234_5678);
     }
 
     #[test]
