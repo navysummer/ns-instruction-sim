@@ -305,6 +305,14 @@ done
   `tbb [r7,r8]`（0xE8D7F008，r7=0x20000030/r8=2，索引字节 0x20 → 目标 0x0800005C），
   校验寄存器、PC 与 STRD 内存写跨会话持久化（`mem read`），锁定 Thumb-2 双字传送
   与表分支执行；同时校验 ARM 运行时内存写进入会话 `memory_overlay`（跨进程 step 可续跑）。
+- `run_arm_thumb2_modified_immediate`：端到端分四次 `step --session` 执行
+  `mov.w r0,#0xff`（0xF04F00FF，r0=0xFF）、`add.w r3,r4,#0x40`（0xF1040340，5+0x40=0x45）、
+  `sub.w r5,r6,#0x200`（0xF5A67500，0x300−0x200=0x100）、`cmp.w r0,#0x40`（0xF1B00F40，
+  0xff−0x40 置 C 清 N/Z/V），`state --json` 校验寄存器与 `armXpsr` 标志，锁定
+  Thumb-2 修正立即数据处理执行（含 `thumb_expand_imm12` 扩展）。
+- `disasm_thumb2_modified_immediate`：`disasm --arm-state thumb` 将
+  `mov r0,#0xff`/`add r3,r4,#0x40`/`sub r5,r6,#0x200`/`cmp r0,#0x40`/`tst r2,#0xff`
+  反汇编为真实助记符并按扩展立即数显示。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -412,7 +420,8 @@ done
   ARM Thumb 全家族（Thumb-1/Thumb-2）另由 ns-sim 单测 `disassembles_thumb_full_families`/
   `disassembles_thumb2_wide_forms` 锁定：Thumb-1 覆盖执行内核全部 16 位家族，Thumb-2 覆盖
   BL/BLX、MOVW/MOVT、ADDW/SUBW、LDR/STR/LDRB/STRB/LDRH/STRH 12 位立即与 DMB/DSB/ISB
-  内存屏障；`b`（0xE001）与 `bl 0x28`（0xF000D000）分别按 2/4 字节推进。屏障（0xF3BF
+  内存屏障、数据处理（寄存器/修正立即）与 TBB/TBH/LDRD/STRD；`b`（0xE001）与
+  `bl 0x28`（0xF000D000）分别按 2/4 字节推进。屏障（0xF3BF
   0x8F5F/8F6F/8F7F）在执行内核中为 no-op（原仅 DMB 被识别，DSB/ISB 会误 halt），
   由 ns-sim 单测 `execute_wide_ldrh_strh_and_barriers` 与 CLI `disasm_thumb2_ldrh_strh_barriers` 锁定。
   Thumb-2 分支目标现以架构 PC（当前 +4）为基址（原 `BL/BLX` 与 `B.W` 反汇编按当前地址算，
@@ -510,6 +519,18 @@ done
   编码 `0xE9D20100` = `ldrd r0,r1,[r2]`。ARM 运行时数据空间写现记入会话
   `memory_overlay`（跨进程 `step --session` 可续跑并读回）。由 ns-sim 单测
   `thumb2_tbb_tbh`/`thumb2_ldrd_strd` 与 CLI `run_arm_thumb2_ldrd_strd_tbb` 锁定。
+  Thumb-2 修正立即数据处理（bits15-11=`11110`、bit9=0；op=first bits8-5，与寄存器形式同
+  表：AND=0/BIC=1/ORR=2/ORN=3/EOR=4/ADD=8/SUB=13/RSB=14，S=bit4、Rn=first bits3-0、
+  i=bit10、imm3=second bits14-12、Rd=second bits11-8、imm8=second bits7-0，
+  imm12=(i<<11)|(imm3<<8)|imm8）现执行；`Rn=PC` 的 ORR/ORN 即 MOV/MVN，`S=1 且 Rd=PC`
+  的 AND/EOR/ADD/SUB 即 TST/TEQ/CMN/CMP（只置标志不写回）。立即按
+  `thumb_expand_imm12` 扩展：imm12 bits11-10=00 时为字节重复模式（由 bits11-8 选
+  00=0x000000XX、01=0x00XX00XX、10=0xXX00XX00、11=0xXXXXXXXX，进位沿用输入），
+  否则为 `(byte|0x80)` 循环右移 `2×rot+(byte>>7)`（byte=imm12 bits7-0、
+  rot=imm12 bits11-8，进位=结果 bit31）。逻辑运算 C 取自扩展进位、V 不变；加减按
+  ARM 进位/溢出语义。反汇编按扩展值显示立即（`mov r0,#0xff`/`add r3,r4,#0x40` 等）。
+  由 ns-sim 单测 `thumb2_data_processing_modified_immediate`/`thumb_expand_imm12_matches_encodings`
+  与 CLI `run_arm_thumb2_modified_immediate`/`disasm_thumb2_modified_immediate` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

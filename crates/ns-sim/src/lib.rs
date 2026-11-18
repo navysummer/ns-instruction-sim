@@ -3791,6 +3791,44 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("clz r{rd}, r{rm}");
     }
 
+    // Data processing (modified immediate): AND/BIC/ORR/ORN/EOR/ADD/SUB/RSB
+    // plus MOV/MVN/TST/TEQ/CMP/CMN. Bits 15-11 = 11110, bit 9 = 0.
+    if first & 0xFA00 == 0xF000 {
+        let op = ((first >> 5) & 0xF) as u32;
+        let set_flags = first & 0x0010 != 0;
+        let rn = (first & 0x0F) as usize;
+        let i = ((first >> 10) & 1) as u32;
+        let imm3 = ((second >> 12) & 0x7) as u32;
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let imm8 = (second & 0xFF) as u32;
+        let imm12 = (i << 11) | (imm3 << 8) | imm8;
+        let (imm, _) = crate::arm::thumb_expand_imm12(imm12, false);
+        let mnem = match op {
+            0 if set_flags && rd == 0xF => "tst",
+            4 if set_flags && rd == 0xF => "teq",
+            8 if set_flags && rd == 0xF => "cmn",
+            13 if set_flags && rd == 0xF => "cmp",
+            2 if rn == 0xF => "mov",
+            3 if rn == 0xF => "mvn",
+            0 => "and",
+            1 => "bic",
+            2 => "orr",
+            3 => "orn",
+            4 => "eor",
+            8 => "add",
+            13 => "sub",
+            14 => "rsb",
+            _ => return format!(".word 0x{:08x}", ((first as u32) << 16) | second as u32),
+        };
+        let s = if set_flags { "s" } else { "" };
+        let imm_str = format!("#0x{imm:x}");
+        return match mnem {
+            "tst" | "teq" | "cmn" | "cmp" => format!("{mnem} r{rn}, {imm_str}"),
+            "mov" | "mvn" => format!("{mnem}{s} r{rd}, {imm_str}"),
+            _ => format!("{mnem}{s} r{rd}, r{rn}, {imm_str}"),
+        };
+    }
+
     // Data processing (register): AND/BIC/ORR/ORN/EOR/ADD/ADC/SBC/SUB/RSB plus
     // MOV/MVN/TST/TEQ/CMP/CMN. Bits 15-9 = 1110101.
     if first & 0xFE00 == 0xEA00 {
@@ -5896,6 +5934,17 @@ mod tests {
             (0xE9F2_0102, "ldrd r0, r1, [r2, #8]!"),
             (0xE9C6_4504, "strd r4, r5, [r6, #16]"),
             (0xE8E6_4504, "strd r4, r5, [r6], #16"),
+            // Data processing (modified immediate).
+            (0xF04F_00FF, "mov r0, #0xff"),
+            (0xF04F_4000, "mov r0, #0x80000000"),
+            (0xF05F_0201, "movs r2, #0x1"),
+            (0xF06F_09FF, "mvn r9, #0xff"),
+            (0xF500_7080, "add r0, r0, #0x100"),
+            (0xF5A6_7500, "sub r5, r6, #0x200"),
+            (0xF008_07F0, "and r7, r8, #0xf0"),
+            (0xF1B0_0F40, "cmp r0, #0x40"),
+            (0xF012_0FFF, "tst r2, #0xff"),
+            (0xF093_4F00, "teq r3, #0x80000000"),
         ];
         for (insn, expected) in cases {
             let bytes = [

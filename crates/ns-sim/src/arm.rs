@@ -1280,6 +1280,13 @@ impl ArmCore {
             return;
         }
 
+        // Data processing (modified immediate): AND/BIC/ORR/ORN/EOR/ADD/SUB/
+        // RSB plus MOV/MVN/TST/TEQ/CMP/CMN. Bits 15-11 = 11110, bit 9 = 0.
+        if first & 0xFA00 == 0xF000 {
+            self.thumb2_data_processing_imm(first, second, pc);
+            return;
+        }
+
         self.halted = true;
     }
 }
@@ -1747,6 +1754,88 @@ impl ArmCore {
         }
     }
 
+    /// Execute a Thumb-2 data-processing (modified immediate) instruction.
+    /// `first`/`second` are the two halfwords; `pc` is the architectural PC
+    /// (current + 4) already advanced by `step`. The 12-bit immediate is
+    /// expanded by [`thumb_expand_imm12`].
+    fn thumb2_data_processing_imm(&mut self, first: u16, second: u16, pc: u32) {
+        // op = bits 8-5; bit4 = S; bits3-0 = Rn; bit10 = i (top of imm12).
+        let op = ((first >> 5) & 0xF) as u32;
+        let set_flags = first & 0x0010 != 0;
+        let rn = (first & 0x0F) as usize;
+        let i = ((first >> 10) & 1) as u32;
+        let imm3 = ((second >> 12) & 0x7) as u32;
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let imm8 = (second & 0xFF) as u32;
+        let imm12 = (i << 11) | (imm3 << 8) | imm8;
+        let (b, imm_carry) = thumb_expand_imm12(imm12, self.flag_c());
+        // MOV/MVN are ORR/ORN with Rn=PC; TST/TEQ/CMP/CMN are op with S=1 and
+        // Rd=PC (no writeback).
+        let is_mov = op == 2 && rn == PC;
+        let is_mvn = op == 3 && rn == PC;
+        let is_compare = set_flags && rd == PC && matches!(op, 0 | 4 | 8 | 13);
+        let pc_val = pc & !3;
+        let rn_val = if rn == PC { pc_val } else { self.regs[rn] };
+        let result = match op {
+            0 => rn_val & b,
+            1 => rn_val & !b,
+            2 if is_mov => b,
+            2 => rn_val | b,
+            3 if is_mvn => !b,
+            3 => !rn_val | b,
+            4 => rn_val ^ b,
+            8 => {
+                let (r, _, _) = Self::arm_add(rn_val, b, false);
+                r
+            }
+            13 => {
+                let (r, _, _) = Self::arm_sub(rn_val, b, true);
+                r
+            }
+            14 => {
+                let (r, _, _) = Self::arm_sub(b, rn_val, true);
+                r
+            }
+            _ => {
+                self.halted = true;
+                return;
+            }
+        };
+        let (n, z, c, v) = match op {
+            0 | 1 | 2 | 3 | 4 => {
+                // Logical: N/Z from result, C from the immediate expansion,
+                // V unchanged.
+                (
+                    result & 0x8000_0000 != 0,
+                    result == 0,
+                    imm_carry,
+                    self.flag_v(),
+                )
+            }
+            8 | 13 | 14 => {
+                let (r, c, v) = if op == 8 {
+                    Self::arm_add(rn_val, b, false)
+                } else if op == 13 {
+                    Self::arm_sub(rn_val, b, true)
+                } else {
+                    Self::arm_sub(b, rn_val, true)
+                };
+                (r & 0x8000_0000 != 0, r == 0, c, v)
+            }
+            _ => (self.flag_n(), self.flag_z(), self.flag_c(), self.flag_v()),
+        };
+        if is_compare || set_flags {
+            self.set_nzcv(n, z, c, v);
+        }
+        if !is_compare {
+            if rd == PC {
+                self.branch_exchange_value(result);
+            } else {
+                self.regs[rd] = result;
+            }
+        }
+    }
+
     /// Compute the Thumb-2 shifted-register operand (Rm with the shift encoded
     /// by `imm2`/`shift_type`), returning the shifted value and the shifter
     /// carry-out. shift_type: 0=LSL, 1=LSR, 2=ASR, 3=ROR (imm2=0 → RRX).
@@ -2065,6 +2154,28 @@ fn thumb_shift_value(value: u32, amount: u32, kind: u32) -> (u32, bool, bool) {
 fn sign_extend_thumb(value: u32, bits: u32) -> u32 {
     let shift = 32 - bits;
     ((value << shift) as i32 >> shift) as u32
+}
+
+/// Expand a Thumb-2 modified immediate (12-bit `imm12`) to its 32-bit value.
+/// Mirrors ARMv7-M `ThumbExpandImm_C`: the top two bits select a byte pattern
+/// when clear (carry preserved), otherwise the low byte with bit 7 forced is
+/// rotated right by `2*rot + (byte >> 7)` (carry = top bit of the result).
+pub(crate) fn thumb_expand_imm12(imm12: u32, carry_in: bool) -> (u32, bool) {
+    if imm12 & 0xC00 == 0 {
+        let xy = imm12 & 0xFF;
+        let value = match (imm12 >> 8) & 3 {
+            0 => xy,
+            1 => xy | (xy << 16),
+            2 => ((xy << 8) | (xy << 24)) & 0xFFFF_FFFF,
+            _ => xy | (xy << 8) | (xy << 16) | (xy << 24),
+        };
+        (value, carry_in)
+    } else {
+        let byte = imm12 & 0xFF;
+        let rot = (imm12 >> 8) & 0xF;
+        let value = (byte | 0x80).rotate_right(2 * rot + (byte >> 7));
+        (value, value & 0x8000_0000 != 0)
+    }
 }
 
 #[cfg(test)]
@@ -2743,6 +2854,136 @@ mod tests {
         run(&mut c, &[0xEB16, 0x0694], 1);
         assert_eq!(c.regs[6], 0x40);
         assert!(!c.flag_z());
+    }
+
+    #[test]
+    fn thumb2_data_processing_modified_immediate() {
+        // mov.w r0, #0xff (0xF04F00FF): byte-pattern immediate.
+        let mut c = core();
+        run(&mut c, &[0xF04F, 0x00FF], 1);
+        assert_eq!(c.regs[0], 0xFF);
+
+        // mov.w r0, #0x80000000 (0xF04F4000): rotation immediate.
+        let mut c = core();
+        run(&mut c, &[0xF04F, 0x4000], 1);
+        assert_eq!(c.regs[0], 0x8000_0000);
+
+        // mov.w r0, #0xff00ff (0xF04F10FF): 0x00FF00FF byte pattern.
+        let mut c = core();
+        run(&mut c, &[0xF04F, 0x10FF], 1);
+        assert_eq!(c.regs[0], 0x00FF_00FF);
+
+        // mov.w r0, #0x100 (0xF44F7080).
+        let mut c = core();
+        run(&mut c, &[0xF44F, 0x7080], 1);
+        assert_eq!(c.regs[0], 0x100);
+
+        // mov.w r0, #0xffffffff (0xF04F30FF).
+        let mut c = core();
+        run(&mut c, &[0xF04F, 0x30FF], 1);
+        assert_eq!(c.regs[0], 0xFFFF_FFFF);
+
+        // movs.w r2, #1 (0xF05F0201): Z clear.
+        let mut c = core();
+        run(&mut c, &[0xF05F, 0x0201], 1);
+        assert_eq!(c.regs[2], 1);
+        assert!(!c.flag_z());
+
+        // add.w r3, r4, #0x40 (0xF1040340): 5 + 0x40 = 0x45.
+        let mut c = core();
+        c.regs[4] = 5;
+        run(&mut c, &[0xF104, 0x0340], 1);
+        assert_eq!(c.regs[3], 0x45);
+
+        // add.w r0, r0, #0x100 (0xF5007080).
+        let mut c = core();
+        c.regs[0] = 1;
+        run(&mut c, &[0xF500, 0x7080], 1);
+        assert_eq!(c.regs[0], 0x101);
+
+        // sub.w r5, r6, #0x200 (0xF5A67500).
+        let mut c = core();
+        c.regs[6] = 0x300;
+        run(&mut c, &[0xF5A6, 0x7500], 1);
+        assert_eq!(c.regs[5], 0x100);
+
+        // and r7, r8, #0xf0 (0xF00807F0).
+        let mut c = core();
+        c.regs[8] = 0xFF;
+        run(&mut c, &[0xF008, 0x07F0], 1);
+        assert_eq!(c.regs[7], 0xF0);
+
+        // orr r9, r10, #0x8000 (0xF44A4900).
+        let mut c = core();
+        c.regs[10] = 1;
+        run(&mut c, &[0xF44A, 0x4900], 1);
+        assert_eq!(c.regs[9], 0x8001);
+
+        // cmp.w r0, #0x40 (0xF1B00F40): r0 = 0x40 → Z set, C set.
+        let mut c = core();
+        c.regs[0] = 0x40;
+        run(&mut c, &[0xF1B0, 0x0F40], 1);
+        assert!(c.flag_z() && c.flag_c() && !c.flag_n() && !c.flag_v());
+
+        // mvn r9, #0xff (0xF06F09FF).
+        let mut c = core();
+        run(&mut c, &[0xF06F, 0x09FF], 1);
+        assert_eq!(c.regs[9], 0xFFFF_FF00);
+
+        // rsb.w r6, r7, #0xff (0xF1C706FF): 0 - r7 + 0xff.
+        let mut c = core();
+        c.regs[7] = 0x10;
+        run(&mut c, &[0xF1C7, 0x06FF], 1);
+        assert_eq!(c.regs[6], 0xEF);
+
+        // tst.w r2, #0xff (0xF0120FFF): 0x100 & 0xff = 0 → Z set.
+        let mut c = core();
+        c.regs[2] = 0x100;
+        run(&mut c, &[0xF012, 0x0FFF], 1);
+        assert!(c.flag_z());
+    }
+
+    #[test]
+    fn thumb_expand_imm12_matches_encodings() {
+        // Cross-check the modified-immediate expansion against values emitted
+        // by clang for a single-bit immediate across every rotation.
+        let cases: &[(u32, u32)] = &[
+            (0x0FF, 0x0000_00FF),
+            (0x1FF, 0x00FF_00FF),
+            (0x2FF, 0xFF00_FF00),
+            (0x3FF, 0xFFFF_FFFF),
+            (0x400, 0x8000_0000),
+            (0x47F, 0xFF00_0000),
+            (0x480, 0x4000_0000),
+            (0x500, 0x2000_0000),
+            (0x580, 0x1000_0000),
+            (0x600, 0x0800_0000),
+            (0x680, 0x0400_0000),
+            (0x700, 0x0200_0000),
+            (0x780, 0x0100_0000),
+            (0x800, 0x0080_0000),
+            (0x880, 0x0040_0000),
+            (0x900, 0x0020_0000),
+            (0x980, 0x0010_0000),
+            (0xA00, 0x0008_0000),
+            (0xA80, 0x0004_0000),
+            (0xB00, 0x0002_0000),
+            (0xB80, 0x0001_0000),
+            (0xC00, 0x0000_8000),
+            (0xC80, 0x0000_4000),
+            (0xD00, 0x0000_2000),
+            (0xD80, 0x0000_1000),
+            (0xE00, 0x0000_0800),
+            (0xE80, 0x0000_0400),
+            (0xF00, 0x0000_0200),
+            (0xF80, 0x0000_0100),
+            (0x080, 0x0000_0080),
+            (0x87F, 0x00FF_0000),
+        ];
+        for (imm12, expected) in cases {
+            let (value, _) = thumb_expand_imm12(*imm12, false);
+            assert_eq!(value, *expected, "imm12 {imm12:#05x}");
+        }
     }
 
     #[test]
