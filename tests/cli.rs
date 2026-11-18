@@ -2153,6 +2153,80 @@ fn run_arm_thumb1_rev_and_clz() {
 }
 
 #[test]
+fn run_arm_thumb2_div_load_literal_and_ldm() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-t2.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: ldr.w r0,[r1,r2]; sdiv r3,r4,r5; ldmia.w r6!,{r7,r8}; udiv r9,r10,r11.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x51", "0xF8", "0x02", "0x00",
+               "0x94", "0xFB", "0xF5", "0xF3",
+               "0xB6", "0xE8", "0x80", "0x01",
+               "0xBA", "0xFB", "0xFB", "0xF9"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Data memory for the register-offset load and the LDMIA.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000004", "--bytes",
+               "0xBE", "0xBA", "0xFE", "0xCA",
+               "0x00", "0x00", "0x00", "0x00",
+               "0x00", "0x00", "0x00", "0x00",
+               "0x11", "0x11", "0x00", "0x00",
+               "0x22", "0x22", "0x00", "0x00"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [
+        ("r1", "0x20000000"), ("r2", "0x00000004"),
+        ("r4", "0xFFFFFFF9"), ("r5", "0x00000002"),
+        ("r6", "0x20000010"),
+        ("r10", "0x00010000"), ("r11", "0x00000003"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..4 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0020u64);
+    assert_eq!(json["registers"]["r0"], 0xCAFE_BABEu64);   // ldr.w r0, [r1, r2]
+    assert_eq!(json["registers"]["r3"], 0xFFFF_FFFDu64);   // sdiv -7 / 2 = -3
+    assert_eq!(json["registers"]["r7"], 0x1111u64);        // ldmia r6!
+    assert_eq!(json["registers"]["r8"], 0x2222u64);
+    assert_eq!(json["registers"]["r6"], 0x2000_0018u64);   // writeback
+    assert_eq!(json["registers"]["r9"], 0x5555u64);        // udiv 0x10000 / 3
+}
+
+#[test]
 fn disasm_thumb2_ldrh_strh_barriers() {
     let dir = tmpdir();
     let binfile = dir.join("thumb2-wide.bin");

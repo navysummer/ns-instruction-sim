@@ -960,6 +960,27 @@ impl ArmCore {
             return;
         }
 
+        // SDIV/UDIV Rd, Rn, Rm (0xFB90/0xFBB0 prefix, second bits 15-12 = 1111,
+        // bits 7-4 = 1111). Division by zero yields 0 on Cortex-M.
+        if (first & 0xFFF0 == 0xFB90 || first & 0xFFF0 == 0xFBB0)
+            && second & 0xF0F0 == 0xF0F0
+        {
+            let rn = (first & 0x0F) as usize;
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let n = self.regs[rn];
+            let d = self.regs[rm];
+            let signed = first & 0xFFF0 == 0xFB90; // 0xFB90 = SDIV, 0xFBB0 = UDIV
+            self.regs[rd] = if d == 0 {
+                0
+            } else if signed {
+                ((n as i32).wrapping_div(d as i32)) as u32
+            } else {
+                n.wrapping_div(d)
+            };
+            return;
+        }
+
         // ADDW/SUBW (0xF200-0xF2FF, second bits 14-12 = 010, bit 15 = 0).
         if first & 0xFBF0 == 0xF200 && second & 0xF000 == 0x2000 {
             let rd = ((second >> 8) & 0x0F) as usize;
@@ -990,6 +1011,74 @@ impl ArmCore {
             return;
         }
 
+        // LDM/STM (multiple), T32: bits 15-12 = 1110, bits 11-9 = 100,
+        // bit 6 = 0 (this distinguishes it from the 0xF8xx loads/stores).
+        if first & 0xF000 == 0xE000 && first & 0x0E40 == 0x0800 {
+            let rn = (first & 0x0F) as usize;
+            let list = second as u32;
+            let count = list.count_ones();
+            let load = first & 0x0010 != 0; // L bit
+            let wb = first & 0x0020 != 0; // W bit
+            let pre = first & 0x0100 != 0; // P bit
+            let up = first & 0x0080 != 0; // U bit
+            if count == 0 {
+                self.halted = true;
+                return;
+            }
+            let base = self.regs[rn];
+            let start = match (up, pre) {
+                (true, false) => base,                            // IA
+                (true, true) => base.wrapping_add(4),             // IB
+                (false, false) => base.wrapping_sub(4 * count).wrapping_add(4), // DA
+                (false, true) => base.wrapping_sub(4 * count),    // DB
+            };
+            let end = if up {
+                base.wrapping_add(4 * count)
+            } else {
+                base.wrapping_sub(4 * count)
+            };
+            let mut address = start;
+            if !load {
+                for index in 0..16 {
+                    if list & (1 << index) == 0 {
+                        continue;
+                    }
+                    self.write_u32(address & !3, self.regs[index]);
+                    address = address.wrapping_add(4);
+                }
+                if wb && rn != PC {
+                    self.regs[rn] = end;
+                }
+                return;
+            }
+            for index in 0..16 {
+                if list & (1 << index) == 0 {
+                    continue;
+                }
+                let value = self.read_u32(address & !3);
+                if index == PC {
+                    self.branch_exchange_value(value);
+                } else {
+                    self.regs[index] = value;
+                }
+                address = address.wrapping_add(4);
+            }
+            if wb && rn != PC && list & (1 << rn) == 0 {
+                self.regs[rn] = end;
+            }
+            return;
+        }
+
+        // LDR (literal): LDR Rt, [PC, #imm12] (0xF8DF). The base is the
+        // architectural PC (current + 4) aligned down to a word.
+        if first == 0xF8DF {
+            let rd = ((second >> 12) & 0x0F) as usize;
+            let imm12 = (second & 0x0FFF) as u32;
+            let addr = (pc & !3).wrapping_add(imm12);
+            self.regs[rd] = self.read_u32(addr);
+            return;
+        }
+
         // LDR/STR (immediate 12-bit, 0xF8D0-0xF8DF / 0xF8C0-0xF8CF).
         if first & 0xFFF0 == 0xF8D0 || first & 0xFFF0 == 0xF8C0 {
             let load = first & 0x0010 != 0; // LDR when bit 4 of first set
@@ -1002,6 +1091,15 @@ impl ArmCore {
             } else {
                 self.write_u32(addr, self.regs[rd]);
             }
+            return;
+        }
+
+        // LDRB (literal): LDRB Rt, [PC, #imm12] (0xF89F).
+        if first == 0xF89F {
+            let rd = ((second >> 12) & 0x0F) as usize;
+            let imm12 = (second & 0x0FFF) as u32;
+            let addr = (pc & !3).wrapping_add(imm12);
+            self.regs[rd] = self.read_u8(addr) as u32;
             return;
         }
 
@@ -1020,6 +1118,15 @@ impl ArmCore {
             return;
         }
 
+        // LDRH (literal): LDRH Rt, [PC, #imm12] (0xF8BF).
+        if first == 0xF8BF {
+            let rd = ((second >> 12) & 0x0F) as usize;
+            let imm12 = (second & 0x0FFF) as u32;
+            let addr = (pc & !3).wrapping_add(imm12);
+            self.regs[rd] = self.read_u16(addr) as u32;
+            return;
+        }
+
         // LDRH/STRH (0xF8B0-0xF8BF / 0xF8A0-0xF8AF).
         if first & 0xFFF0 == 0xF8B0 || first & 0xFFF0 == 0xF8A0 {
             let load = first & 0x0010 != 0;
@@ -1031,6 +1138,28 @@ impl ArmCore {
                 self.regs[rd] = self.read_u16(addr) as u32;
             } else {
                 self.write_u16(addr, self.regs[rd] as u16);
+            }
+            return;
+        }
+
+        // Register-offset loads/stores (0xF800-0xF85F): STRB/LDRB/STRH/LDRH/
+        // STR/LDR with [Rn, Rm {, LSL #imm2}]. Width is bits 7-5 of the first
+        // halfword (0=byte, 1=half, 2=word); bit 4 selects load.
+        if first & 0xFFF0 >= 0xF800 && first & 0xFFF0 <= 0xF85F && second & 0x0FC0 == 0 {
+            let rn = (first & 0x000F) as usize;
+            let rt = ((second >> 12) & 0x0F) as usize;
+            let rm = (second & 0x000F) as usize;
+            let shift = ((second >> 4) & 0x03) as u32;
+            let load = first & 0x0010 != 0;
+            let addr = self.regs[rn].wrapping_add(self.regs[rm].wrapping_shl(shift));
+            let width = (first >> 5) & 0x03;
+            match (width, load) {
+                (0, false) => self.write_u8(addr, self.regs[rt] as u8),
+                (0, true) => self.regs[rt] = self.read_u8(addr) as u32,
+                (1, false) => self.write_u16(addr, self.regs[rt] as u16),
+                (1, true) => self.regs[rt] = self.read_u16(addr) as u32,
+                (_, false) => self.write_u32(addr, self.regs[rt]),
+                (_, true) => self.regs[rt] = self.read_u32(addr),
             }
             return;
         }
@@ -2121,6 +2250,144 @@ mod tests {
         c.regs[7] = 0x8000_0000;
         run(&mut c, &[0xFAB7, 0xF687], 1);
         assert_eq!(c.regs[6], 0);
+    }
+
+    #[test]
+    fn thumb2_sdiv_udiv() {
+        // SDIV r0, r1, r2 (0xFB91F0F2): signed division.
+        let mut c = core();
+        c.regs[1] = (-7i32) as u32;
+        c.regs[2] = 2;
+        run(&mut c, &[0xFB91, 0xF0F2], 1);
+        assert_eq!(c.regs[0], (-3i32) as u32); // -7 / 2 truncates toward zero.
+        assert_eq!(c.regs[PC], 4);
+
+        // UDIV r3, r4, r5 (0xFBB4F3F5): unsigned division.
+        let mut c = core();
+        c.regs[4] = 0xFFFF_FFFF;
+        c.regs[5] = 0x10000;
+        run(&mut c, &[0xFBB4, 0xF3F5], 1);
+        assert_eq!(c.regs[3], 0xFFFF); // 0xFFFFFFFF / 0x10000.
+
+        // Division by zero yields zero.
+        let mut c = core();
+        c.regs[1] = 100;
+        c.regs[2] = 0;
+        run(&mut c, &[0xFB91, 0xF0F2], 1);
+        assert_eq!(c.regs[0], 0);
+    }
+
+    #[test]
+    fn thumb2_ldr_str_register_offset() {
+        // LDR r0, [r1, r2] (0xF8510002): word load at r1 + r2.
+        let mut c = core();
+        c.regs[1] = 0x100;
+        c.regs[2] = 4;
+        c.write_u32(0x104, 0xDEAD_BEEF);
+        run(&mut c, &[0xF851, 0x0002], 1);
+        assert_eq!(c.regs[0], 0xDEAD_BEEF);
+
+        // LDR r0, [r1, r2, lsl #2] (0xF8510022): word load at r1 + r2<<2.
+        let mut c = core();
+        c.regs[1] = 0x100;
+        c.regs[2] = 4; // imm2 = 2 -> r2<<2 = 16.
+        c.write_u32(0x110, 0xCAFE_1234);
+        run(&mut c, &[0xF851, 0x0022], 1);
+        assert_eq!(c.regs[0], 0xCAFE_1234);
+
+        // STR r3, [r4, r5] (0xF8443005): word store.
+        let mut c = core();
+        c.regs[3] = 0x1234_5678;
+        c.regs[4] = 0x200;
+        c.regs[5] = 0x10;
+        run(&mut c, &[0xF844, 0x3005], 1);
+        assert_eq!(c.read_u32(0x210), 0x1234_5678);
+
+        // LDRB r6, [r7, r8] (0xF8176008): byte load.
+        let mut c = core();
+        c.regs[7] = 0x300;
+        c.regs[8] = 2;
+        c.write_u8(0x302, 0xAB);
+        run(&mut c, &[0xF817, 0x6008], 1);
+        assert_eq!(c.regs[6], 0xAB);
+
+        // LDRH r12, [r0, r1] (0xF830C001): halfword load.
+        let mut c = core();
+        c.regs[0] = 0x400;
+        c.regs[1] = 6;
+        c.write_u16(0x406, 0xCDEF);
+        run(&mut c, &[0xF830, 0xC001], 1);
+        assert_eq!(c.regs[12], 0xCDEF);
+    }
+
+    #[test]
+    fn thumb2_ldr_literal() {
+        // LDR r0, [pc, #0x10] (0xF8DF0010): PC aligned + imm12.
+        let mut c = core();
+        c.write_u32(0x14, 0x1122_3344);
+        run(&mut c, &[0xF8DF, 0x0010], 1);
+        assert_eq!(c.regs[0], 0x1122_3344);
+        assert_eq!(c.regs[PC], 4);
+
+        // LDRB r6, [pc, #0x20] (0xF89F6020).
+        let mut c = core();
+        c.write_u8(0x24, 0x77);
+        run(&mut c, &[0xF89F, 0x6020], 1);
+        assert_eq!(c.regs[6], 0x77);
+
+        // LDRH r7, [pc, #0x40] (0xF8BF7040).
+        let mut c = core();
+        c.write_u16(0x44, 0x8899);
+        run(&mut c, &[0xF8BF, 0x7040], 1);
+        assert_eq!(c.regs[7], 0x8899);
+    }
+
+    #[test]
+    fn thumb2_ldm_stm_multiple() {
+        // STMIA r0!, {r1,r2,r3} (0xE8A0000E): store ascending, write back.
+        let mut c = core();
+        c.regs[0] = 0x100;
+        c.regs[1] = 1;
+        c.regs[2] = 2;
+        c.regs[3] = 3;
+        run(&mut c, &[0xE8A0, 0x000E], 1);
+        assert_eq!(c.read_u32(0x100), 1);
+        assert_eq!(c.read_u32(0x104), 2);
+        assert_eq!(c.read_u32(0x108), 3);
+        assert_eq!(c.regs[0], 0x10C);
+        assert_eq!(c.regs[PC], 4);
+
+        // LDMIA r0!, {r1,r2,r3} (0xE8B0000E): load ascending, write back.
+        let mut c = core();
+        c.regs[0] = 0x100;
+        c.write_u32(0x100, 11);
+        c.write_u32(0x104, 22);
+        c.write_u32(0x108, 33);
+        run(&mut c, &[0xE8B0, 0x000E], 1);
+        assert_eq!(c.regs[1], 11);
+        assert_eq!(c.regs[2], 22);
+        assert_eq!(c.regs[3], 33);
+        assert_eq!(c.regs[0], 0x10C);
+
+        // LDMDB r0!, {r1,r2} (0xE9300006): decrement before, write back.
+        let mut c = core();
+        c.regs[0] = 0x108;
+        c.write_u32(0x100, 0xAA);
+        c.write_u32(0x104, 0xBB);
+        run(&mut c, &[0xE930, 0x0006], 1);
+        assert_eq!(c.regs[1], 0xAA);
+        assert_eq!(c.regs[2], 0xBB);
+        assert_eq!(c.regs[0], 0x100);
+
+        // STMDB sp!, {r4, lr} (0xE92D4010) = PUSH {r4, lr}.
+        let mut c = core();
+        c.regs[13] = 0x200;
+        c.regs[4] = 0x44;
+        c.regs[14] = 0x55;
+        run(&mut c, &[0xE92D, 0x4010], 1);
+        assert_eq!(c.read_u32(0x1F8), 0x44);
+        assert_eq!(c.read_u32(0x1FC), 0x55);
+        assert_eq!(c.regs[13], 0x1F8);
     }
 
     #[test]

@@ -3547,6 +3547,17 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("mul r{rd}, r{rn}, r{rm}");
     }
 
+    // SDIV/UDIV Rd, Rn, Rm (0xFB90/0xFBB0 prefix, second bits 7-4 = 1111).
+    if (first & 0xFFF0 == 0xFB90 || first & 0xFFF0 == 0xFBB0)
+        && second & 0xF0F0 == 0xF0F0
+    {
+        let rn = (first & 0x0F) as usize;
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let mnem = if first & 0x0020 != 0 { "udiv" } else { "sdiv" };
+        return format!("{mnem} r{rd}, r{rn}, r{rm}");
+    }
+
     // ADDW/SUBW (0xF200-0xF2FF, second bits 14-12 = 010, bit 15 = 0).
     if first & 0xFBF0 == 0xF200 && second & 0xF000 == 0x2000 {
         let rd = ((second >> 8) & 0x0F) as usize;
@@ -3574,6 +3585,37 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("b.w {:#x}", pc.wrapping_add(4).wrapping_add(imm32));
     }
 
+    // LDM/STM (multiple), T32: bits 15-12 = 1110, bits 11-9 = 100,
+    // bit 6 = 0 (this distinguishes it from the 0xF8xx loads/stores).
+    if first & 0xF000 == 0xE000 && first & 0x0E40 == 0x0800 {
+        let rn = (first & 0x0F) as usize;
+        let list = second;
+        let load = first & 0x0010 != 0;
+        let wb = first & 0x0020 != 0;
+        let pre = first & 0x0100 != 0;
+        let up = first & 0x0080 != 0;
+        let mode = match (up, pre) {
+            (true, false) => "ia",
+            (true, true) => "ib",
+            (false, false) => "da",
+            (false, true) => "db",
+        };
+        let regs: Vec<String> = (0..16)
+            .filter(|i| list & (1 << i) != 0)
+            .map(|i| format!("r{i}"))
+            .collect();
+        let mnem = if load { "ldm" } else { "stm" };
+        let wbs = if wb { "!" } else { "" };
+        return format!("{mnem}{mode} r{rn}{wbs}, {{{}}}", regs.join(", "));
+    }
+
+    // LDR (literal): LDR Rt, [PC, #imm12] (0xF8DF).
+    if first == 0xF8DF {
+        let rd = ((second >> 12) & 0x0F) as usize;
+        let imm12 = second & 0x0FFF;
+        return format!("ldr r{rd}, [pc, #0x{imm12:x}]");
+    }
+
     // LDR/STR (immediate 12-bit, 0xF8D0-0xF8DF / 0xF8C0-0xF8CF).
     if first & 0xFFF0 == 0xF8D0 || first & 0xFFF0 == 0xF8C0 {
         let load = first & 0x0010 != 0;
@@ -3585,6 +3627,13 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         } else {
             format!("str r{rd}, [r{rn}, #0x{imm12:x}]")
         };
+    }
+
+    // LDRB (literal): LDRB Rt, [PC, #imm12] (0xF89F).
+    if first == 0xF89F {
+        let rd = ((second >> 12) & 0x0F) as usize;
+        let imm12 = second & 0x0FFF;
+        return format!("ldrb r{rd}, [pc, #0x{imm12:x}]");
     }
 
     // LDRB/STRB (0xF890-0xF89F / 0xF880-0xF88F).
@@ -3600,6 +3649,13 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         };
     }
 
+    // LDRH (literal): LDRH Rt, [PC, #imm12] (0xF8BF).
+    if first == 0xF8BF {
+        let rd = ((second >> 12) & 0x0F) as usize;
+        let imm12 = second & 0x0FFF;
+        return format!("ldrh r{rd}, [pc, #0x{imm12:x}]");
+    }
+
     // LDRH/STRH (0xF8B0-0xF8BF / 0xF8A0-0xF8AF).
     if first & 0xFFF0 == 0xF8B0 || first & 0xFFF0 == 0xF8A0 {
         let load = first & 0x0010 != 0;
@@ -3611,6 +3667,30 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         } else {
             format!("strh r{rd}, [r{rn}, #0x{imm12:x}]")
         };
+    }
+
+    // Register-offset loads/stores (0xF800-0xF85F): [Rn, Rm {, LSL #imm2}].
+    if first & 0xFFF0 >= 0xF800 && first & 0xFFF0 <= 0xF85F && second & 0x0FC0 == 0 {
+        let rn = (first & 0x000F) as usize;
+        let rt = ((second >> 12) & 0x0F) as usize;
+        let rm = (second & 0x000F) as usize;
+        let shift = (second >> 4) & 0x03;
+        let load = first & 0x0010 != 0;
+        let width = (first >> 5) & 0x03;
+        let mnem = match (width, load) {
+            (0, false) => "strb",
+            (0, true) => "ldrb",
+            (1, false) => "strh",
+            (1, true) => "ldrh",
+            (_, false) => "str",
+            (_, true) => "ldr",
+        };
+        let shift_str = if shift == 0 {
+            String::new()
+        } else {
+            format!(", lsl #{shift}")
+        };
+        return format!("{mnem} r{rt}, [r{rn}, r{rm}{shift_str}]");
     }
 
     // Memory barriers DMB/DSB/ISB (0xF3BF 0x8F5F/8F6F/8F7F).

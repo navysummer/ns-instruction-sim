@@ -290,6 +290,11 @@ done
   PRIMASK）、`rev r1,r0`（0xBA08，0x12345678→0x78563412）、`clz r2,r3`（0xFAB3F287，
   r3=0x00008000→r2=16），锁定 Thumb-1 CPSID/CPSIE 对 PRIMASK 的写与 REV/REV16/REVSH、
   Thumb-2 CLZ 的执行。
+- `run_arm_thumb2_div_load_literal_and_ldm`：端到端分四次 `step --session` 执行
+  `ldr.w r0,[r1,r2]`（0xF8510002，r1=0x20000000/r2=4→读 0x20000004 得 0xCAFEBABE）、
+  `sdiv r3,r4,r5`（0xFB94F5F3，-7/2=-3）、`ldmia.w r6!,{r7,r8}`（0xE8B68001，
+  r6 写回 0x20000018）、`udiv r9,r10,r11`（0xFBBAFBF9，0x10000/3=0x5555），
+  锁定 Thumb-2 寄存器偏移存取、有/无符号除法与 LDM/STM 宽格式写回。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -465,6 +470,16 @@ done
   second & 0x00FF == 0x0087，Rd=second bits11-8、Rm=first bits3-0）现返回前导零计数
   （0 输入返回 32）。由 ns-sim 单测 `thumb1_cps_primask`/`thumb1_rev_family`/
   `thumb2_clz` 与 CLI `run_arm_thumb1_rev_and_clz` 锁定。
+  Thumb-2 寄存器偏移存取（`0xF800-0xF85F`，宽 bits7-5 选字/半字/字节、bit4 选载入，
+  second 的 bits5-4 为 `LSL #imm2`）与字面量载入（`LDR` 0xF8DF / `LDRB` 0xF89F /
+  `LDRH` 0xF8BF，基址 = Align(PC,4)+imm12）现正确执行（原把字面量误当作
+  `[r15,#imm]` 立即数存取、寄存器偏移误判为 LDM/STM 宽格式）；`SDIV`（0xFB90 前缀）/
+  `UDIV`（0xFBB0 前缀，second bits15-12=1111、bits7-4=1111，除零返回 0）现执行有/无
+  符号除法；LDM/STM 宽格式（bits15-12=1110、bits11-9=100、bit6=0，P=bit8/U=bit7/W=bit5/
+  L=bit4）现按 IA/IB/DA/DB 全部寻址方式执行并写回基址（载入时基址在列表中则写回被
+  载入值覆盖）。由 ns-sim 单测 `thumb2_ldr_str_register_offset`/`thumb2_ldr_literal`/
+  `thumb2_sdiv_udiv`/`thumb2_ldm_stm_multiple` 与 CLI `run_arm_thumb2_div_load_literal_and_ldm`
+  锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI
