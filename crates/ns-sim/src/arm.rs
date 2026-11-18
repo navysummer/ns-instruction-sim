@@ -1338,6 +1338,53 @@ impl ArmCore {
             return;
         }
 
+        // REV/REV16/REVSH/RBIT wide forms. First halfword is
+        // `1111 1010 1001 Rm` (0xFA90-0xFA9F); second halfword is
+        // `1111 Rd 10op2 Rm`, where bits 7-4 select the operation and Rm is
+        // duplicated in both halfwords' low nibble.
+        if first & 0xFFF0 == 0xFA90 && second & 0xF000 == 0xF000 {
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (first & 0x0F) as usize;
+            let v = self.regs[rm];
+            let r = match (second >> 4) & 0x0F {
+                0x8 => v.swap_bytes(), // REV
+                0x9 => {
+                    // REV16: swap the bytes of each halfword.
+                    (v & 0x00FF_00FF).rotate_left(8) | ((v & 0xFF00_FF00) >> 8)
+                }
+                0xA => v.reverse_bits(), // RBIT
+                _ => {
+                    // REVSH: reverse the low halfword bytes, sign-extend.
+                    let low = (v as u16).swap_bytes();
+                    low as i16 as i32 as u32
+                }
+            };
+            self.regs[rd] = r;
+            return;
+        }
+
+        // SXTH/UXTH/SXTB/UXTB wide forms (with optional ROR #(8*RR)). First
+        // halfword is `1111 1010 0op1 1111` (0xFA0F/0xFA1F/0xFA4F/0xFA5F),
+        // selecting the operation in bits 7-4; second halfword is
+        // `1111 Rd 10RR Rm` (bits 7-6 = 10, RR in bits 5-4).
+        if first & 0xFF0F == 0xFA0F && second & 0x00C0 == 0x0080 {
+            let op = (first >> 4) & 0x7;
+            if op == 0 || op == 1 || op == 4 || op == 5 {
+                let rd = ((second >> 8) & 0x0F) as usize;
+                let rm = (second & 0x0F) as usize;
+                let rotate = ((second >> 4) & 0x03) as u32 * 8;
+                let v = self.regs[rm].rotate_right(rotate);
+                let r = match op {
+                    0 => v as u16 as i16 as i32 as u32, // SXTH
+                    1 => (v as u16) as u32,             // UXTH
+                    4 => v as u8 as i8 as i32 as u32,   // SXTB
+                    _ => (v as u8) as u32,              // UXTB
+                };
+                self.regs[rd] = r;
+                return;
+            }
+        }
+
         // Bit-field extract/insert/clear: SBFX (0xF340), BFI (0xF360 with
         // Rn != PC), BFC (0xF36F), UBFX (0xF3C0). Second halfword layout is
         // `0 imm3(3) Rd(4) imm2(2) 0 lsb(5)`; the field starts at
@@ -2766,6 +2813,76 @@ mod tests {
         c.regs[7] = 0x8000_0000;
         run(&mut c, &[0xFAB7, 0xF687], 1);
         assert_eq!(c.regs[6], 0);
+    }
+
+    #[test]
+    fn thumb2_rev_family_and_extend() {
+        // rev.w r7, r8 (0xFA98F788): reverse all four bytes.
+        let mut c = core();
+        c.regs[8] = 0x1234_5678;
+        run(&mut c, &[0xFA98, 0xF788], 1);
+        assert_eq!(c.regs[7], 0x7856_3412);
+        assert_eq!(c.regs[PC], 4);
+
+        // rev16.w r9, r10 (0xFA9AF99A): swap bytes within each halfword.
+        let mut c = core();
+        c.regs[10] = 0x1234_5678;
+        run(&mut c, &[0xFA9A, 0xF99A], 1);
+        assert_eq!(c.regs[9], 0x3412_7856);
+
+        // revsh.w r11, r12 (0xFA9CFBBC): reverse low halfword, sign-extend.
+        let mut c = core();
+        c.regs[12] = 0x1234_0080;
+        run(&mut c, &[0xFA9C, 0xFBBC], 1);
+        assert_eq!(c.regs[11], 0xFFFF_8000);
+
+        // rbit r0, r1 (0xFA91F0A1): reverse the bit order.
+        let mut c = core();
+        c.regs[1] = 0x0000_0001;
+        run(&mut c, &[0xFA91, 0xF0A1], 1);
+        assert_eq!(c.regs[0], 0x8000_0000);
+
+        // uxtb.w r8, r9 (0xFA5FF889): zero-extend the low byte.
+        let mut c = core();
+        c.regs[9] = 0xFFFF_FF80;
+        run(&mut c, &[0xFA5F, 0xF889], 1);
+        assert_eq!(c.regs[8], 0x80);
+
+        // sxtb.w r10, r11 (0xFA4FFA8B): sign-extend the low byte.
+        let mut c = core();
+        c.regs[11] = 0x0000_0080;
+        run(&mut c, &[0xFA4F, 0xFA8B], 1);
+        assert_eq!(c.regs[10], 0xFFFF_FF80);
+
+        // uxth.w r0, r1 (0xFA1FF081): zero-extend the low halfword.
+        let mut c = core();
+        c.regs[1] = 0xFFFF_8000;
+        run(&mut c, &[0xFA1F, 0xF081], 1);
+        assert_eq!(c.regs[0], 0x8000);
+
+        // sxth.w r2, r3 (0xFA0FF283): sign-extend the low halfword.
+        let mut c = core();
+        c.regs[3] = 0x0000_8000;
+        run(&mut c, &[0xFA0F, 0xF283], 1);
+        assert_eq!(c.regs[2], 0xFFFF_8000);
+
+        // uxtb.w r0, r1, ror #8 (0xFA5FF091): rotate then zero-extend.
+        let mut c = core();
+        c.regs[1] = 0x1234_5600;
+        run(&mut c, &[0xFA5F, 0xF091], 1);
+        assert_eq!(c.regs[0], 0x56);
+
+        // uxth.w r2, r3, ror #16 (0xFA1FF2A3): rotate then zero-extend.
+        let mut c = core();
+        c.regs[3] = 0x5678_0000;
+        run(&mut c, &[0xFA1F, 0xF2A3], 1);
+        assert_eq!(c.regs[2], 0x5678);
+
+        // sxtb.w r4, r5, ror #24 (0xFA4FF4B5): rotate then sign-extend.
+        let mut c = core();
+        c.regs[5] = 0x8000_0000;
+        run(&mut c, &[0xFA4F, 0xF4B5], 1);
+        assert_eq!(c.regs[4], 0xFFFF_FF80);
     }
 
     #[test]

@@ -327,6 +327,17 @@ done
   0xF8），`state --json` 校验，锁定 Thumb-2 位域提取/插入/清除执行。
 - `disasm_thumb2_bfx`：`disasm --arm-state thumb` 将 `ubfx`/`sbfx`/`bfc`/`bfi`
   反汇编为真实助记符与字段参数。
+- `run_arm_thumb2_rev_extend`：端到端分八次 `step --session` 执行
+  `rev.w r7,r8`（0xFA98F788，0x12345678 → 0x78563412）、`rev16.w r9,r10`
+  （0xFA9AF99A，→ 0x34127856）、`revsh.w r11,r12`（0xFA9CFBBC，0x12340080 →
+  0xFFFF8000）、`rbit r0,r1`（0xFA91F0A1，0x12345678 → 0x1E6A2C48）、
+  `uxtb.w r8,r9`（0xFA5FF889，→ 0x80）、`sxtb.w r10,r11`（0xFA4FFA8B，→
+  0xFFFFFF80）、`uxth.w r0,r1`（0xFA1FF081，→ 0x8000）、`sxth.w r2,r3`
+  （0xFA0FF283，→ 0xFFFF8000），`state --json` 校验，锁定 Thumb-2
+  REV/REV16/REVSH/RBIT 与符号/零扩展执行。
+- `disasm_thumb2_rev_extend`：`disasm --arm-state thumb` 将
+  `rev.w`/`rev16.w`/`revsh.w`/`rbit`/`uxtb.w`/`sxtb.w`/`uxth.w`/`sxth.w`
+  反汇编为真实助记符。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -558,6 +569,13 @@ done
   `width=lsb5+1` 有/零符号扩展；`BFC` 清除 `[msb:lsb]`（`msb=lsb5`）、`BFI` 将 Rn 低
   `width=msb-lsb+1` 位插入 `[msb:lsb]` 并保留 Rd 其余位。由 ns-sim 单测 `thumb2_bfx` 与
   CLI `run_arm_thumb2_bfx`/`disasm_thumb2_bfx` 锁定。
+  Thumb-2 宽 `REV`/`REV16`/`REVSH`/`RBIT`（首半字 `1111 1010 1001 Rm`，第二半字
+  `1111 Rd 10op2 Rm`，bits7-4 选择操作 8=REV/9=REV16/A=RBIT/B=REVSH，Rm 在首半字与
+  第二半字低半字节重复）现执行与反汇编；宽 `SXTH`/`UXTH`/`SXTB`/`UXTB`（首半字
+  `1111 1010 0op1 1111`，op=bits7-4：0=SXTH/1=UXTH/4=SXTB/5=UXTB；第二半字
+  `1111 Rd 10RR Rm`，RR=bits5-4 旋转 `ROR #8RR`）现按旋转后结果有/零扩展。由 ns-sim
+  单测 `thumb2_rev_family_and_extend` 与 CLI `run_arm_thumb2_rev_extend`/
+  `disasm_thumb2_rev_extend` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

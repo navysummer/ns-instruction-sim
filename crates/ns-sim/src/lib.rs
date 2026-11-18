@@ -3824,6 +3824,46 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("clz r{rd}, r{rm}");
     }
 
+    // REV/REV16/REVSH/RBIT wide forms. First halfword is
+    // `1111 1010 1001 Rm` (0xFA90-0xFA9F); second halfword is
+    // `1111 Rd 10op2 Rm`, where bits 7-4 select the operation and Rm is
+    // duplicated in both halfwords' low nibble.
+    if first & 0xFFF0 == 0xFA90 && second & 0xF000 == 0xF000 {
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (first & 0x0F) as usize;
+        let mnem = match (second >> 4) & 0x0F {
+            0x8 => "rev.w",
+            0x9 => "rev16.w",
+            0xA => "rbit",
+            _ => "revsh.w",
+        };
+        return format!("{mnem} r{rd}, r{rm}");
+    }
+
+    // SXTH/UXTH/SXTB/UXTB wide forms (with optional ROR #(8*RR)). First
+    // halfword is `1111 1010 0op1 1111` (0xFA0F/0xFA1F/0xFA4F/0xFA5F),
+    // selecting the operation in bits 7-4; second halfword is
+    // `1111 Rd 10RR Rm` (bits 7-6 = 10, RR in bits 5-4).
+    if first & 0xFF0F == 0xFA0F && second & 0x00C0 == 0x0080 {
+        let op = (first >> 4) & 0x7;
+        if op == 0 || op == 1 || op == 4 || op == 5 {
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let mnem = match op {
+                0 => "sxth.w",
+                1 => "uxth.w",
+                4 => "sxtb.w",
+                _ => "uxtb.w",
+            };
+            let rotate = ((second >> 4) & 0x03) * 8;
+            return if rotate == 0 {
+                format!("{mnem} r{rd}, r{rm}")
+            } else {
+                format!("{mnem} r{rd}, r{rm}, ror #{rotate}")
+            };
+        }
+    }
+
     // Bit-field extract/insert/clear: SBFX (0xF340), BFI (0xF360 with
     // Rn != PC), BFC (0xF36F), UBFX (0xF3C0).
     if second & 0x0020 == 0
@@ -6025,6 +6065,18 @@ mod tests {
             (0xF344_0385, "sbfx r3, r4, #0x2, #0x6"),
             (0xF36F_150B, "bfc r5, #4, #8"),
             (0xF362_01C7, "bfi r1, r2, #3, #5"),
+            // REV family and sign/zero extend.
+            (0xFA98_F788, "rev.w r7, r8"),
+            (0xFA9A_F99A, "rev16.w r9, r10"),
+            (0xFA9C_FBBC, "revsh.w r11, r12"),
+            (0xFA91_F0A1, "rbit r0, r1"),
+            (0xFA5F_F889, "uxtb.w r8, r9"),
+            (0xFA4F_FA8B, "sxtb.w r10, r11"),
+            (0xFA1F_F081, "uxth.w r0, r1"),
+            (0xFA0F_F283, "sxth.w r2, r3"),
+            (0xFA5F_F091, "uxtb.w r0, r1, ror #8"),
+            (0xFA1F_F2A3, "uxth.w r2, r3, ror #16"),
+            (0xFA4F_F4B5, "sxtb.w r4, r5, ror #24"),
         ];
         for (insn, expected) in cases {
             let bytes = [

@@ -2493,6 +2493,102 @@ fn run_arm_thumb2_bfx() {
 }
 
 #[test]
+fn run_arm_thumb2_rev_extend() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-revext.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: rev.w r7,r8; rev16.w r9,r10; revsh.w r11,r12; rbit r0,r1;
+    // uxtb.w r8,r9; sxtb.w r10,r11; uxth.w r0,r1; sxth.w r2,r3.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x98", "0xFA", "0x88", "0xF7", // rev.w r7, r8
+               "0x9A", "0xFA", "0x9A", "0xF9", // rev16.w r9, r10
+               "0x9C", "0xFA", "0xBC", "0xFB", // revsh.w r11, r12
+               "0x91", "0xFA", "0xA1", "0xF0", // rbit r0, r1
+               "0x5F", "0xFA", "0x89", "0xF8", // uxtb.w r8, r9
+               "0x4F", "0xFA", "0x8B", "0xFA", // sxtb.w r10, r11
+               "0x1F", "0xFA", "0x81", "0xF0", // uxth.w r0, r1
+               "0x0F", "0xFA", "0x83", "0xF2"]) // sxth.w r2, r3
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [
+        ("r1", "0x12345678"), ("r3", "0x00008000"),
+        ("r8", "0x12345678"), ("r9", "0xFFFFFF80"),
+        ("r10", "0x12345678"), ("r11", "0x00000080"),
+        ("r12", "0x12340080"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    // First four: rev/rev16/revsh/rbit.
+    for _ in 0..4 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    // The first four write r7/r9/r11/r0; capture them before the extend ops
+    // overwrite r9/r11 as their sources.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["registers"]["r7"], 0x7856_3412u64);  // rev.w
+    assert_eq!(json["registers"]["r9"], 0x3412_7856u64);  // rev16.w
+    assert_eq!(json["registers"]["r11"], 0xFFFF_8000u64); // revsh.w
+    assert_eq!(json["registers"]["r0"], 0x1E6A_2C48u64);  // rbit of 0x12345678
+    // The extend ops read r9/r11/r1, which the first four instructions
+    // overwrite, so set their intended sources before continuing.
+    for (name, value) in [
+        ("r9", "0xFFFFFF80"), ("r11", "0x00000080"), ("r1", "0xFFFF8000"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..4 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0030u64);
+    assert_eq!(json["registers"]["r8"], 0x80u64);          // uxtb.w
+    assert_eq!(json["registers"]["r10"], 0xFFFF_FF80u64);  // sxtb.w
+    assert_eq!(json["registers"]["r0"], 0x8000u64);        // uxth.w
+    assert_eq!(json["registers"]["r2"], 0xFFFF_8000u64);   // sxth.w
+}
+
+#[test]
 fn run_arm_thumb1_it_bkpt() {
     let dir = tmpdir();
     let sess = dir.join("arm-itbkpt.json");
@@ -2655,6 +2751,47 @@ fn disasm_thumb2_bfx() {
         "0x00000004: sbfx r3, r4, #0x2, #0x6",
         "0x00000008: bfc r5, #4, #8",
         "0x0000000c: bfi r6, r7, #3, #5",
+    ] {
+        assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
+    }
+}
+
+#[test]
+fn disasm_thumb2_rev_extend() {
+    let dir = tmpdir();
+    let binfile = dir.join("thumb2-revext.bin");
+    let sess = dir.join("thumb2-revext.json");
+    // Thumb-2 REV family and sign/zero extend forms the core executes.
+    let bytes: &[u8] = &[
+        0x98, 0xFA, 0x88, 0xF7, // rev.w r7, r8
+        0x9A, 0xFA, 0x9A, 0xF9, // rev16.w r9, r10
+        0x9C, 0xFA, 0xBC, 0xFB, // revsh.w r11, r12
+        0x91, 0xFA, 0xA1, 0xF0, // rbit r0, r1
+        0x5F, 0xFA, 0x89, 0xF8, // uxtb.w r8, r9
+        0x4F, 0xFA, 0x8B, 0xFA, // sxtb.w r10, r11
+        0x1F, 0xFA, 0x81, 0xF0, // uxth.w r0, r1
+        0x0F, 0xFA, 0x83, 0xF2, // sxth.w r2, r3
+    ];
+    std::fs::write(&binfile, bytes).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "8", "--arm-state", "thumb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "0x00000000: rev.w r7, r8",
+        "0x00000004: rev16.w r9, r10",
+        "0x00000008: revsh.w r11, r12",
+        "0x0000000c: rbit r0, r1",
+        "0x00000010: uxtb.w r8, r9",
+        "0x00000014: sxtb.w r10, r11",
+        "0x00000018: uxth.w r0, r1",
+        "0x0000001c: sxth.w r2, r3",
     ] {
         assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
     }
