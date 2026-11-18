@@ -1742,6 +1742,33 @@ mod tests {
     }
 
     #[test]
+    fn arm_a32_halfword_transfer_register_offset() {
+        // LDRH r0, [r1, r2] (0xE19100B2): base + register offset.
+        let mut c = core();
+        c.write_u32(0, 0xE191_00B2);
+        c.set_arm_state(true);
+        c.regs[PC] = 0;
+        c.regs[1] = 0x1000;
+        c.regs[2] = 4;
+        c.write_u16(0x1004, 0xABCD);
+        assert_eq!(c.step(&[]), ArmStep::Advanced);
+        assert_eq!(c.regs[0], 0xABCD);
+        assert_eq!(c.regs[PC], 4);
+
+        // STRH r1, [r0, r2] (0xE18010B2): stores the low halfword.
+        let mut c = core();
+        c.write_u32(0, 0xE180_10B2);
+        c.set_arm_state(true);
+        c.regs[PC] = 0;
+        c.regs[0] = 0x1000;
+        c.regs[1] = 0xABCD_EF01;
+        c.regs[2] = 4;
+        assert_eq!(c.step(&[]), ArmStep::Advanced);
+        assert_eq!(c.read_u16(0x1004), 0xEF01);
+        assert_eq!(c.regs[PC], 4);
+    }
+
+    #[test]
     fn reset_from_vector_table() {
         let mut c = core();
         c.write_u32(0, 0x2000_0000); // initial SP

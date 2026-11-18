@@ -5605,6 +5605,7 @@ mod tests {
             // Halfword / signed transfer: immediate vs register offset.
             (0xE1D1_00B2, "ldrh r0, [r1, #2]"),
             (0xE191_00B2, "ldrh r0, [r1, r2]"),
+            (0xE180_10B2, "strh r1, [r0, r2]"),
             // Multiply destination is bits 19-16, not bits 15-12.
             (0xE003_0291, "mul r3, r1, r2"),
         ];
