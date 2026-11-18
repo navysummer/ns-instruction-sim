@@ -282,6 +282,10 @@ done
 - `run_arm_thumb1_extend_and_mul`：端到端分三次 `step --session` 执行 `sxtb r3,r4`（0xB263，
   r4=0x80→r3=0xFFFFFF80）、`uxth r5,r6`（0xB2B5，r6=0xFFFF8000→r5=0x8000）、
   `mul r0,r1,r2`（0xFB01F002，3×5=15），锁定符号/零扩展与 Thumb-2 MUL 执行。
+- `run_arm_thumb2_mrs_msr`：端到端分三次 `step --session` 执行 `movs r0,#0`（置 Z）、
+  `mrs r1,xpsr`（0xF3EF8103→r1=0x41000000，读 Z+Thumb）、`msr xpsr_nzcvq,r2`
+  （0xF3828803，r2=0x80000000→置 N 清 Z），`state --json` 校验 `armXpsr`=0x81000000，
+  锁定 Thumb-2 MRS/MSR 读写状态寄存器。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -444,6 +448,11 @@ done
   Thumb-2 `MUL Rd,Rn,Rm`（`0xFB00` 前缀，second bits15-12=1111、bits7-4=0）现执行低 32 位
   乘积；由 ns-sim 单测 `thumb1_extend_sign_zero`/`thumb2_mul` 与 CLI
   `run_arm_thumb1_extend_and_mul` 锁定。
+  Thumb-2 `MRS Rd,<apsr|ipsr|epsr|xpsr>`（0xF3EF 0x8Rd0SYSm）与
+  `MSR <apsr|xpsr>_<mask>,Rm`（0xF380-0xF38F 0x8maskSYSm）现读写特殊寄存器：
+  MRS 的 Rd 取 second bits11-8、SYSm 取 second bits3-0（xPSR=3/IPSR=5/EPSR=6/APSR=0），
+  MSR 的源寄存器 Rm 取 first bits3-0、mask 取 second bits11-8（flags=mask8、GE=mask4）；
+  由 ns-sim 单测 `thumb2_mrs_msr` 与 CLI `run_arm_thumb2_mrs_msr` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

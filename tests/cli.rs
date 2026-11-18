@@ -2053,6 +2053,56 @@ fn run_arm_thumb1_extend_and_mul() {
 }
 
 #[test]
+fn run_arm_thumb2_mrs_msr() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-mrs-msr.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // movs r0,#0 (0x2000); mrs r1, xpsr (0xF3EF8103); msr xpsr_nzcvq, r2 (0xF3828803).
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes", "0x00", "0x20", "0xEF", "0xF3",
+               "0x03", "0x81", "0x82", "0xF3", "0x03", "0x88"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // r2 = 0x80000000: MSR sets the N flag from it.
+    let out = Command::new(bin())
+        .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", "r2", "--value", "0x80000000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for _ in 0..3 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    // r1 = xPSR read after movs r0,#0: Z + Thumb.
+    assert_eq!(json["registers"]["r1"], 0x4100_0000u64);
+    // xPSR now has N (from r2), Z cleared (r2's Z bit is 0) + Thumb.
+    assert_eq!(json["armXpsr"], 0x8100_0000u64);
+}
+
+#[test]
 fn disasm_thumb2_ldrh_strh_barriers() {
     let dir = tmpdir();
     let binfile = dir.join("thumb2-wide.bin");

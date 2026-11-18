@@ -1013,6 +1013,35 @@ impl ArmCore {
             return;
         }
 
+        // MRS Rd, <apsr|ipsr|epsr|xpsr> (0xF3EF 0x8Rd0SYSm): Rd = bits 11-8
+        // of the second halfword, the special register = bits 3-0.
+        if first == 0xF3EF && second & 0x00F0 == 0x0000 {
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let special = (second & 0x0F) as u32;
+            let v = self.special_register(special);
+            self.regs[rd] = v;
+            return;
+        }
+        // MSR <apsr|xpsr>_<mask>, Rm (0xF380-0xF38F 0x8maskSYSm): the source
+        // register is bits 3-0 of the first halfword, the special register is
+        // bits 3-0 of the second, and the mask selects which fields to write.
+        if first & 0xFFF0 == 0xF380 && second & 0x00F0 == 0x0000 {
+            let special = second & 0x0F;
+            let mask = ((second >> 8) & 0x0F) as u32;
+            let rm = (first & 0x0F) as usize;
+            let value = self.regs[rm];
+            if special == 3 || special == 0 {
+                // xPSR / APSR: flags (mask 8) and GE (mask 4) are writable.
+                if mask & 0x8 != 0 {
+                    self.arm_msr(0x8, value);
+                }
+                if mask & 0x4 != 0 {
+                    self.xpsr = (self.xpsr & !0x000F_0000) | (value & 0x000F_0000);
+                }
+            }
+            return;
+        }
+
         self.halted = true;
     }
 }
@@ -1287,6 +1316,18 @@ impl ArmCore {
                 value & 0x2000_0000 != 0,
                 value & 0x1000_0000 != 0,
             );
+        }
+    }
+
+    /// Read an ARM special register selected by the MRS/MSR SYSm field:
+    /// 0 = APSR (flags + GE), 1/5 = IPSR, 2/6 = EPSR, 3 = xPSR.
+    fn special_register(&self, special: u32) -> u32 {
+        match special {
+            0 => (self.xpsr & 0xF000_0000) | (self.xpsr & 0x000F_0000), // APSR
+            1 | 5 => self.xpsr & 0x1FF,                                 // IPSR
+            2 | 6 => (self.xpsr & 0x0700_0000) | (self.xpsr & 0x0000_FC00), // EPSR
+            3 => self.xpsr,                                             // xPSR
+            _ => 0,
         }
     }
 
@@ -1976,6 +2017,28 @@ mod tests {
         c.regs[2] = 5;
         run(&mut c, &[0xFB01, 0xF002], 1);
         assert_eq!(c.regs[0], 15);
+    }
+
+    #[test]
+    fn thumb2_mrs_msr() {
+        // MRS r0, xPSR (0xF3EF8003): reads the full status register.
+        let mut c = core();
+        c.xpsr = 0x4100_0000; // N clear, Z set, Thumb bit set.
+        run(&mut c, &[0xF3EF, 0x8003], 1);
+        assert_eq!(c.regs[0], 0x4100_0000);
+
+        // MRS r0, IPSR (0xF3EF8005): reads only the exception number.
+        let mut c = core();
+        c.xpsr = 0x4100_0003; // exception 3.
+        run(&mut c, &[0xF3EF, 0x8005], 1);
+        assert_eq!(c.regs[0], 3);
+
+        // MSR xPSR_nzcvq, r0 (0xF3808803): sets N/Z/C/V from r0.
+        let mut c = core();
+        c.regs[0] = 0x8000_0000; // N set, Z/C/V clear.
+        run(&mut c, &[0xF380, 0x8803], 1);
+        assert!(c.flag_n());
+        assert!(!c.flag_z() && !c.flag_c() && !c.flag_v());
     }
 
     #[test]

@@ -3610,6 +3610,37 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("{name} sy");
     }
 
+    // MRS Rd, <apsr|ipsr|epsr|xpsr> (0xF3EF 0x8Rd0SYSm).
+    if first == 0xF3EF && second & 0x00F0 == 0x0000 {
+        let rd = (second >> 8) & 0x0F;
+        let name = match second & 0x0F {
+            0 => "apsr",
+            1 | 5 => "ipsr",
+            2 | 6 => "epsr",
+            _ => "xpsr",
+        };
+        return format!("mrs r{rd}, {name}");
+    }
+    // MSR <apsr|xpsr>_<mask>, Rm (0xF380-0xF38F 0x8maskSYSm).
+    if first & 0xFFF0 == 0xF380 && second & 0x00F0 == 0x0000 {
+        let mask = (second >> 8) & 0x0F;
+        let rm = first & 0x0F;
+        let mut mask_str = String::new();
+        if mask & 0x8 != 0 {
+            mask_str.push_str("nzcvq");
+        }
+        if mask & 0x4 != 0 {
+            mask_str.push('g');
+        }
+        if mask & 0x1 != 0 {
+            mask_str.push_str("c");
+        }
+        if mask_str.is_empty() {
+            mask_str.push_str("nzcvq");
+        }
+        return format!("msr xpsr_{mask_str}, r{rm}");
+    }
+
     let _ = read;
     format!(".word 0x{insn:08x}")
 }
