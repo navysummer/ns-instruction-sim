@@ -386,6 +386,9 @@ done
   （原实现把 rn/rm 字段弄错或把 `sub`/`immediate` 两比特弄反）。由 ns-sim 单测
   `thumb1_field_extraction_matches_encoding`/`thumb1_high_register_and_sp_relative_fields`/
   `thumb1_register_offset_addressing` 与 CLI `run_arm_thumb1_field_extraction` 锁定。
+  Thumb-1 格式 4 ALU 指令（`LSL/LSR/ASR/ADC/SBC/ROR/RSB/MUL`）现更新 N/Z 标志
+  （原只更新 C 或完全不更新），与反汇编 `*s` 后缀一致；由 ns-sim 单测
+  `thumb1_alu_sets_nz_flags` 锁定。
   Thumb-1 的 PC 相对寻址（`LDR r,[pc,#imm]` 与 `ADD rd,pc,#imm`）现按架构 PC（当前地址
   +4，两条半字）取字对齐作为基址（原把下一指令地址按半字对齐，在 4 字节对齐/2 字节对齐
   两种边界各偏 4 字节），由 ns-sim 单测 `thumb1_pc_relative_uses_architectural_pc` 与

@@ -738,7 +738,7 @@ impl ArmCore {
                     self.xpsr = (self.xpsr & !0x2000_0000)
                         | (((a >> (32 - shift)) & 1) << 29);
                 }
-                (r, true, false)
+                (r, true, true)
             }
             3 => {
                 // LSR Rd,Rs
@@ -748,7 +748,7 @@ impl ArmCore {
                     self.xpsr = (self.xpsr & !0x2000_0000)
                         | (((a >> (shift - 1)) & 1) << 29);
                 }
-                (r, true, false)
+                (r, true, true)
             }
             4 => {
                 // ASR Rd,Rs
@@ -759,7 +759,7 @@ impl ArmCore {
                     self.xpsr = (self.xpsr & !0x2000_0000)
                         | (((a >> (shift - 1)) & 1) << 29);
                 }
-                (r, true, false)
+                (r, true, true)
             }
             5 => {
                 // ADC Rd,Rd,Rm (with carry)
@@ -767,7 +767,7 @@ impl ArmCore {
                 let (r, c) = a.overflowing_add(b);
                 let (r, c2) = r.overflowing_add(carry);
                 self.xpsr = (self.xpsr & !0x2000_0000) | ((c || c2) as u32) << 29;
-                (r, true, false)
+                (r, true, true)
             }
             6 => {
                 // SBC Rd,Rd,Rm (with carry)
@@ -775,7 +775,7 @@ impl ArmCore {
                 let (r, c) = a.overflowing_sub(b);
                 let (r, c2) = r.overflowing_sub(carry);
                 self.xpsr = (self.xpsr & !0x2000_0000) | ((c || c2) as u32) << 29;
-                (r, true, false)
+                (r, true, true)
             }
             7 => {
                 // ROR Rd,Rs
@@ -785,14 +785,14 @@ impl ArmCore {
                     self.xpsr = (self.xpsr & !0x2000_0000)
                         | (((a >> (shift - 1)) & 1) << 29);
                 }
-                (r, true, false)
+                (r, true, true)
             }
             8 => (a & b, false, true),           // TST
             9 => {
                 // NEG Rd,0,Rm
                 let (r, c) = 0u32.overflowing_sub(b);
                 self.xpsr = (self.xpsr & !0x2000_0000) | ((c as u32) << 29);
-                (r, true, false)
+                (r, true, true)
             }
             10 => {
                 // CMP Rd,Rm
@@ -810,7 +810,7 @@ impl ArmCore {
             13 => {
                 // MUL Rd,Rm
                 let r = a.wrapping_mul(b);
-                (r, true, false)
+                (r, true, true)
             }
             14 => (a & !b, true, true),          // BIC
             _ => (!a, true, true),               // MVN
@@ -1653,6 +1653,39 @@ mod tests {
         // ANDS r0, r1  (0x4008)
         run(&mut c, &[0x4008], 1);
         assert_eq!(c.regs[0], 0b1000);
+    }
+
+    #[test]
+    fn thumb1_alu_sets_nz_flags() {
+        // LSLS r0, r1 (0x4088): shift=1 → r0 = 1<<1 = 2, N=0, Z=0.
+        let mut c = core();
+        c.regs[0] = 1;
+        c.regs[1] = 1;
+        run(&mut c, &[0x4088], 1);
+        assert_eq!(c.regs[0], 2);
+        assert!(!c.flag_n() && !c.flag_z());
+
+        // LSLS r0, r1 with r0=0: result 0 → Z set.
+        let mut c = core();
+        c.regs[0] = 0;
+        c.regs[1] = 1;
+        run(&mut c, &[0x4088], 1);
+        assert!(c.flag_z());
+
+        // RSBS r0, r1 (0x4248): r0 = 0 - 5 = 0xFFFFFFFB → N set, C set.
+        let mut c = core();
+        c.regs[1] = 5;
+        run(&mut c, &[0x4248], 1);
+        assert_eq!(c.regs[0], 0xFFFF_FFFB);
+        assert!(c.flag_n() && !c.flag_z() && c.flag_c());
+
+        // MULS r0, r1 (0x4348): r0 = 3 * 0x80000000 = 0x80000000*3 → N set.
+        let mut c = core();
+        c.regs[0] = 3;
+        c.regs[1] = 0x8000_0000;
+        run(&mut c, &[0x4348], 1);
+        assert_eq!(c.regs[0], 3u32.wrapping_mul(0x8000_0000));
+        assert!(c.flag_n());
     }
 
     #[test]
