@@ -6414,7 +6414,8 @@ fn mcp_handshake_and_list_tools() {
         .filter_map(|t| t["name"].as_str())
         .collect();
     for expected in [
-        "arch_list", "device_list", "session_create", "state", "step", "step_over", "step_out",
+        "arch_list", "device_list", "device_info", "device_svd", "device_linker", "device_startup",
+        "device_init", "session_create", "state", "step", "step_over", "step_out",
         "run", "continue", "reg_list", "reg_get", "reg_set", "mem_read", "mem_write", "mem_fill",
         "mem_search", "mem_load", "mem_dump", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
         "cycle_get", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
@@ -6493,6 +6494,56 @@ fn mcp_call_step_and_state() {
 
     // An error tool call surfaces isError, not a JSON-RPC error.
     let r = client.call_tool("reg_set", serde_json::json!({ "session": sess, "name": "bogus", "value": "1" }));
+    assert!(r["isError"].as_bool().unwrap());
+    client.close();
+}
+
+#[test]
+fn mcp_device_codegen_and_svd() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+
+    // device_svd from the built-in device.
+    let r = client.call_tool("device_svd", serde_json::json!({ "device": "stm32f103c8" }));
+    assert!(!r["isError"].as_bool().unwrap(), "device_svd failed: {}", r);
+    assert!(r["structuredContent"]["name"].as_str().is_some());
+    assert!(r["structuredContent"]["peripherals"].as_array().unwrap().len() > 0);
+
+    // device_svd filtered to one register with its fields.
+    let r = client.call_tool(
+        "device_svd",
+        serde_json::json!({ "device": "stm32f103c8", "peripheral": "TIM2", "register": "CR1" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "device_svd register failed: {}", r);
+    assert_eq!(r["structuredContent"]["name"], "CR1");
+
+    // device_svd error path: file + device both supplied.
+    let r = client.call_tool(
+        "device_svd",
+        serde_json::json!({ "file": "x.svd", "device": "stm32f103c8" }),
+    );
+    assert!(r["isError"].as_bool().unwrap());
+
+    // Code generation tools.
+    let r = client.call_tool("device_linker", serde_json::json!({ "device": "stm32f103c8" }));
+    assert!(!r["isError"].as_bool().unwrap(), "device_linker failed: {}", r);
+    assert_eq!(r["structuredContent"]["kind"], "linker");
+    assert!(r["structuredContent"]["content"].as_str().unwrap().contains("MEMORY"));
+
+    let r = client.call_tool("device_startup", serde_json::json!({ "device": "stm32f103c8" }));
+    assert!(!r["isError"].as_bool().unwrap(), "device_startup failed: {}", r);
+    assert_eq!(r["structuredContent"]["kind"], "startup");
+
+    let r = client.call_tool(
+        "device_init",
+        serde_json::json!({ "device": "stm32f103c8", "peripheral": ["GPIOA"], "register": ["GPIOA.CRL=0x44444444"] }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "device_init failed: {}", r);
+    assert_eq!(r["structuredContent"]["kind"], "init");
+    assert!(r["structuredContent"]["content"].as_str().unwrap().contains("GPIOA"));
+
+    // Unknown device error path.
+    let r = client.call_tool("device_linker", serde_json::json!({ "device": "nope" }));
     assert!(r["isError"].as_bool().unwrap());
     client.close();
 }

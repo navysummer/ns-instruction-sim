@@ -338,6 +338,45 @@ fn tools() -> Vec<Tool> {
             handler: tool_device_info,
         },
         Tool {
+            name: "device_svd",
+            description: "解析并显示一个 CMSIS-SVD 设备描述文件（或内置设备）。",
+            schema: obj(
+                &[
+                    ("file", prop_str("SVD 文件路径（与 device 二选一）。")),
+                    ("device", prop_str("内置设备键（与 file 二选一）。")),
+                    ("peripheral", prop_str("只看指定外设（按名称）。")),
+                    ("register", prop_str("只看指定寄存器（需配合 peripheral）。")),
+                ],
+                &[],
+            ),
+            handler: tool_device_svd,
+        },
+        Tool {
+            name: "device_linker",
+            description: "生成 GCC 风格链接脚本。",
+            schema: obj(&[("device", prop_str("设备键，如 stm32f103c8。"))], &["device"]),
+            handler: tool_device_linker,
+        },
+        Tool {
+            name: "device_startup",
+            description: "生成最小启动文件（向量表 + 复位处理器）。",
+            schema: obj(&[("device", prop_str("设备键，如 stm32f103c8。"))], &["device"]),
+            handler: tool_device_startup,
+        },
+        Tool {
+            name: "device_init",
+            description: "生成外设初始化 C 骨架（时钟使能 + 复位值注释）。",
+            schema: obj(
+                &[
+                    ("device", prop_str("设备键，如 stm32f103c8。")),
+                    ("peripheral", prop_arr("要初始化的外设（可重复）。")),
+                    ("register", prop_arr("寄存器写入 PERIPH.REG=VALUE（可重复）。")),
+                ],
+                &["device"],
+            ),
+            handler: tool_device_init,
+        },
+        Tool {
             name: "session_create",
             description: "创建（或重建）一个会话，可加载固件；返回完整状态。",
             schema: obj(
@@ -1035,6 +1074,145 @@ fn tool_device_info(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
         "memoryMap": regions,
         "peripherals": peripherals,
     }))
+}
+
+fn mcp_field_json(f: &ns_device::Field) -> Value {
+    json!({
+        "name": f.name,
+        "bitOffset": f.bit_offset,
+        "bitWidth": f.bit_width,
+        "description": f.description,
+    })
+}
+
+fn mcp_register_json(r: &ns_device::Register) -> Value {
+    json!({
+        "name": r.name,
+        "address": r.address,
+        "size": r.size,
+        "resetValue": r.reset_value,
+        "description": r.description,
+        "fields": r.fields.iter().map(mcp_field_json).collect::<Vec<_>>(),
+    })
+}
+
+fn mcp_peripheral_json(p: &ns_device::Peripheral) -> Value {
+    json!({
+        "name": p.name,
+        "baseAddress": p.base_address,
+        "description": p.description,
+        "registers": p.registers.iter().map(mcp_register_json).collect::<Vec<_>>(),
+    })
+}
+
+fn mcp_device_json(d: &ns_device::Device, peripherals: &[&ns_device::Peripheral]) -> Value {
+    json!({
+        "name": d.name,
+        "vendor": d.vendor,
+        "core": d.core,
+        "memory": d.memory.iter().map(|m| json!({
+            "name": m.name,
+            "start": m.start,
+            "size": m.size,
+            "access": m.access,
+        })).collect::<Vec<_>>(),
+        "peripherals": peripherals.iter().map(|p| mcp_peripheral_json(p)).collect::<Vec<_>>(),
+    })
+}
+
+fn tool_device_svd(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let file = s(args, "file");
+    let device_key = s(args, "device");
+    let peripheral = s(args, "peripheral");
+    let register = s(args, "register");
+    let device = match (file, device_key) {
+        (Some(f), None) => ns_device::load_svd_file(Path::new(&f))?,
+        (None, Some(k)) => ns_device::device_for_target(&k)
+            .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {k}"))?,
+        (Some(_), Some(_)) => bail!("file 与 device 只能二选一"),
+        (None, None) => bail!("请提供 file 或 device"),
+    };
+    let peripherals: Vec<&ns_device::Peripheral> = match &peripheral {
+        Some(name) => vec![device
+            .peripheral(name)
+            .ok_or_else(|| anyhow::anyhow!("SVD 中无外设: {name}"))?],
+        None => device.sorted_peripherals(),
+    };
+    if let Some(reg_name) = &register {
+        let p = peripherals
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("register 需要先指定 peripheral"))?;
+        let reg = p
+            .registers
+            .iter()
+            .find(|r| &r.name == reg_name)
+            .ok_or_else(|| anyhow::anyhow!("外设 {} 中无寄存器: {reg_name}", p.name))?;
+        return Ok(mcp_register_json(reg));
+    }
+    Ok(mcp_device_json(&device, &peripherals))
+}
+
+fn tool_device_linker(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let device = s(args, "device").ok_or_else(|| anyhow::anyhow!("缺少 device"))?;
+    if ns_device::catalog_entry(&device).is_none() {
+        bail!("未知设备: {device}");
+    }
+    let content = ns_device::linker_script(&device)
+        .ok_or_else(|| anyhow::anyhow!("无法生成链接脚本：设备 {device} 不受支持"))?;
+    Ok(json!({ "device": device, "kind": "linker", "content": content }))
+}
+
+fn tool_device_startup(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let device = s(args, "device").ok_or_else(|| anyhow::anyhow!("缺少 device"))?;
+    if ns_device::catalog_entry(&device).is_none() {
+        bail!("未知设备: {device}");
+    }
+    let content = ns_device::startup_file(&device)
+        .ok_or_else(|| anyhow::anyhow!("无法生成启动文件：设备 {device} 不受支持"))?;
+    Ok(json!({ "device": device, "kind": "startup", "content": content }))
+}
+
+fn tool_device_init(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let device = s(args, "device").ok_or_else(|| anyhow::anyhow!("缺少 device"))?;
+    if ns_device::catalog_entry(&device).is_none() {
+        bail!("未知设备: {device}");
+    }
+    let peripheral_names = arr(args, "peripheral");
+    let register_overrides = arr(args, "register");
+    let names: Vec<String> = if peripheral_names.is_empty() {
+        let dev = ns_device::device_for_target(&device)
+            .ok_or_else(|| anyhow::anyhow!("设备 {device} 无内置 SVD，请用 peripheral 指定"))?;
+        dev.sorted_peripherals().iter().map(|p| p.name.clone()).collect()
+    } else {
+        peripheral_names
+    };
+    let mut register_values: std::collections::BTreeMap<String, std::collections::BTreeMap<String, u64>> =
+        std::collections::BTreeMap::new();
+    for spec in &register_overrides {
+        let (left, value) = spec
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("register 格式应为 PERIPH.REG=VALUE: {spec}"))?;
+        let (periph, reg) = left
+            .split_once('.')
+            .ok_or_else(|| anyhow::anyhow!("register 格式应为 PERIPH.REG=VALUE: {spec}"))?;
+        let value = parse_num(value)?;
+        register_values
+            .entry(periph.to_string())
+            .or_default()
+            .insert(reg.to_string(), value as u64);
+    }
+    let configs: Vec<ns_device::PeripheralConfig> = names
+        .iter()
+        .map(|name| ns_device::PeripheralConfig {
+            name: name.clone(),
+            purpose: String::new(),
+            options: Vec::new(),
+            register_values: register_values.get(name).cloned().unwrap_or_default(),
+        })
+        .collect();
+    let content = ns_device::generate_peripheral_init(&device, &configs)
+        .ok_or_else(|| anyhow::anyhow!("无法生成外设初始化：设备 {device} 不受支持"))?;
+    Ok(json!({ "device": device, "kind": "init", "content": content }))
 }
 
 fn tool_session_create(_server: &McpServer, args: &Map<String, Value>) -> Result<Value> {

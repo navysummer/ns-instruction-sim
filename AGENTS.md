@@ -172,7 +172,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `mcp --session` 的默认会话。每个修改状态的工具（step/run/mem/bp/periph/watchdog/csr/...）
    在返回前将会话保存回磁盘，因此跨工具调用状态持续。`session_create`、`session_load`、
    `session_save` 显式管理会话；`state` 读取完整快照。
-5. **工具覆盖**：`arch_list`、`device_list`、`device_info`、`session_create/load/save`、
+5. **工具覆盖**：`arch_list`、`device_list`、`device_info`、`device_svd/linker/startup/init`、
+   `session_create/load/save`、
    `state`、`step`、`step_over`、`step_out`、`run`、`continue`、`reg_list/get/set`、
    `mem_read/write/fill/search/load/dump`、`bp_set/clear/list/enable/disable/clear_all`、
    `disasm`、`reset`、`cycle_get/estimate/tick`、`interrupt_take/pending/set`、
@@ -581,10 +582,12 @@ done
 - `byte_opcode_disasm_matches_core`/`word_opcode_disasm_matches_core`：逐操作码枚举校验
   “反汇编占位符 ⟺ 核心停机”，确保执行内核支持的操作码族都有真实反汇编（MCS-51/80251/
   C166/STM8/RL78/AVR/MSP430/RX）。
-- `mcp_handshake_and_list_tools`：MCP stdio 握手（initialize）+ `tools/list` 返回 ≥50 个工具，
-  每个工具含 `name`/`description`/`inputSchema`，覆盖架构/设备/会话/状态/步进/寄存器/内存/断点/反汇编/周期/中断/外设/符号/看门狗/CSR。
+- `mcp_handshake_and_list_tools`：MCP stdio 握手（initialize）+ `tools/list` 返回 ≥60 个工具，
+  每个工具含 `name`/`description`/`inputSchema`，覆盖架构/设备（含 SVD/代码生成）/会话/状态/步进/寄存器/内存/断点/反汇编/周期/中断/外设/符号/看门狗/CSR。
 - `mcp_call_step_and_state`：MCP `session_create` → `mem_write` → `step`（PC+4、周期+1）→
   `state`/`reg_set`/`reg_get`/`bp_set`/`bp_list`/`disasm` 完整往返，工具错误以 `isError:true` 返回。
+- `mcp_device_codegen_and_svd`：MCP `device_svd`（内置设备/按外设寄存器/缺源错误）、
+  `device_linker`/`device_startup`/`device_init` 代码生成（含未知设备错误路径）。
 - `help_every_command`：每个命令与子命令（含 `mcp`）的 `--help` 与 `-h` 均退出 0 且含 `Usage:`。
 - `help_every_param`：`run`/`bp set`/`mem read`/`reg set`/`periph reg-write`/`watchdog config`/`mcp`
   的 `--help` 包含每个参数的帮助文本（`--session`、`--firmware`、`--arch`、`--addr`、`--condition`、`--once` 等）。
