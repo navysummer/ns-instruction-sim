@@ -520,9 +520,19 @@ done
 - `device_svd_by_device_key`：`device svd --device` 从内置 SVD 解析；缺源报错。
 - `disasm_rx_fc_fd_long_forms`：RX `0xFC`/`0xFD` 长操作码族反汇编文本与实际宽度推进。
 - `step_rx_fc_fd_long_forms`：RX `0xFC`/`0xFD` 长操作码族执行（ADC/SHLR/SBB）与 PC/寄存器变化。
+- `disasm_rx_variable_width`：RX 变长指令（1/2/4/6 字节）按实际解码宽度推进并解码
+  短分支/立即族（`nop`=2、`bra.s`=1、`beq.s`=2、`add #imm16`=4、`bra.a`=6），
+  与内核大端取指一致。
+- `disasm_rx_decodes_families`：RX 寄存器/dsp/立即族反汇编镜像执行内核并读取大端操作数
+  （`add r0,r0`、`sub +16[r2],r0`、`movu.b +0x3412[r3],r0`、`mov.l +16[r0],+32[r12]`）。
+- `rx_step_over_uses_call_width`：RX `BSR.w` 为 4 字节，`step-over` 在返回地址 pc+4 恢复
+  （且 `BSR.w` 压栈返回地址），`rts` 被 `step-out` 识别。
 - `disasm_rx_bit_and_register_ops`：RX `0x78-0x7D`（BSET/BCLR/BTST #imm5, rd）与
   `0x7E`/`0x7F`（NOT/NEG/ABS/RORC/ROLC/PUSH/POP/PUSHC/POPC 与 JMP/JSR/BRA.l/BSR.l）
   按 2 字节解码为真实助记符（此前 0x7A-0x7D 落到占位符、0x7E/0x7F 误配到 NOT/JMP 族）。
+- `disasm_rl78_variable_width`：RL78 变长指令（1/2/3/4 字节）按实际解码宽度推进，
+  含 `0x61` 前缀携带 16 位/8 位操作数形式（`nop`=1、`add A,#imm8`=2、`add saddr,#imm8`=3、
+  `addw AX,#imm16`=3、`add A,ES:[imm16]`=3、`0x61 mov A,ES:[imm16]`=4、`0x61 and A,rba`=2）。
 - `byte_opcode_disasm_matches_core`/`word_opcode_disasm_matches_core`：逐操作码枚举校验
   “反汇编占位符 ⟺ 核心停机”，确保执行内核支持的操作码族都有真实反汇编（MCS-51/80251/
   C166/STM8/RL78/AVR/MSP430/RX）。
