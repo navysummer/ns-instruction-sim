@@ -120,7 +120,7 @@ ns-instruction-sim/
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` / `region` / `copy` | 内存读/写/填充（含确定性伪随机）/搜索模式/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验）/复制内存区域（源→目标，重叠范围按 memmove 语义） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --src --dst --name --format --width --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数；`list --symbols` 用 ELF 符号注释断点地址） | `--addr --symbol --line --condition --hit-count --once --symbols --session --json` | 表/JSON |
-| `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON） | `--arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
+| `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON；`--firmware` 直接加载固件反汇编，无需先建会话，架构从 ELF 推导） | `--firmware --base --arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要） | `--session --arch --firmware --base --json --fields --summary` | 状态/JSON/摘要 |
 | `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费） | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --input --file --device --peripheral --register --field --force --session --json` | 表/JSON |
@@ -548,6 +548,9 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
+- `disasm_from_firmware`：`disasm --firmware` 直接加载固件反汇编（`--addr`/`--symbol`
+  起始，无地址时从固件入口开始；架构从 ELF 推导；未知符号报错）。
+- `mcp_disasm_firmware`：MCP `disasm {"firmware":...}` 支持 `addr`/`symbol` 起始。
 - `disasm_mcs51_code_space_width`：mcs51 独立代码 ROM 被 `disasm` 读取，且按实际指令宽度推进（NOP=1、LJMP addr16=3）。
 - `disasm_mcs51_core_forms`：mcs51 反汇编镜像执行内核的旋转（RR/RLC/RL/RRC）、
   ALU 立即/直接/寄存器（ADD/ADDC/SUBB/ANL/ORL/XRL，含新增 `ORL/ANL/XRL A,Rn`）、

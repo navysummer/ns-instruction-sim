@@ -605,6 +605,8 @@ fn tools() -> Vec<Tool> {
                 &[
                     ("session", session.clone()),
                     ("arch", arch.clone()),
+                    ("firmware", firmware.clone()),
+                    ("base", base.clone()),
                     ("addr", addr.clone()),
                     ("len", prop_num("元素个数（默认 64）。")),
                     ("width", prop_str("数据宽度：byte/half/word/dword。")),
@@ -2016,32 +2018,19 @@ fn tool_bp_clear_all(server: &McpServer, args: &Map<String, Value>) -> Result<Va
 }
 
 fn tool_disasm(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    let arch = {
-        let arch_arg = s(args, "arch");
+    let arch_arg = s(args, "arch");
+    let firmware = s(args, "firmware");
+    let base = parse_num(s(args, "base").as_deref().unwrap_or("0"))?;
+    let mut arch = {
         let (sim, _, _) = crate::load_or_create(
             server.resolve_session(args).as_deref(),
             arch_arg.as_deref(),
-            None,
-            "0",
+            firmware.as_deref().map(Path::new),
+            &base.to_string(),
         )?;
         sim.arch
     };
-    let mut pc = match s(args, "addr") {
-        Some(a) => parse_num(&a)?,
-        None => {
-            let session = server.resolve_session(args);
-            if let Some(sp) = &session {
-                if sp.exists() {
-                    Session::load(sp)?.pc
-                } else {
-                    default_mem_base(arch)
-                }
-            } else {
-                default_mem_base(arch)
-            }
-        }
-    };
-    let sim = if let Some(sp) = server.resolve_session(args) {
+    let mut sim = if let Some(sp) = server.resolve_session(args) {
         if sp.exists() {
             Session::load(&sp)?
                 .apply(None)
@@ -2051,6 +2040,29 @@ fn tool_disasm(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
         }
     } else {
         Simulator::for_arch(arch)?
+    };
+    if let Some(fw) = &firmware {
+        crate::load_firmware_into(&mut sim, Path::new(fw), base)?;
+        arch = sim.arch;
+    }
+    let mut pc = match s(args, "addr") {
+        Some(a) => parse_num(&a)?,
+        None => {
+            if firmware.is_some() {
+                sim.program_counter()
+            } else {
+                let session = server.resolve_session(args);
+                if let Some(sp) = &session {
+                    if sp.exists() {
+                        Session::load(sp)?.pc
+                    } else {
+                        default_mem_base(arch)
+                    }
+                } else {
+                    default_mem_base(arch)
+                }
+            }
+        }
     };
     if let Some(sym) = s(args, "symbol") {
         pc = sim

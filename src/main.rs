@@ -762,6 +762,12 @@ struct DisasmArgs {
     /// 会话文件路径（JSON；不存在则新建临时会话）。
     #[arg(short, long)]
     session: Option<PathBuf>,
+    /// 固件文件（ELF / Intel HEX / BIN；直接加载后反汇编，无需先建会话）。
+    #[arg(long)]
+    firmware: Option<PathBuf>,
+    /// BIN/HEX 加载基址（十六进制或十进制；ELF 忽略）。
+    #[arg(long, default_value = "0")]
+    base: String,
     /// 目标架构（如 riscv/arm/mcs51/...；无会话时使用）。
     #[arg(short, long)]
     arch: Option<String>,
@@ -3138,7 +3144,24 @@ pub(crate) fn source_annotation(sim: &Simulator, address: u32) -> String {
 }
 
 fn cmd_disasm(args: DisasmArgs) -> Result<()> {
-    let arch = resolve_arch(args.session.as_deref(), args.arch.as_deref())?;
+    let mut arch = resolve_arch(args.session.as_deref(), args.arch.as_deref())?;
+    // Build a simulator to read code bytes: load the session's firmware if
+    // recorded, otherwise disassemble from a zeroed image (best-effort).
+    let mut sim = if let Some(sp) = &args.session {
+        if sp.exists() {
+            let s = Session::load(sp)?;
+            s.apply(None).unwrap_or_else(|_| Simulator::for_arch(arch).unwrap())
+        } else {
+            Simulator::for_arch(arch)?
+        }
+    } else {
+        Simulator::for_arch(arch)?
+    };
+    // `--firmware` loads the image directly (architecture inferred from an ELF).
+    if let Some(fw) = &args.firmware {
+        load_firmware_into(&mut sim, fw, parse_num(&args.base)?)?;
+        arch = sim.arch;
+    }
     let mut pc = if args.symbol.is_some() {
         // Resolved after the simulator is built (symbols come from the loaded
         // firmware).
@@ -3147,7 +3170,9 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
         match args.addr {
             Some(a) => parse_num(&a)?,
             None => {
-                if let Some(sp) = &args.session {
+                if args.firmware.is_some() {
+                    sim.program_counter()
+                } else if let Some(sp) = &args.session {
                     if sp.exists() {
                         Session::load(sp)?.pc
                     } else {
@@ -3158,18 +3183,6 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
                 }
             }
         }
-    };
-    // Build a simulator to read code bytes: load the session's firmware if
-    // recorded, otherwise disassemble from a zeroed image (best-effort).
-    let sim = if let Some(sp) = &args.session {
-        if sp.exists() {
-            let s = Session::load(sp)?;
-            s.apply(None).unwrap_or_else(|_| Simulator::for_arch(arch).unwrap())
-        } else {
-            Simulator::for_arch(arch)?
-        }
-    } else {
-        Simulator::for_arch(arch)?
     };
     if let Some(sym) = &args.symbol {
         let found = sim
