@@ -667,7 +667,8 @@ fn tools() -> Vec<Tool> {
                     ("arch", arch.clone()),
                     ("addr", addr.clone()),
                     ("len", prop_num("搜索长度（默认 256）。")),
-                    ("pattern", prop_arr("搜索模式字节。")),
+                    ("pattern", prop_arr("搜索模式值（整数，宽度由 width 决定）。")),
+                    ("width", prop_str("模式宽度：byte/half/word/dword（默认 byte）。")),
                 ],
                 &["addr", "pattern"],
             ),
@@ -1825,17 +1826,13 @@ fn tool_mem_search(server: &McpServer, args: &Map<String, Value>) -> Result<Valu
     let addr_num = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
     let len = u(args, "len").unwrap_or(256) as usize;
     let pattern = arr(args, "pattern");
-    let mut pat = Vec::new();
-    for p in &pattern {
-        let v = parse_num(p)?;
-        if v > 0xff {
-            bail!("模式字节超出 0..=255: {p}");
-        }
-        pat.push(v as u8);
+    // Each pattern token is an integer of the requested width (byte/half/word/
+    // dword), expanded little-endian into the byte sequence to look for.
+    let width = s(args, "width").unwrap_or_else(|| "byte".to_string());
+    if pattern.is_empty() {
+        bail!("pattern 至少需要一个值");
     }
-    if pat.is_empty() {
-        bail!("pattern 至少需要一个字节");
-    }
+    let pat = crate::expand_search_pattern(&pattern, &width)?;
     with_sim(server, args, false, |sim, _, _| {
         let mut matches = Vec::new();
         if len >= pat.len() {
@@ -1852,7 +1849,7 @@ fn tool_mem_search(server: &McpServer, args: &Map<String, Value>) -> Result<Valu
                 }
             }
         }
-        Ok(json!({ "address": addr_num, "matches": matches }))
+        Ok(json!({ "address": addr_num, "width": width, "matches": matches }))
     })
 }
 

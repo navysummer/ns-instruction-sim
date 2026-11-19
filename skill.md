@@ -118,6 +118,7 @@ ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 4096 --random --seed 0x1234 --json
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 0
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad 0xbe 0xef
+ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xdeadbeef --width word --json
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad --json --out search.json
 ns-instruction-sim mem dump --session s.json --addr 0x20000000 --len 64 --name bootloader --format c
 ns-instruction-sim mem dump --session s.json --addr 0x20000000 --len 64 --format c --json

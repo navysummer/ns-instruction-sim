@@ -976,6 +976,71 @@ fn mem_search_out_writes_file() {
 }
 
 #[test]
+fn mem_search_width_pattern() {
+    let dir = tmpdir();
+    let sess = dir.join("search-width.json");
+    bootstrap(&sess);
+    let s = sess.to_str().unwrap();
+    // 0xDEADBEEF (little-endian EF BE AD DE) at 0x20000000 and the 64-bit
+    // constant 0x0123456789ABCDEF at 0x20000040.
+    let write = |addr: &str, bytes: &[&str]| {
+        let mut cmd = Command::new(bin());
+        cmd.args(["mem", "write", "--session", s, "--addr", addr, "--bytes"]);
+        for b in bytes {
+            cmd.arg(*b);
+        }
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    write("0x20000000", &["0xef", "0xbe", "0xad", "0xde", "0x11", "0x22", "0x33", "0x44"]);
+    write("0x20000040", &["0xef", "0xcd", "0xab", "0x89", "0x67", "0x45", "0x23", "0x01"]);
+    // A word-width pattern is expanded little-endian and matched in place.
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", s, "--addr", "0x20000000", "--len", "8",
+               "--pattern", "0xDEADBEEF", "--width", "word", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["width"], "word");
+    assert_eq!(json["count"], 1u64);
+    assert_eq!(json["matches"][0], 0x2000_0000u64);
+    // A half-width pattern matches the high half of that word.
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", s, "--addr", "0x20000000", "--len", "8",
+               "--pattern", "0xBEEF", "--width", "half", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["count"], 1u64);
+    assert_eq!(json["matches"][0], 0x2000_0000u64);
+    // A dword-width pattern spans two words (64-bit constants).
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", s, "--addr", "0x20000040", "--len", "8",
+               "--pattern", "0x0123456789ABCDEF", "--width", "dword", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["count"], 1u64);
+    assert_eq!(json["matches"][0], 0x2000_0040u64);
+    // An unknown width and a value wider than the width are errors.
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", s, "--addr", "0x0", "--len", "8",
+               "--pattern", "0x1", "--width", "bogus"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("无效宽度"));
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", s, "--addr", "0x0", "--len", "8",
+               "--pattern", "0x10000", "--width", "half"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("超出"));
+}
+
+#[test]
 fn device_svd_parse_and_filter() {
     let dir = tmpdir();
     let svd = dir.join("testchip.svd");
@@ -7759,6 +7824,43 @@ fn mcp_mem_copy() {
 }
 
 #[test]
+fn mcp_mem_search_width() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-searchw-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "arch": "riscv", "addr": "0x20000000",
+        "bytes": ["0xef", "0xbe", "0xad", "0xde", "0x11"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write: {}", r);
+    // A word-width pattern is expanded little-endian and matched in place.
+    let r = client.call_tool("mem_search", serde_json::json!({
+        "session": s, "addr": "0x20000000", "len": 8,
+        "pattern": ["0xDEADBEEF"], "width": "word",
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_search word: {}", r);
+    assert_eq!(r["structuredContent"]["width"], "word");
+    assert_eq!(r["structuredContent"]["matches"], serde_json::json!([0x2000_0000u64]));
+    // Without `width` the pattern is interpreted as raw bytes.
+    let r = client.call_tool("mem_search", serde_json::json!({
+        "session": s, "addr": "0x20000000", "len": 8,
+        "pattern": ["0xef", "0xbe"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_search byte: {}", r);
+    assert_eq!(r["structuredContent"]["width"], "byte");
+    assert_eq!(r["structuredContent"]["matches"], serde_json::json!([0x2000_0000u64]));
+    // A value wider than the requested width is an error.
+    let r = client.call_tool("mem_search", serde_json::json!({
+        "session": s, "addr": "0x0", "len": 8,
+        "pattern": ["0x10000"], "width": "half",
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "overflow must fail: {}", r);
+    client.close();
+}
+
+#[test]
 fn run_until_condition_stops() {
     let dir = tmpdir();
     let elf = dir.join("cond.elf");
@@ -8501,6 +8603,7 @@ fn help_every_param() {
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--len", "--value", "--random", "--seed", "--json"]),
+        (&["mem", "search"], &["--session", "--arch", "--addr", "--len", "--pattern", "--width", "--out", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--json"]),
         (&["mcp"], &["--session"]),

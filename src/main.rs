@@ -511,7 +511,7 @@ enum MemSub {
         #[arg(long)]
         json: bool,
     },
-    /// 在内存区域搜索字节模式（找到所有偏移）。
+    /// 在内存区域搜索模式（按 --width 解释 --pattern 的整数值，找到所有偏移）。
     Search {
         /// 会话文件路径（JSON）。
         #[arg(short, long)]
@@ -528,9 +528,12 @@ enum MemSub {
         /// 搜索长度（字节，默认 256）。
         #[arg(long, default_value = "256")]
         len: usize,
-        /// 搜索模式字节（空格分隔，支持 0xNN）。
+        /// 搜索模式（空格分隔的整数；宽度由 --width 决定，支持 0xNN）。
         #[arg(long, value_delimiter = ' ', num_args = 1..)]
         pattern: Vec<String>,
+        /// 模式宽度：`byte`/`half`/`word`/`dword`（默认 byte；每个模式值按小端展开为字节）。
+        #[arg(long, default_value = "byte")]
+        width: String,
         /// 将搜索结果写入文件（缺省打印到 stdout）。
         #[arg(long)]
         out: Option<PathBuf>,
@@ -2858,7 +2861,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Search { session, arch, addr, addr_flag, len, pattern, out, json } => {
+        MemSub::Search { session, arch, addr, addr_flag, len, pattern, width, out, json } => {
             let addr_str = addr_flag
                 .as_deref()
                 .or(addr.as_deref())
@@ -2867,14 +2870,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             if pattern.is_empty() {
                 bail!("--pattern 至少需要一个字节");
             }
-            let mut pat = Vec::new();
-            for p in &pattern {
-                let v = parse_num(p)?;
-                if v > 0xff {
-                    bail!("模式字节超出 0..=255: {}", p);
-                }
-                pat.push(v as u8);
-            }
+            let pat = expand_search_pattern(&pattern, &width)?;
             let (sim, _, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
             let mut matches: Vec<u32> = Vec::new();
             if pat.is_empty() || len < pat.len() {
@@ -2897,6 +2893,8 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             let text = if json {
                 let value = serde_json::json!({
                     "address": addr_num,
+                    "width": width,
+                    "patternTokens": pattern.len(),
                     "count": matches.len(),
                     "matches": matches,
                 });
@@ -3716,6 +3714,55 @@ pub(crate) fn device_reg_dump(
         }
     }
     out
+}
+
+/// Parse a numeric value that may be hex (`0x…`), binary (`0b…`) or decimal,
+/// up to 64 bits (needed for `dword` search patterns wider than a `u32`).
+fn parse_num_u64(text: &str) -> Result<u64> {
+    let text = text.trim();
+    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16)
+            .map_err(|e| anyhow::anyhow!("无效十六进制数 '{text}': {e}"))
+    } else if let Some(bin) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+        u64::from_str_radix(bin, 2)
+            .map_err(|e| anyhow::anyhow!("无效二进制数 '{text}': {e}"))
+    } else {
+        text.parse::<u64>()
+            .map_err(|e| anyhow::anyhow!("无效数值 '{text}': {e}"))
+    }
+}
+
+/// Expand a `mem search` pattern into the raw little-endian bytes to look for.
+/// Each token is an integer of the requested width (`byte`/`half`/`word`/`dword`),
+/// so callers can search for a word or double-word constant directly instead of
+/// spelling its bytes. Shared by the CLI and the `mem_search` MCP tool.
+pub(crate) fn expand_search_pattern(
+    pattern: &[String],
+    width: &str,
+) -> Result<Vec<u8>> {
+    let size = match width {
+        "" | "byte" => 1usize,
+        "half" => 2,
+        "word" => 4,
+        "dword" => 8,
+        other => bail!("无效宽度 '{other}'（支持 byte/half/word/dword）"),
+    };
+    let max = if size * 8 == 64 {
+        u64::MAX
+    } else {
+        (1u64 << (size * 8)) - 1
+    };
+    let mut bytes = Vec::new();
+    for token in pattern {
+        let value = parse_num_u64(token)?;
+        if value > max {
+            bail!("模式值超出 {} 位: {token}", size * 8);
+        }
+        for i in 0..size {
+            bytes.push((value >> (8 * i)) as u8);
+        }
+    }
+    Ok(bytes)
 }
 
 fn cmd_periph(sub: PeriphSub) -> Result<()> {

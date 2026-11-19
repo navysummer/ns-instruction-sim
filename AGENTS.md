@@ -118,7 +118,7 @@ ns-instruction-sim/
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
 | `continue` | — | 连续运行至断点/停止/上限/指定地址/条件成立/周期上限（临时断点/条件每步后求值；`--trace-regs` 打印每条指令后变化的寄存器；`--max-cycles` 到达即停并报 `lastResult="cycles"`） | `--session --until --until-condition --max-steps --max-cycles --save --json --trace --trace-regs --source` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
-| `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` / `region` / `copy` | 内存读/写/填充（含确定性伪随机）/搜索模式/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验）/复制内存区域（源→目标，重叠范围按 memmove 语义） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --src --dst --name --format --width --out --json` | hex/C/JSON |
+| `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` / `region` / `copy` | 内存读/写/填充（含确定性伪随机）/搜索模式（`search` 的 `--pattern` 按 `--width` `byte`/`half`/`word`/`dword` 解释为小端整数值，可直接按字/双字常量搜索）/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验）/复制内存区域（源→目标，重叠范围按 memmove 语义） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --src --dst --name --format --width --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数；`list --symbols` 用 ELF 符号注释断点地址） | `--addr --symbol --line --condition --hit-count --once --symbols --session --json` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON；`--firmware` 直接加载固件反汇编，无需先建会话，架构从 ELF 推导） | `--firmware --base --arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
@@ -190,7 +190,9 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `session_create/load/save`、
    `state`（支持 `mem`/`mem_len` 附带内存快照）、`step`、`step_over`、`step_out`、
    `run`/`continue`/`trace`/`coverage`/`profile`（均支持 `max_cycles` 周期上限，`lastResult`/`result="cycles"`）、`reg_list/get/set`、
-   `mem_read/write/fill/search/load/dump/region/copy`、`bp_set/modify/clear/list/enable/disable/clear_all`
+   `mem_read/write/fill/search/load/dump/region/copy`
+   （`mem_search` 支持 `width` 参数，`pattern` 值按 `byte`/`half`/`word`/`dword` 小端展开）、
+   `bp_set/modify/clear/list/enable/disable/clear_all`
    （`bp_list` 支持 `symbols` 参数）、
    `disasm`、`reset`、`cycle_get/estimate/tick/set`、`interrupt_take/pending/set`、
    `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`
@@ -628,6 +630,11 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `device_init_codegen`：`device init` 生成外设初始化 C 骨架（含 --register 覆盖与格式校验）。
 - `mem_search_finds_pattern`：`mem search` 在内存区域定位字节模式（JSON 匹配数/地址、未找到提示）。
 - `mem_search_harvard_data_space`：Harvard 架构（8051）数据空间搜索使用统一内存助手，与 `mem write` 所见一致。
+- `mem_search_width_pattern`：`mem search --width byte|half|word|dword` 将 `--pattern` 解释为
+  小端整数值并逐宽展开（word 常量 `0xDEADBEEF`、half `0xBEEF`、dword 64 位常量 `0x0123456789ABCDEF`
+  均可按地址定位）；非法宽度与超宽数值报错误。
+- `mcp_mem_search_width`：MCP `mem_search` 的 `width` 参数返回 `width`/`matches`；缺省按字节解释，
+  数值超出所请求宽度时报错。
 - `mem_search_out_writes_file`：`mem search --out` 将 JSON/文本结果写入文件。
 - `state_reports_loaded_firmware`：`state --json` 报告已加载固件（path/base/format）。
 - `state_reports_pc_symbol`：`state --json` 报告 PC 处最近符号（pcSymbol）。
