@@ -2351,6 +2351,105 @@ fn run_arm_thumb2_dp_shifted() {
 }
 
 #[test]
+fn run_arm_thumb2_cond_branch_wide() {
+    // `beq.w` (0xF000 0x801a) uses the architectural PC (current + 4) as the
+    // base and a 20-bit sign-extended S:J1:imm6:J2:imm10:0 offset. Placed at
+    // 0x08000012 it targets 0x0800004A (0x08000016 + 0x34).
+    let dir = tmpdir();
+    let sess = dir.join("arm-t2cond.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: movs r0,#0 (0x2000, sets Z); beq.w (0xF000 0x801A);
+    // movs r3,#3 (0x2303, fallthrough that is skipped when taken);
+    // movs r3,#4 (0x2304). The branch target 0x0800004A holds movs r2,#1.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x00", "0x20",                 // movs r0, #0
+               "0x00", "0xF0", "0x1A", "0x80", // beq.w 0x0800004A
+               "0x03", "0x23",                 // movs r3, #3
+               "0x04", "0x23"])                // movs r3, #4
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x0800004A", "--bytes", "0x01", "0x22"]) // movs r2, #1
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Step 1: movs r0,#0 (Z=1). Step 2: beq.w taken → PC = 0x0800004A.
+    // Step 3: movs r2,#1 at the target → r2 = 1, r3 untouched.
+    for _ in 0..3 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_004Cu64);
+    assert_eq!(json["registers"]["r2"], 1);
+    assert_eq!(json["registers"]["r3"], 0);
+
+    // Not-taken path: a fresh session with `movs r1,#1` (clears Z) so beq.w
+    // falls through to 0x08000016, executing movs r3,#3.
+    let sess2 = dir.join("arm-t2cond-nt.json");
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess2.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess2.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x01", "0x21",                 // movs r1, #1 (clears Z)
+               "0x00", "0xF0", "0x1A", "0x80", // beq.w 0x0800004A
+               "0x03", "0x23"])                // movs r3, #3 (fallthrough)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess2.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for _ in 0..3 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess2.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess2.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0018u64);
+    assert_eq!(json["registers"]["r3"], 3);
+}
+
+#[test]
 fn run_arm_thumb2_ldrd_strd_tbb() {
     let dir = tmpdir();
     let sess = dir.join("arm-t2ldrd.json");
@@ -3274,6 +3373,42 @@ fn disasm_thumb2_bfx() {
         "0x00000004: sbfx r3, r4, #0x2, #0x6",
         "0x00000008: bfc r5, #4, #8",
         "0x0000000c: bfi r6, r7, #3, #5",
+    ] {
+        assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
+    }
+}
+
+#[test]
+fn disasm_thumb2_cond_branch_wide() {
+    let dir = tmpdir();
+    let binfile = dir.join("thumb2-cond.bin");
+    let sess = dir.join("thumb2-cond.json");
+    // Thumb-2 conditional branch (wide) forms the core executes. The offset is
+    // S:J1:imm6:J2:imm10:0 sign-extended at 20 bits, based on PC = current + 4.
+    let bytes: &[u8] = &[
+        0x00, 0xF0, 0x10, 0x80, // beq.w 0x24
+        0x40, 0xF0, 0x18, 0x80, // bne.w 0x34
+        0x7F, 0xF4, 0xA6, 0xAD, // bne.w 0xfffffb50
+        0x49, 0xF0, 0x20, 0x86, // bne.w 0x9c44
+        0x00, 0xF3, 0x02, 0x80, // bgt.w 0x8
+    ];
+    std::fs::write(&binfile, bytes).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "5", "--arm-state", "thumb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "0x00000000: beqw 0x24",
+        "0x00000004: bnew 0x38",
+        "0x00000008: bnew 0xfffffb58",
+        "0x0000000c: bnew 0x9c50",
+        "0x00000010: bgtw 0x18",
     ] {
         assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
     }

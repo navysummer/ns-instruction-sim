@@ -322,6 +322,15 @@ done
 - `disasm_thumb2_modified_immediate`：`disasm --arm-state thumb` 将
   `mov r0,#0xff`/`add r3,r4,#0x40`/`sub r5,r6,#0x200`/`cmp r0,#0x40`/`tst r2,#0xff`
   反汇编为真实助记符并按扩展立即数显示。
+- `run_arm_thumb2_cond_branch_wide`：端到端分三次 `step --session` 执行
+  `movs r0,#0`（0x2000，置 Z）后 `beq.w`（0xF000 0x801A，目标 0x0800004A，
+  PC=当前+4+偏移）命中，跳过回退路径的 `movs r3,#3`（r3 保持 0）并停在目标
+  `movs r2,#1`（r2=1）；另建会话用 `movs r1,#1`（清 Z）使 `beq.w` 不命中，
+  回退到 0x08000016 执行 `movs r3,#3`（r3=3），锁定 Thumb-2 条件分支宽格式
+  执行（条件失败为 no-op，PC 已推进）。
+- `disasm_thumb2_cond_branch_wide`：`disasm --arm-state thumb` 将
+  `beq.w 0x24`/`bne.w 0x38`/`bne.w 0xfffffb58`/`bne.w 0x9c50`/`bgt.w 0x18`
+  反汇编为真实助记符，按 20 位 S:J1:imm6:J2:imm10:0 符号扩展偏移计算目标。
 - `run_arm_thumb1_it_bkpt`：端到端分八次 `step --session` 执行
   `movs r0,#0`（0x2000，置 Z）、`it eq`（0xBF08，`moveq r0,r1` 执行）、
   `movs r2,#1`（0x2201，清 Z）、`ite eq`（0xBF0C，`moveq r3,r4` 跳过、
@@ -639,6 +648,15 @@ done
   `width=lsb5+1` 有/零符号扩展；`BFC` 清除 `[msb:lsb]`（`msb=lsb5`）、`BFI` 将 Rn 低
   `width=msb-lsb+1` 位插入 `[msb:lsb]` 并保留 Rd 其余位。由 ns-sim 单测 `thumb2_bfx` 与
   CLI `run_arm_thumb2_bfx`/`disasm_thumb2_bfx` 锁定。
+  Thumb-2 条件分支宽格式 `B<cond>.W`（首半字 `1111 0 S cond imm6`，bit10=S、bits9-6=cond、
+  bits5-0=imm6；第二半字 `10 J1 0 J2 imm10`，bit13=J1、bit11=J2、bits10-0=imm10）现执行
+  与反汇编：20 位偏移 `S:J1:imm6:J2:imm10:0` 按符号扩展，目标 = 架构 PC（当前地址 +4）+
+  偏移；条件由当前标志评估，失败即 no-op（PC 已推进）。该编码与 0xF3xx 专用指令
+  （DMB/DSB/ISB、提示、MRS/MSR、位域）共用 `11110` 首半字高 5 位，故在那些专用处理器
+  之后检查；位域指令（第二半字 bit15=0）与 `B<cond>.W`（第二半字 bit15=1）由 bit15 区分，
+  而前向 `B<cond>.W`（cond 0-7、S=0）须先于修正立即数据处理处理器。由 ns-sim 单测
+  `thumb2_cond_branch_wide` 与 CLI `run_arm_thumb2_cond_branch_wide`/
+  `disasm_thumb2_cond_branch_wide` 锁定。
   Thumb-2 宽 `REV`/`REV16`/`REVSH`/`RBIT`（首半字 `1111 1010 1001 Rm`，第二半字
   `1111 Rd 10op2 Rm`，bits7-4 选择操作 8=REV/9=REV16/A=RBIT/B=REVSH，Rm 在首半字与
   第二半字低半字节重复）现执行与反汇编；宽 `SXTH`/`UXTH`/`SXTB`/`UXTB`（首半字

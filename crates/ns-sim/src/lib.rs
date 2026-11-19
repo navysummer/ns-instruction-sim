@@ -4035,7 +4035,11 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
 
     // Bit-field extract/insert/clear: SBFX (0xF340), BFI (0xF360 with
     // Rn != PC), BFC (0xF36F), UBFX (0xF3C0).
-    if second & 0x0020 == 0
+    // Bit-field instructions (SBFX/UBFX/BFI/BFC) always encode bit 15 of the
+    // second halfword as 0, which separates them from the shared 0xF3xx first
+    // halfword space (e.g. `ble.w` = 0xF340 0x8000 sets bit 15).
+    if second & 0x8000 == 0
+        && second & 0x0020 == 0
         && (first & 0xFFF0 == 0xF340 || first & 0xFFF0 == 0xF360
             || first == 0xF36F || first & 0xFFF0 == 0xF3C0)
     {
@@ -4065,6 +4069,27 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         } else {
             format!("{mnem} r{rd}, r{rn}, #{lsb:#x}, #{width:#x}")
         };
+    }
+
+    // B<cond>.W conditional branch (0xF000 prefix, second bits 15-14 = 10,
+    // bit 12 = 0). First halfword is `1111 0 S cond imm6`; second halfword is
+    // `10 J1 0 J2 imm10`. The 20-bit offset is S:J1:imm6:J2:imm10:0. This is
+    // checked after the specific 0xF3xx/0xFAxx handlers (memory barriers,
+    // hints, MRS/MSR, bit-field) because they share the `11110` top-five bits;
+    // it precedes the modified-immediate data-processing handler, whose first
+    // halfword (bit 9 = 0, S = 0) would otherwise claim forward `B<cond>.W`.
+    if first & 0xF800 == 0xF000
+        && second & 0xD000 == 0x8000
+    {
+        let cond = ((first >> 6) & 0x0F) as u8;
+        let s = ((first >> 10) & 1) as u32;
+        let j1 = ((second >> 11) & 1) as u32;
+        let imm6 = (first & 0x3F) as u32;
+        let j2 = ((second >> 10) & 1) as u32;
+        let imm10 = (second & 0x3FF) as u32;
+        let mut imm32 = (s << 19) | (j1 << 18) | (imm6 << 12) | (j2 << 11) | (imm10 << 1);
+        imm32 = sign_extend(imm32, 20);
+        return format!("b{}w {:#x}", cond_suffix(cond), pc.wrapping_add(4).wrapping_add(imm32));
     }
 
     // Data processing (modified immediate): AND/BIC/ORR/ORN/EOR/ADD/SUB/RSB
@@ -6205,6 +6230,11 @@ mod tests {
         let cases: &[(u32, &str)] = &[
             (0xF000_D000, "bl 0x4"),
             (0xF000_9004, "b.w 0xc"),
+            (0xF000_8010, "beqw 0x24"),
+            (0xF040_8018, "bnew 0x34"),
+            (0xF47F_ADA6, "bnew 0xfffffb50"),
+            (0xF049_8620, "bnew 0x9c44"),
+            (0xF300_8002, "bgtw 0x8"),
             (0xF240_4000, "movw r0, #0x200"),
             (0xF200_2000, "addw r0, r0, #0x2000"),
             (0xF8D0_0000, "ldr r0, [r0, #0x0]"),

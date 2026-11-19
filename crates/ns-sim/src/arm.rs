@@ -1560,7 +1560,11 @@ impl ArmCore {
         // Rn != PC), BFC (0xF36F), UBFX (0xF3C0). Second halfword layout is
         // `0 imm3(3) Rd(4) imm2(2) 0 lsb(5)`; the field starts at
         // `lsb = (imm3 << 2) | imm2` and has `width = lsb5 + 1` bits.
-        if second & 0x0020 == 0
+        // Bit-field instructions (SBFX/UBFX/BFI/BFC) always encode bit 15 of
+        // the second halfword as 0, separating them from the shared 0xF3xx
+        // first-halfword space (e.g. `ble.w` = 0xF340 0x8000 sets bit 15).
+        if second & 0x8000 == 0
+            && second & 0x0020 == 0
             && (first & 0xFFF0 == 0xF340 || first & 0xFFF0 == 0xF360
                 || first == 0xF36F || first & 0xFFF0 == 0xF3C0)
         {
@@ -1598,6 +1602,35 @@ impl ArmCore {
                     // BFI: insert the low `width` bits of Rn into Rd at lsb.
                     self.regs[rd] = (self.regs[rd] & clear) | ((self.regs[rn] & mask) << lsb);
                 }
+            }
+            return;
+        }
+
+        // B<cond>.W conditional branch (0xF000 prefix, second bits 15-14 = 10,
+        // bit 12 = 0). First halfword is `1111 0 S cond imm6` (bit 11 = 0,
+        // bit 10 = S, bits 9-6 = condition, bits 5-0 = imm6); second halfword
+        // is `10 J1 0 J2 imm10` (bit 11 = J1, bit 10 = J2, bits 9-0 = imm10).
+        // The 20-bit offset is S:J1:imm6:J2:imm10:0, sign-extended. If the
+        // condition fails the instruction is a no-op (PC already advanced).
+        // Checked after the specific 0xF3xx/0xFAxx handlers (memory barriers,
+        // hints, MRS/MSR, bit-field) because they share the `11110` top-five
+        // bits; it precedes the modified-immediate data-processing handler,
+        // whose first halfword (bit 9 = 0, S = 0) claims forward branches.
+        if first & 0xF800 == 0xF000
+            && second & 0xD000 == 0x8000
+        {
+            let cond = ((first >> 6) & 0x0F) as u32;
+            if self.condition_true(cond) {
+                let s = ((first >> 10) & 1) as u32;
+                let j1 = ((second >> 11) & 1) as u32;
+                let imm6 = (first & 0x3F) as u32;
+                let j2 = ((second >> 10) & 1) as u32;
+                let imm10 = (second & 0x3FF) as u32;
+                let mut imm32 =
+                    (s << 19) | (j1 << 18) | (imm6 << 12) | (j2 << 11) | (imm10 << 1);
+                imm32 = sign_extend_thumb(imm32, 20);
+                self.regs[PC] = pc.wrapping_add(imm32 as u32) & !1;
+                self.set_thumb(true);
             }
             return;
         }
@@ -3924,6 +3957,54 @@ mod tests {
         c.set_thumb(true);
         assert_eq!(c.step(&[]), ArmStep::Advanced);
         assert_eq!(c.regs[PC], 0xc);
+    }
+
+    #[test]
+    fn thumb2_cond_branch_wide() {
+        // B<cond>.W target = current + 4 + offset. For 0xF000 0x8010
+        // (cond = EQ, S = 0, imm6 = 0, J1 = 0, J2 = 0, imm10 = 0x10) the
+        // offset is 0x10 << 1 = 0x20, so the target is 0x4 + 0x20 = 0x24.
+        // With Z set the EQ branch is taken.
+        let mut c = core();
+        c.write_u16(0, 0xF000);
+        c.write_u16(2, 0x8010);
+        c.set_nzcv(false, true, false, false); // Z = 1
+        c.regs[PC] = 0;
+        c.set_thumb(true);
+        assert_eq!(c.step(&[]), ArmStep::Advanced);
+        assert_eq!(c.regs[PC], 0x24);
+
+        // The same branch with Z clear falls through (PC stays at current+4).
+        let mut c = core();
+        c.write_u16(0, 0xF000);
+        c.write_u16(2, 0x8010);
+        c.set_nzcv(false, false, false, false); // Z = 0
+        c.regs[PC] = 0;
+        c.set_thumb(true);
+        assert_eq!(c.step(&[]), ArmStep::Advanced);
+        assert_eq!(c.regs[PC], 4);
+
+        // Backward BNE.W (0xF47F 0xADA6): offset = -0x4B4, target =
+        // 0x4 - 0x4B4 = 0xFFFFFB50 (wrapping). With Z clear (NE) it is taken.
+        let mut c = core();
+        c.write_u16(0, 0xF47F);
+        c.write_u16(2, 0xADA6);
+        c.set_nzcv(false, false, false, false); // Z = 0
+        c.regs[PC] = 0;
+        c.set_thumb(true);
+        assert_eq!(c.step(&[]), ArmStep::Advanced);
+        assert_eq!(c.regs[PC], 0xFFFF_FB50u32);
+
+        // A long forward BNE.W (0xF049 0x8620): offset = 0x9C40, target =
+        // 0x4 + 0x9C40 = 0x9C44.
+        let mut c = core();
+        c.write_u16(0, 0xF049);
+        c.write_u16(2, 0x8620);
+        c.set_nzcv(false, false, false, false); // Z = 0 (NE taken)
+        c.regs[PC] = 0;
+        c.set_thumb(true);
+        assert_eq!(c.step(&[]), ArmStep::Advanced);
+        assert_eq!(c.regs[PC], 0x9C44);
     }
 
     #[test]
