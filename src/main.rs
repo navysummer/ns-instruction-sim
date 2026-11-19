@@ -264,6 +264,9 @@ struct RunArgs {
     /// 运行到指定地址（临时断点，不持久化）。
     #[arg(long)]
     until: Option<String>,
+    /// 运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`；到断点/停机/步数上限提前停止）。
+    #[arg(long)]
+    until_condition: Option<String>,
     /// 保存会话到指定文件（JSON）。
     #[arg(long)]
     save_session: Option<PathBuf>,
@@ -314,6 +317,9 @@ struct ContinueArgs {
     /// 运行到指定地址（临时断点，不持久化）。
     #[arg(long)]
     until: Option<String>,
+    /// 运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`；到断点/停机/步数上限提前停止）。
+    #[arg(long)]
+    until_condition: Option<String>,
     /// 最大执行步数（默认 1,000,000）。
     #[arg(long, default_value = "1000000")]
     max_steps: u64,
@@ -2199,6 +2205,26 @@ fn cmd_device_memory_map(device: &str, addr: Option<&str>, json: bool) -> Result
     Ok(())
 }
 
+/// Run up to `max_steps` instructions, stopping early when `expr` evaluates
+/// true (checked at entry and after each step). Returns `(result, met)`.
+pub(crate) fn run_until_condition(sim: &mut Simulator, max_steps: u64, expr: &str) -> (StepResult, bool) {
+    if ns_sim::eval_condition(expr, &sim.reg_view(), sim.program_counter(), sim.cycle_count) {
+        return (StepResult::Advanced, true);
+    }
+    let mut steps = 0u64;
+    while steps < max_steps {
+        let result = sim.step();
+        if result != StepResult::Advanced {
+            return (result, false);
+        }
+        steps += 1;
+        if ns_sim::eval_condition(expr, &sim.reg_view(), sim.program_counter(), sim.cycle_count) {
+            return (StepResult::Advanced, true);
+        }
+    }
+    (StepResult::Advanced, false)
+}
+
 fn cmd_run(args: RunArgs) -> Result<()> {
     let base = parse_num(&args.base)?;
     // If a session is given, load it (preserving peripherals, memory,
@@ -2224,8 +2250,19 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
     // `--steps N` is a bounded "run exactly N instructions" mode; otherwise
     // run to completion with the `--max-steps` upper bound.
-    let result = if args.trace {
-        trace_run(&mut sim, args.steps, args.max_steps)
+    let mut cond_met = false;
+    let result = if let Some(expr) = &args.until_condition {
+        if args.trace {
+            let (r, met) = trace_run(&mut sim, args.steps, args.max_steps, Some(expr));
+            cond_met = met;
+            r
+        } else {
+            let (r, met) = run_until_condition(&mut sim, args.max_steps, expr);
+            cond_met = met;
+            r
+        }
+    } else if args.trace {
+        trace_run(&mut sim, args.steps, args.max_steps, None).0
     } else {
         match args.steps {
             Some(n) => sim.run(n),
@@ -2237,7 +2274,10 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             sim.clear_breakpoint(addr);
         }
     }
-    let output = state_output(&sim, result, fw_state.as_ref());
+    let mut output = state_output(&sim, result, fw_state.as_ref());
+    if cond_met {
+        output.last_result = "condition".to_string();
+    }
 
     if let Some(session_path) = args.save_session.as_ref().or_else(|| args.session.as_ref()) {
         let session = Session::capture(&sim, fw_state);
@@ -2270,12 +2310,24 @@ fn cmd_run(args: RunArgs) -> Result<()> {
 /// Run with per-instruction tracing: print each executed instruction's
 /// address, disassembly and source line, then the resulting PC/state. Stops
 /// at a breakpoint or halt (or after the step/halt bound).
-fn trace_run(sim: &mut Simulator, steps: Option<u64>, max_steps: u64) -> StepResult {
+fn trace_run(
+    sim: &mut Simulator,
+    steps: Option<u64>,
+    max_steps: u64,
+    cond: Option<&str>,
+) -> (StepResult, bool) {
     let limit = steps.unwrap_or(max_steps);
     let mut count = 0u64;
+    let check = |sim: &Simulator| -> bool {
+        cond.map(|c| ns_sim::eval_condition(c, &sim.reg_view(), sim.program_counter(), sim.cycle_count))
+            .unwrap_or(false)
+    };
+    if check(sim) {
+        return (StepResult::Advanced, true);
+    }
     loop {
         if count >= limit {
-            return StepResult::Advanced;
+            return (StepResult::Advanced, false);
         }
         let pc_before = sim.program_counter();
         let result = sim.step();
@@ -2293,7 +2345,10 @@ fn trace_run(sim: &mut Simulator, steps: Option<u64>, max_steps: u64) -> StepRes
         );
         count += 1;
         if result != StepResult::Advanced {
-            return result;
+            return (result, false);
+        }
+        if check(sim) {
+            return (StepResult::Advanced, true);
         }
     }
 }
@@ -2350,8 +2405,19 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
         }
     }
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
-    let result = if args.trace {
-        trace_run(&mut sim, None, args.max_steps)
+    let mut cond_met = false;
+    let result = if let Some(expr) = &args.until_condition {
+        if args.trace {
+            let (r, met) = trace_run(&mut sim, None, args.max_steps, Some(expr));
+            cond_met = met;
+            r
+        } else {
+            let (r, met) = run_until_condition(&mut sim, args.max_steps, expr);
+            cond_met = met;
+            r
+        }
+    } else if args.trace {
+        trace_run(&mut sim, None, args.max_steps, None).0
     } else {
         sim.run(args.max_steps)
     };
@@ -2360,7 +2426,10 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
             sim.clear_breakpoint(addr);
         }
     }
-    let output = state_output(&sim, result, fw.as_ref());
+    let mut output = state_output(&sim, result, fw.as_ref());
+    if cond_met {
+        output.last_result = "condition".to_string();
+    }
     if args.save {
         let session = Session::capture(&sim, fw);
         session.save(&args.session)?;

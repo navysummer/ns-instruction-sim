@@ -545,6 +545,7 @@ fn tools() -> Vec<Tool> {
                     ("steps", prop_num("只运行 N 条指令。")),
                     ("max_steps", prop_num("最大执行步数（默认 1000000）。")),
                     ("until", addr.clone()),
+                    ("until_condition", prop_str("运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`）。")),
                     ("cycle_accurate", prop_bool("周期精确模式（按指令预估周期推进）。")),
                 ],
                 &["firmware"],
@@ -558,6 +559,7 @@ fn tools() -> Vec<Tool> {
                 &[
                     ("session", session.clone()),
                     ("until", addr.clone()),
+                    ("until_condition", prop_str("运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`）。")),
                     ("max_steps", prop_num("最大执行步数（默认 1000000）。")),
                 ],
                 &["session"],
@@ -1494,16 +1496,31 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
         }
     }
     let temp_bp = until_addr.map(|a| sim.set_breakpoint(a)).unwrap_or(false);
-    let result = match u64(args, "steps") {
-        Some(n) => sim.run(n),
-        None => sim.run(u64(args, "max_steps").unwrap_or(1_000_000)),
+    let mut cond_met = false;
+    let result = match s(args, "until_condition") {
+        Some(expr) => {
+            let (r, met) = crate::run_until_condition(
+                &mut sim,
+                u64(args, "max_steps").unwrap_or(1_000_000),
+                &expr,
+            );
+            cond_met = met;
+            r
+        }
+        None => match u64(args, "steps") {
+            Some(n) => sim.run(n),
+            None => sim.run(u64(args, "max_steps").unwrap_or(1_000_000)),
+        },
     };
     if temp_bp {
         if let Some(addr) = until_addr {
             sim.clear_breakpoint(addr);
         }
     }
-    let output = serde_json::to_value(crate::state_output(&sim, result, Some(&fw_state)))?;
+    let mut output = serde_json::to_value(crate::state_output(&sim, result, Some(&fw_state)))?;
+    if cond_met {
+        output["lastResult"] = Value::String("condition".to_string());
+    }
     if let Some(p) = server.resolve_session(args) {
         Session::capture(&sim, Some(fw_state)).save(&p)?;
     }
@@ -1519,13 +1536,26 @@ fn tool_continue(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
             }
         }
         let temp_bp = until_addr.map(|a| sim.set_breakpoint(a)).unwrap_or(false);
-        let result = sim.run(u64(args, "max_steps").unwrap_or(1_000_000));
+        let mut cond_met = false;
+        let result = match s(args, "until_condition") {
+            Some(expr) => {
+                let (r, met) =
+                    crate::run_until_condition(sim, u64(args, "max_steps").unwrap_or(1_000_000), &expr);
+                cond_met = met;
+                r
+            }
+            None => sim.run(u64(args, "max_steps").unwrap_or(1_000_000)),
+        };
         if temp_bp {
             if let Some(addr) = until_addr {
                 sim.clear_breakpoint(addr);
             }
         }
-        Ok(serde_json::to_value(crate::state_output(sim, result, fw))?)
+        let mut output = serde_json::to_value(crate::state_output(sim, result, fw))?;
+        if cond_met {
+            output["lastResult"] = Value::String("condition".to_string());
+        }
+        Ok(output)
     })
 }
 

@@ -84,6 +84,7 @@ ns-instruction-sim run --firmware app.bin --arch riscv --base 0x80000000 --max-s
 ns-instruction-sim run --firmware app.elf --steps 1000 --json
 ns-instruction-sim run --firmware app.elf --session s.json --json
 ns-instruction-sim run --firmware app.elf --until 0x80000008 --json
+ns-instruction-sim run --firmware app.elf --until-condition "x1 == 5" --json
 ns-instruction-sim run --firmware app.elf --steps 1000 --trace
 
 # 单步 / 步过 / 步出 / 连续运行
@@ -95,6 +96,7 @@ ns-instruction-sim continue --session s.json --max-steps 100000
 ns-instruction-sim continue --session s.json --until 0x80000008 --trace
 ns-instruction-sim continue --session s.json --until 0x80000008 --source
 ns-instruction-sim continue --session s.json --until 0x80000008
+ns-instruction-sim continue --session s.json --until-condition "x1 == 5"
 
 # 寄存器
 ns-instruction-sim reg list --session s.json

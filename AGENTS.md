@@ -112,11 +112,11 @@ ns-instruction-sim/
 | `arch` | `list` | 列出支持的架构与示例设备 | `--json` | 表/JSON |
 | `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析（文件或内置）/链接脚本/启动文件/外设初始化 C 骨架 | `--file --device --peripheral --register --out --json` | 表/文本/JSON |
 | `device` | `memory-map` | 列出设备内存区域（FLASH/RAM/PERIPHERALS），可用 `--addr` 查询地址所属区域 | `device [--addr] [--json]` | 表/JSON |
-| `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址（可指定会话保留外设/SVD 寄存器） | `--firmware --session --arch --base --max-steps --steps --until --cycle-accurate --save-session --json --trace --source` | 状态 |
+| `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址/条件成立（可指定会话保留外设/SVD 寄存器） | `--firmware --session --arch --base --max-steps --steps --until --until-condition --cycle-accurate --save-session --json --trace --source` | 状态 |
 | `step` | — | 单步一条指令 | `--session --arch --firmware --base --json --source` | 状态 |
 | `step-over` | — | 步过（跳过调用） | 同上 | 状态 |
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
-| `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json --trace --source` | 状态 |
+| `continue` | — | 连续运行至断点/停止/上限/指定地址/条件成立（临时断点/条件每步后求值） | `--session --until --until-condition --max-steps --save --json --trace --source` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` / `region` / `copy` | 内存读/写/填充（含确定性伪随机）/搜索模式/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验）/复制内存区域（源→目标，重叠范围按 memmove 语义） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --src --dst --name --format --width --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数；`list --symbols` 用 ELF 符号注释断点地址） | `--addr --symbol --line --condition --hit-count --once --symbols --session --json` | 表/JSON |
@@ -143,7 +143,8 @@ ns-instruction-sim/
 
 1. **人类可读**（默认）：表格/文本，适合终端交互。
 2. **机器可读**（`--json`）：稳定字段的 JSON 对象（`arch`、`pc`、`cycleCount`、`halted`、
-   `lastResult`、`registers`、`armState`（仅 ARM，`a32`/`thumb`，其余架构 null）、`uartText`、`uart`、
+   `lastResult`（`advanced`/`breakpoint`/`halted`/`condition`——`condition` 表示
+   `--until-condition` 表达式成立而停）、`registers`、`armState`（仅 ARM，`a32`/`thumb`，其余架构 null）、`uartText`、`uart`、
    `armXpsr`（仅 ARM：N/Z/C/V 条件标志、Thumb 位、当前异常号的 xPSR 原值，其余架构 null）、
    `armItState`（仅 ARM：`{mask,cond,index}`，`mask==0` 表示无活动 IT 块；其余架构 null，
    用于在 Thumb-2 IT 块中途观察剩余条件指令）、`pcLimit`（本架构可执行的最大 PC 地址，
@@ -283,6 +284,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `device_svd_parse_and_filter`：SVD 文件解析、外设/寄存器过滤与错误路径。
 - `run_steps_runs_exactly_n_instructions`：`--steps N` 精确运行 N 条指令并停住。
 - `run_until_stops_at_address`：`run --until` 临时断点运行到指定地址且不持久化。
+- `run_until_condition_stops`：`run/continue --until-condition "x1 == 1"` 每步后求值，
+  条件成立即停（`lastResult="condition"`，PC/寄存器持久化）；永不成立的条件运行到停机
+  （`lastResult="halted"`）；`--trace` 与条件结合打印追踪并在停止点报 `result=condition`。
+- `mcp_run_until_condition`：MCP `continue {"until_condition":"x1 == 1"}` 停于条件成立。
 - `run_trace_prints_each_instruction`：`run --trace` 打印每条执行指令的 PC/反汇编/来源。
 - `continue_trace_prints_each_instruction`：`continue --trace` 打印每条执行指令并停靠临时断点。
 - `continue_source_annotates_stop`：`continue --source` 在停止点标注 file:line。

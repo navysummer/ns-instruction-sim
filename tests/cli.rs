@@ -7575,6 +7575,103 @@ fn mcp_mem_copy() {
 }
 
 #[test]
+fn run_until_condition_stops() {
+    let dir = tmpdir();
+    let elf = dir.join("cond.elf");
+    write_riscv_elf(&elf);
+    // `x1 == 1` becomes true after the first instruction (`addi x1,x0,1`).
+    let sess = dir.join("cond-run.json");
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(),
+               "--until-condition", "x1 == 1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["lastResult"], "condition", "{}", json);
+    assert_eq!(json["pc"], 0x8000_0004u64, "{}", json);
+    assert_eq!(json["registers"]["ra"], 1u64, "{}", json);
+    // A condition that never holds runs to the `ecall` halt.
+    let sess2 = dir.join("cond-never.json");
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess2.to_str().unwrap(),
+               "--until-condition", "x9 == 999", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["lastResult"], "halted", "{}", json);
+    assert!(json["halted"].as_bool().unwrap());
+    // `continue` from a fresh (firmware-loaded, not-run) session stops on the
+    // condition and persists the resulting PC/registers.
+    let sess3 = dir.join("cond-cont.json");
+    Command::new(bin())
+        .args(["state", "--arch", "riscv", "--firmware", elf.to_str().unwrap(),
+               "--session", sess3.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess3.to_str().unwrap(),
+               "--until-condition", "x1 == 1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["lastResult"], "condition", "{}", json);
+    assert_eq!(json["pc"], 0x8000_0004u64, "{}", json);
+    // The persisted session keeps the stopped state.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess3.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8000_0004u64, "{}", json);
+    assert_eq!(json["registers"]["ra"], 1u64, "{}", json);
+    // `--trace` combined with `--until-condition` prints the trace line and
+    // reports `result=condition` at the stop point.
+    let sess4 = dir.join("cond-trace.json");
+    Command::new(bin())
+        .args(["state", "--arch", "riscv", "--firmware", elf.to_str().unwrap(),
+               "--session", sess4.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess4.to_str().unwrap(),
+               "--until-condition", "x1 == 1", "--trace"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("result=condition"), "{text}");
+    assert!(text.contains("addi ra, zero, 1"), "{text}");
+}
+
+#[test]
+fn mcp_run_until_condition() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-cond-{}.elf", std::process::id()));
+    write_riscv_elf(&elf);
+    let sess = dir.join(format!("mcp-cond-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({
+        "session": s, "arch": "riscv", "firmware": elf.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("continue", serde_json::json!({
+        "session": s, "until_condition": "x1 == 1", "max_steps": 10,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "continue: {}", r);
+    assert_eq!(r["structuredContent"]["lastResult"], "condition", "{}", r);
+    assert_eq!(r["structuredContent"]["pc"], 0x8000_0004u64, "{}", r);
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
@@ -7883,7 +7980,8 @@ fn help_every_command() {
 fn help_every_param() {
     // Every CLI argument must appear (with its help text) in `--help`.
     let checks: &[(&[&str], &[&str])] = &[
-        (&["run"], &["--session", "--firmware", "--arch", "--base", "--max-steps", "--steps", "--until", "--save-session", "--cycle-accurate", "--json", "--trace", "--source"]),
+        (&["run"], &["--session", "--firmware", "--arch", "--base", "--max-steps", "--steps", "--until", "--until-condition", "--save-session", "--cycle-accurate", "--json", "--trace", "--source"]),
+        (&["continue"], &["--session", "--until", "--until-condition", "--max-steps", "--save", "--json", "--trace", "--source"]),
         (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
         (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
         (&["bp", "list"], &["--session", "--symbols", "--json"]),
