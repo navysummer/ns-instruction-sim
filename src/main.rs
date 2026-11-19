@@ -839,6 +839,12 @@ struct StateArgs {
     /// 逗号分隔的 JSON 字段子集（如 `pc,registers,csr`），仅 `--json` 生效。
     #[arg(long, value_delimiter = ',')]
     fields: Vec<String>,
+    /// 附带内存快照的起始地址（如 0x20000000；读取 `--mem-len` 字节）。
+    #[arg(long)]
+    mem: Option<String>,
+    /// 内存快照长度（字节，默认 64；与 `--mem` 搭配）。
+    #[arg(long, default_value = "64")]
+    mem_len: usize,
     /// 单行摘要（PC/周期/停止），忽略字段子集。
     #[arg(long)]
     summary: bool,
@@ -3415,10 +3421,27 @@ fn cmd_state(args: StateArgs) -> Result<()> {
         return Ok(());
     }
     if args.json {
+        let mut value = serde_json::to_value(&output)?;
+        if let Some(ma) = &args.mem {
+            let addr = parse_num(ma)?;
+            let mut bytes = Vec::with_capacity(args.mem_len);
+            for i in 0..args.mem_len {
+                bytes.push(read_mem_byte(&sim, addr.wrapping_add(i as u32)));
+            }
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "memory".to_string(),
+                    serde_json::json!({
+                        "address": addr,
+                        "len": args.mem_len,
+                        "bytes": bytes,
+                    }),
+                );
+            }
+        }
         if args.fields.is_empty() {
-            print_json(&output)?;
+            print_json(&value)?;
         } else {
-            let mut value = serde_json::to_value(&output)?;
             value = select_json_fields(&value, &args.fields)?;
             print_json(&value)?;
         }
@@ -3433,6 +3456,14 @@ fn cmd_state(args: StateArgs) -> Result<()> {
         }
         if !output.uart.is_empty() {
             println!("UART: {:?}", output.uart_text);
+        }
+        if let Some(ma) = &args.mem {
+            let addr = parse_num(ma)?;
+            let mut bytes = Vec::with_capacity(args.mem_len);
+            for i in 0..args.mem_len {
+                bytes.push(read_mem_byte(&sim, addr.wrapping_add(i as u32)));
+            }
+            print!("{}", hex_dump(addr, &bytes));
         }
     }
     Ok(())

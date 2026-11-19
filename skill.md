@@ -152,10 +152,12 @@ ns-instruction-sim reset --session s.json --entry 0x80000000 --json
 ns-instruction-sim state --session s.json --json
 ns-instruction-sim state --session s.json --json --fields pc,cycleCount,registers
 ns-instruction-sim state --session arm.json --json --fields armItState,pcLimit
+ns-instruction-sim state --session s.json --mem 0x20000000 --mem-len 16 --json
 ns-instruction-sim state --session s.json --summary
 # state --json 另含 firmware{path,base,format} 与 pcSymbol{name,address,size}（无则 null）
 # 另含 armItState{mask,cond,index}（仅 ARM，mask==0 表示无活动 IT 块，其余架构 null）
 # 与 pcLimit（16 位 PC 架构为 0xFFFF，其余为 0xFFFFFFFF）
+# --mem ADDR [--mem-len N] 附带 memory{address,len,bytes} 快照（人读输出 hex dump）
 ns-instruction-sim periph status --session s.json
 ns-instruction-sim periph uart --session s.json --input "AT\r\n"
 ns-instruction-sim periph uart --session s.json --bytes 0x41 0x42 0x43

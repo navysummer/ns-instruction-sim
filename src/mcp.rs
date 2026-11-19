@@ -483,6 +483,8 @@ fn tools() -> Vec<Tool> {
                     ("firmware", firmware.clone()),
                     ("base", base.clone()),
                     ("fields", prop_str("逗号分隔的 JSON 字段子集（如 pc,registers,csr）。")),
+                    ("mem", prop_str("附带内存快照的起始地址（如 0x20000000）。")),
+                    ("mem_len", prop_num("内存快照长度（字节，默认 64）。")),
                 ],
                 &[],
             ),
@@ -1460,8 +1462,22 @@ fn tool_session_save(server: &McpServer, args: &Map<String, Value>) -> Result<Va
 
 fn tool_state(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let fields = csv(args, "fields");
+    let mem_addr = s(args, "mem").map(|x| parse_num(&x)).transpose()?;
+    let mem_len = u(args, "mem_len").unwrap_or(64) as usize;
     with_sim(server, args, false, |sim, fw, _| {
         let mut value = full_state(sim, fw);
+        if let Some(addr) = mem_addr {
+            let mut bytes = Vec::with_capacity(mem_len);
+            for i in 0..mem_len {
+                bytes.push(read_mem_byte(sim, addr.wrapping_add(i as u32)));
+            }
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "memory".to_string(),
+                    json!({ "address": addr, "len": mem_len, "bytes": bytes }),
+                );
+            }
+        }
         if !fields.is_empty() {
             value = crate::select_json_fields(&value, &fields)?;
         }

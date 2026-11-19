@@ -59,6 +59,7 @@ ns-instruction-sim disasm --firmware app.elf --addr 0x80000000 --count 8
 ns-instruction-sim disasm --firmware app.elf --symbol main --count 16 --json
 ns-instruction-sim state --session s.json --json
 ns-instruction-sim state --session arm.json --json --fields armItState,pcLimit
+ns-instruction-sim state --session s.json --mem 0x20000000 --mem-len 16 --json
 ns-instruction-sim state --session s.json --summary
 ns-instruction-sim reset --session s.json --entry 0x80000000 --json
 ns-instruction-sim periph status --session s.json

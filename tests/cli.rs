@@ -7965,6 +7965,75 @@ fn mcp_run_trace_regs() {
 }
 
 #[test]
+fn state_mem_snapshot() {
+    let dir = tmpdir();
+    let sess = dir.join("state-mem.json");
+    Command::new(bin())
+        .args(["state", "--arch", "riscv", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--bytes", "0xde", "0xad", "0xbe", "0xef"])
+        .output()
+        .unwrap();
+    // `--mem`/`--mem-len` add a `memory` snapshot to the JSON state.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(),
+               "--mem", "0x20000000", "--mem-len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["memory"]["address"], 0x2000_0000u64);
+    assert_eq!(json["memory"]["len"], 4u64);
+    assert_eq!(json["memory"]["bytes"], serde_json::json!([0xde, 0xad, 0xbe, 0xef]));
+    // The memory field is selectable via `--fields`.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(),
+               "--mem", "0x20000000", "--mem-len", "4",
+               "--fields", "memory", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["memory"]["bytes"][0], 0xdeu64);
+    // Human mode prints a hex dump of the requested range.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(),
+               "--mem", "0x20000000", "--mem-len", "4"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("de ad be ef"));
+}
+
+#[test]
+fn mcp_state_mem() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-stmem-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "arch": "riscv", "addr": "0x20000000",
+        "bytes": ["0xde", "0xad", "0xbe", "0xef"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write: {}", r);
+    let r = client.call_tool("state", serde_json::json!({
+        "session": s, "mem": "0x20000000", "mem_len": 4,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "state mem: {}", r);
+    assert_eq!(r["structuredContent"]["memory"]["address"], 0x2000_0000u64);
+    assert_eq!(r["structuredContent"]["memory"]["bytes"], serde_json::json!([0xde, 0xad, 0xbe, 0xef]));
+    // Field subsetting still works with the memory snapshot.
+    let r = client.call_tool("state", serde_json::json!({
+        "session": s, "mem": "0x20000000", "mem_len": 4, "fields": "memory",
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "state mem fields: {}", r);
+    assert_eq!(r["structuredContent"]["memory"]["bytes"][0], 0xdeu64);
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
@@ -8294,6 +8363,7 @@ fn help_every_param() {
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
         (&["mcp"], &["--session"]),
+        (&["state"], &["--session", "--arch", "--firmware", "--base", "--json", "--fields", "--mem", "--mem-len", "--summary"]),
     ];
     for (args, needles) in checks {
         let out = Command::new(bin()).args(*args).arg("--help").output().unwrap();

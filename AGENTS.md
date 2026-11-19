@@ -122,7 +122,7 @@ ns-instruction-sim/
 | `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数；`list --symbols` 用 ELF 符号注释断点地址） | `--addr --symbol --line --condition --hit-count --once --symbols --session --json` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON；`--firmware` 直接加载固件反汇编，无需先建会话，架构从 ELF 推导） | `--firmware --base --arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
-| `state` | — | 完整状态（JSON/文本/字段子集/单行摘要） | `--session --arch --firmware --base --json --fields --summary` | 状态/JSON/摘要 |
+| `state` | — | 完整状态（JSON/文本/字段子集/单行摘要；`--mem` 附带指定起始地址的内存快照，人读模式输出 hex dump） | `--session --arch --firmware --base --mem --mem-len --json --fields --summary` | 状态/JSON/摘要 |
 | `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费） | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --input --file --device --peripheral --register --field --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `line` / `addr` | ELF 符号与源行号映射 | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` / `set` | 周期计数/指令周期估算/外设推进/设置周期计数（模拟时间流逝/超时） | `--addr --cycles --count --session --json` | 值/JSON |
@@ -188,7 +188,7 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `session_save` 显式管理会话；`state` 读取完整快照。
 5. **工具覆盖**：`arch_list`、`device_list`、`device_info`、`device_svd/linker/startup/init`、
    `session_create/load/save`、
-   `state`、`step`、`step_over`、`step_out`、`run`、`continue`、`reg_list/get/set`、
+   `state`（支持 `mem`/`mem_len` 附带内存快照）、`step`、`step_over`、`step_out`、`run`、`continue`、`reg_list/get/set`、
    `mem_read/write/fill/search/load/dump/region/copy`、`bp_set/modify/clear/list/enable/disable/clear_all`
    （`bp_list` 支持 `symbols` 参数）、
    `disasm`、`reset`、`cycle_get/estimate/tick/set`、`interrupt_take/pending/set`、
@@ -333,6 +333,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   （`armItState` 的 `mask/cond/index`，`it eq` 后 `mask=8`，IT 指令执行后归零）与
   `pcLimit`（ARM 为 0xFFFFFFFF，mcs51 等 16 位 PC 架构为 0xFFFF；非 ARM 的 `armItState` 为 null）。
 - `mcp_state_reports_arm_it`：MCP `state` 同样返回 `armItState`/`pcLimit`。
+- `state_mem_snapshot`：`state --mem ADDR [--mem-len N]` 在 JSON 输出附带
+  `memory {address,len,bytes}`（默认 64 字节，越界截断），人读模式输出 hex dump；
+  `--fields memory` 可单独选择该快照字段。
+- `mcp_state_mem`：MCP `state` 的 `mem`/`mem_len` 参数返回内存快照。
 - `version_command_and_flag`：`version` 子命令（含 `--json`）与 `--version` 均输出版本号。
 - `mem_write_read_arm_roundtrip`：非 RISC-V（ARM）内存写跨会话持久化。
 - `periph_config_relocates_bases`：外设 UART/GPIO 基址重定位并持久化。
