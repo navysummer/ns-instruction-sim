@@ -2245,7 +2245,7 @@ fn run_arm_thumb2_data_processing_register() {
                "0x01", "0xEB", "0x02", "0x03",
                "0x03", "0xEA", "0x05", "0x04",
                "0xB0", "0xEB", "0x01", "0x0F",
-               "0x4F", "0xEA", "0x06", "0x07"])
+               "0x4F", "0xEA", "0x07", "0x06"])
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -2286,6 +2286,68 @@ fn run_arm_thumb2_data_processing_register() {
     let xpsr = json["armXpsr"].as_u64().unwrap();
     assert_eq!(xpsr & 0x2000_0000u64, 0x2000_0000u64);
     assert_eq!(xpsr & 0x8000_0000u64, 0u64);
+}
+
+#[test]
+fn run_arm_thumb2_dp_shifted() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-t2dpshift.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: add.w r0,r1,r2,lsl #3; sub.w r3,r4,r5,lsr #2;
+    // and.w r6,r7,r8,ror #1; mov.w r9,r10,asr #4; orr.w r0,r1,r2,lsl #1.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x01", "0xEB", "0xC2", "0x00", // add.w r0, r1, r2, lsl #3
+               "0xA4", "0xEB", "0x95", "0x03", // sub.w r3, r4, r5, lsr #2
+               "0x07", "0xEA", "0x78", "0x06", // and.w r6, r7, r8, ror #1
+               "0x4F", "0xEA", "0x2A", "0x19", // mov.w r9, r10, asr #4
+               "0x41", "0xEA", "0x42", "0x00"]) // orr.w r0, r1, r2, lsl #1
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [
+        ("r1", "0x00000010"), ("r2", "0x00000008"),
+        ("r4", "0x00000100"), ("r5", "0x00000080"),
+        ("r7", "0x000000FF"), ("r8", "0x00000081"),
+        ("r10", "0x00000080"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..5 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0024u64);
+    assert_eq!(json["registers"]["r0"], 0x10u64);           // orr overwrote add result
+    assert_eq!(json["registers"]["r3"], 0xE0u64);           // sub 0x100 - 0x20
+    assert_eq!(json["registers"]["r6"], 0x40u64);           // 0xFF & (0x81 ror #1)
+    assert_eq!(json["registers"]["r9"], 0x08u64);           // 0x80 asr #4
 }
 
 #[test]

@@ -4037,14 +4037,13 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let op = (((first >> 8) & 1) << 3) | ((first >> 5) & 0x7);
         let set_flags = first & 0x0010 != 0;
         let rn = (first & 0x0F) as usize;
-        // MOV/MVN (ORR/ORN with Rn=PC) place Rd in bits 3-0 and Rm in bits
-        // 11-8, the reverse of the general data-processing layout.
-        let (rd, rm) = if rn == 0xF && (op == 2 || op == 3) {
-            ((second & 0x0F) as usize, ((second >> 8) & 0x0F) as usize)
-        } else {
-            (((second >> 8) & 0x0F) as usize, (second & 0x0F) as usize)
-        };
-        let imm2 = (second >> 6) & 0x03;
+        // MOV/MVN (ORR/ORN with Rn=PC) share the general data-processing
+        // layout: Rd = bits 11-8, Rm = bits 3-0.
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        // The shifted-register amount is `imm3:imm2`, where imm3 = bits 14-12
+        // and imm2 = bits 7-6; a zero amount means LSR/ASR #32 or RRX.
+        let imm5 = (((second >> 12) & 0x7) << 2) | ((second >> 6) & 0x3);
         let shift_type = (second >> 4) & 0x03;
         let shift_name = match shift_type {
             0 => "lsl",
@@ -4052,7 +4051,7 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             2 => "asr",
             _ => "ror",
         };
-        let shift = match (shift_type, imm2) {
+        let shift = match (shift_type, imm5) {
             (0, 0) => String::new(),
             (1, 0) => format!(", {shift_name} #32"),
             (2, 0) => format!(", {shift_name} #32"),
@@ -6197,6 +6196,17 @@ mod tests {
             (0xF3AF_8002, "wfe.w"),
             (0xF3AF_8003, "wfi.w"),
             (0xF3AF_8004, "sev.w"),
+            // Data processing (register) with shifted operand.
+            (0xEA4F_0809, "mov r8, r9"),
+            (0xEA6F_0A0B, "mvn r10, r11"),
+            (0xEB01_00C2, "add r0, r1, r2, lsl #3"),
+            (0xEB01_1002, "add r0, r1, r2, lsl #4"),
+            (0xEB01_0052, "add r0, r1, r2, lsr #1"),
+            (0xEB01_1022, "add r0, r1, r2, asr #4"),
+            (0xEB01_0072, "add r0, r1, r2, ror #1"),
+            (0xEA4F_192A, "mov r9, r10, asr #4"),
+            (0xEA4F_0000, "mov r0, r0"),
+            (0xEA4F_0102, "mov r1, r2"),
         ];
         for (insn, expected) in cases {
             let bytes = [

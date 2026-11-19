@@ -1907,22 +1907,21 @@ impl ArmCore {
         let op = (((first >> 8) & 1) << 3) | ((first >> 5) & 0x7);
         let set_flags = first & 0x0010 != 0;
         let rn = (first & 0x0F) as usize;
-        // MOV/MVN (ORR/ORN with Rn=PC) place Rd in bits 3-0 and Rm in bits
-        // 11-8, which is the reverse of the general data-processing layout.
+        // MOV/MVN (ORR/ORN with Rn=PC) share the general data-processing
+        // layout: Rd = bits 11-8, Rm = bits 3-0.
         let is_mov = op == 2 && rn == PC;
         let is_mvn = op == 3 && rn == PC;
-        let (rd, rm) = if is_mov || is_mvn {
-            ((second & 0x0F) as usize, ((second >> 8) & 0x0F) as usize)
-        } else {
-            (((second >> 8) & 0x0F) as usize, (second & 0x0F) as usize)
-        };
-        let imm2 = ((second >> 6) & 0x03) as u32;
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        // The shifted-register amount is `imm3:imm2`, where imm3 = bits 14-12
+        // and imm2 = bits 7-6; a zero amount means LSR/ASR #32 or RRX.
+        let imm5 = ((((second >> 12) & 0x7) as u32) << 2) | ((second >> 6) & 0x3) as u32;
         let shift_type = ((second >> 4) & 0x03) as u32;
         // PC operand (Rn) reads as Align(PC, 4).
         let pc_val = pc & !3;
         let rn_val = if rn == PC { pc_val } else { self.regs[rn] };
         let rm_val = if rm == PC { pc_val } else { self.regs[rm] };
-        let (b, shifter_carry) = self.thumb_shifted(rm_val, imm2, shift_type);
+        let (b, shifter_carry) = self.thumb_shifted(rm_val, imm5, shift_type);
         // TST/TEQ/CMP/CMN are the op with S=1 and Rd=PC (0xF); MOV/MVN are
         // ORR/ORN with Rn=PC.
         let is_compare = set_flags && rd == PC && matches!(op, 0 | 4 | 8 | 13);
@@ -3297,16 +3296,16 @@ mod tests {
 
     #[test]
     fn thumb2_mov_mvn_compare() {
-        // MOV r8, r9 (0xEA4F0908).
+        // MOV r8, r9 (0xEA4F0809).
         let mut c = core();
         c.regs[9] = 0x1234_5678;
-        run(&mut c, &[0xEA4F, 0x0908], 1);
+        run(&mut c, &[0xEA4F, 0x0809], 1);
         assert_eq!(c.regs[8], 0x1234_5678);
 
-        // MVN r10, r11 (0xEA6F0B0A): logical NOT.
+        // MVN r10, r11 (0xEA6F0A0B): logical NOT.
         let mut c = core();
         c.regs[11] = 0x0000_FFFF;
-        run(&mut c, &[0xEA6F, 0x0B0A], 1);
+        run(&mut c, &[0xEA6F, 0x0A0B], 1);
         assert_eq!(c.regs[10], 0xFFFF_0000);
 
         // CMP r0, r1 (0xEBB00F01): 5 - 3, C set, Z clear, N clear.

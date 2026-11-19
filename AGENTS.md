@@ -299,6 +299,15 @@ done
   `add.w r3,r1,r2`（0xEB010203，5+7=12）、`and.w r4,r3,r5`（0xEA030504，12&14=12）、
   `cmp.w r0,r1`（0xEBB00F01，9-5 置 C 清 N/Z）、`mov.w r6,r7`（0xEA4F0607，r6=0x1234），
   `state --json` 校验寄存器与 `armXpsr` 标志，锁定 Thumb-2 数据处理（寄存器）执行。
+- `run_arm_thumb2_dp_shifted`：端到端分五次 `step --session` 执行
+  `add.w r0,r1,r2,lsl #3`（0xEB0100C2，0x10+0x08<<3=0x50）、
+  `sub.w r3,r4,r5,lsr #2`（0xEBA40395，0x100−0x80>>2=0xE0）、
+  `and.w r6,r7,r8,ror #1`（0xEA070678，0xFF & (0x81 ror #1)=0x40）、
+  `mov.w r9,r10,asr #4`（0xEA4F192A，0x80>>4=0x08）、
+  `orr.w r0,r1,r2,lsl #1`（0xEA410042，0x10 | 0x08<<1=0x10），
+  `state --json` 校验寄存器，锁定 Thumb-2 数据处理（寄存器移位）执行——移位量由
+  `imm3:imm2`（bits 14-12 : 7-6）合成 5 位，MOV/MVN 采用通用 `rd=bits 11-8`/`rm=bits 3-0`
+  布局（此前移位仅取 `imm2` 且 MOV/MVN 交换了目的/源寄存器）。
 - `run_arm_thumb2_ldrd_strd_tbb`：端到端分三次 `step --session` 执行 `ldrd r0,r1,[r2]`
   （0xE9D20100，读 0x20000000/0x20000004 得 0x11111111/0x22222222）、
   `strd r4,r5,[r6,#16]`（0xE9C64504，写 0x20000020/0x20000024 得 0xCAFE/0xBEEF）、
@@ -554,13 +563,14 @@ done
   锁定。
   Thumb-2 数据处理（寄存器，bits15-9 = `1110101`）现按 `op = bit8<<3 | bits7-5` 分发执行
   AND/BIC/ORR/ORN/EOR/ADD/ADC/SBC/SUB/RSB，S=bit4 更新 N/Z/C/V（逻辑运算 C 取自移位器、
-  V 不变；加减运算按 ARM 进位/溢出语义）；`Rn=PC` 的 ORR/ORN 即 MOV/MVN（其 Rd 在
-  bits3-0、Rm 在 bits11-8，与一般布局相反）；`S=1 且 Rd=PC` 的 AND/EOR/ADD/SUB 即
-  TST/TEQ/CMN/CMP（只置标志不写回）；移位器支持 LSL/LSR/ASR #imm2（imm2=0 时 LSR/ASR
-  取 #32）与 ROR #imm2（imm2=0 即 RRX）。由 ns-sim 单测
+  V 不变；加减运算按 ARM 进位/溢出语义）；`Rn=PC` 的 ORR/ORN 即 MOV/MVN，与一般布局
+  一致（`Rd = second bits11-8`、`Rm = second bits3-0`，不再交换）；`S=1 且 Rd=PC` 的
+  AND/EOR/ADD/SUB 即 TST/TEQ/CMN/CMP（只置标志不写回）；移位器支持 LSL/LSR/ASR/ROR，
+  移位量由 `imm3:imm2`（bits14-12 : bits7-6）合成完整 5 位（imm5=0 时 LSR/ASR 取 #32、
+  ROR 即 RRX），不再只取 `imm2`。由 ns-sim 单测
   `thumb2_data_processing_register`/`thumb2_mov_mvn_compare`/
-  `thumb2_data_processing_shifted_register` 与 CLI `run_arm_thumb2_data_processing_register`
-  锁定。
+  `thumb2_data_processing_shifted_register` 与 CLI `run_arm_thumb2_data_processing_register`/
+  `run_arm_thumb2_dp_shifted` 锁定。
   Thumb-2 表分支 `TBB`/`TBH`（`0xE8D0-0xE8DF` 前缀、second bits15-12=1111，bit4 选
   TBH；Rn=first bits3-0、Rm=second bits3-0；表基址 = Align(PC,4)，PC 为当前地址 +4；
   TBB 读 `[Rn+Rm]` 字节索引、TBH 读 `[Rn+Rm,LSL #1]` 半字索引，目标 = 基址 + 2×索引）
