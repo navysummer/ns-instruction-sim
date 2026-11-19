@@ -329,6 +329,22 @@ fn prop_arr(description: &str) -> Value {
     json!({ "type": "array", "items": { "type": "string" }, "description": description })
 }
 
+/// Input schema shared by the `trace` / `coverage` / `profile` tools.
+fn analyze_schema() -> Value {
+    obj(
+        &[
+            ("session", prop_str("会话文件路径（JSON）；缺省使用 MCP 服务器默认会话。")),
+            ("arch", prop_str("目标架构（如 riscv/arm/mcs51/...）。")),
+            ("firmware", prop_str("固件文件（ELF / Intel HEX / BIN）。")),
+            ("base", prop_str("加载基址（十六进制或十进制）。")),
+            ("steps", prop_num("精确执行 N 条指令。")),
+            ("max_steps", prop_num("最大执行步数（默认 100000）。")),
+            ("until", prop_str("运行到指定地址（临时断点）。")),
+        ],
+        &[],
+    )
+}
+
 fn tools() -> Vec<Tool> {
     let session = prop_str("会话文件路径（JSON）；缺省使用 MCP 服务器默认会话。");
     let arch = prop_str("目标架构（如 riscv/arm/mcs51/...）。");
@@ -1003,6 +1019,24 @@ fn tools() -> Vec<Tool> {
                 &["name", "value"],
             ),
             handler: tool_csr_set,
+        },
+        Tool {
+            name: "trace",
+            description: "运行并输出结构化指令轨迹（每条指令的 PC/反汇编/字节/来源/周期）。",
+            schema: analyze_schema(),
+            handler: tool_trace,
+        },
+        Tool {
+            name: "coverage",
+            description: "运行并统计执行覆盖（各 PC 执行次数与唯一 PC 数）。",
+            schema: analyze_schema(),
+            handler: tool_coverage,
+        },
+        Tool {
+            name: "profile",
+            description: "运行并统计指令助记符直方图。",
+            schema: analyze_schema(),
+            handler: tool_profile,
         },
     ]
 }
@@ -2310,6 +2344,88 @@ fn set_csr_value(sim: &mut Simulator, name: &str, value: u32) -> Result<()> {
         _ => bail!("未知 CSR: {name}（支持 mstatus/mtvec/mepc/mcause/mie/mhartid）"),
     }
     Ok(())
+}
+
+/// The requested analysis output mode for the `trace`/`coverage`/`profile` tools.
+enum AnalyzeTool {
+    Trace,
+    Coverage,
+    Profile,
+}
+
+fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool) -> Result<Value> {
+    let until = s(args, "until").map(|x| parse_num(&x)).transpose()?;
+    let steps = u64(args, "steps");
+    let max_steps = u64(args, "max_steps").unwrap_or(100_000);
+    let collect_trace = matches!(kind, AnalyzeTool::Trace);
+    with_sim(server, args, true, |sim, _, _| {
+        if let Some(addr) = until {
+            if addr > sim.pc_limit() {
+                bail!("until 地址 0x{addr:08x} 超出 {} 的 PC 可寻址范围", sim.arch.label());
+            }
+        }
+        let temp_bp = until.map(|a| sim.set_breakpoint(a)).unwrap_or(false);
+        let analysis = crate::sim::analyze_run(sim, steps.unwrap_or(max_steps), collect_trace);
+        if temp_bp {
+            if let Some(a) = until {
+                sim.clear_breakpoint(a);
+            }
+        }
+        let arch_name = arch_name(sim.arch);
+        Ok(match kind {
+            AnalyzeTool::Trace => json!({
+                "arch": arch_name,
+                "steps": analysis.steps,
+                "cycleCount": analysis.cycle_count,
+                "result": analysis.result,
+                "trace": analysis.trace,
+            }),
+            AnalyzeTool::Coverage => {
+                let items: Vec<Value> = analysis
+                    .coverage
+                    .iter()
+                    .map(|(pc, hits)| json!({ "pc": pc, "hits": hits }))
+                    .collect();
+                let unique = items.len();
+                json!({
+                    "arch": arch_name,
+                    "steps": analysis.steps,
+                    "cycleCount": analysis.cycle_count,
+                    "result": analysis.result,
+                    "uniquePcs": unique,
+                    "coverage": items,
+                })
+            }
+            AnalyzeTool::Profile => {
+                let items: Vec<Value> = analysis
+                    .histogram
+                    .iter()
+                    .map(|(mnemonic, count)| json!({ "mnemonic": mnemonic, "count": count }))
+                    .collect();
+                let unique = items.len();
+                json!({
+                    "arch": arch_name,
+                    "steps": analysis.steps,
+                    "cycleCount": analysis.cycle_count,
+                    "result": analysis.result,
+                    "uniqueMnemonics": unique,
+                    "histogram": items,
+                })
+            }
+        })
+    })
+}
+
+fn tool_trace(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    analyze_tool(server, args, AnalyzeTool::Trace)
+}
+
+fn tool_coverage(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    analyze_tool(server, args, AnalyzeTool::Coverage)
+}
+
+fn tool_profile(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    analyze_tool(server, args, AnalyzeTool::Profile)
 }
 
 #[cfg(test)]

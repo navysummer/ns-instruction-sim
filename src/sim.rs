@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use ns_sim::{Arch, Simulator};
+use ns_sim::{Arch, Simulator, StepResult};
 
 /// The supported firmware formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,6 +404,88 @@ pub fn write_mem_byte(sim: &mut Simulator, addr: u32, value: u8) {
     } else {
         sim.memory_overlay.push((addr, value));
     }
+}
+
+/// One executed instruction, captured during an analysed run.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TraceEntry {
+    pub pc: u32,
+    pub text: String,
+    pub bytes: Vec<u8>,
+    pub source: String,
+    pub cycle: u64,
+}
+
+/// Result of an analysed run: optional per-instruction trace, an execution
+/// coverage map (PC -> hit count) and a mnemonic histogram.
+#[derive(Debug, serde::Serialize)]
+pub struct RunAnalysis {
+    pub trace: Vec<TraceEntry>,
+    /// PC address -> number of times executed.
+    pub coverage: std::collections::BTreeMap<u32, u64>,
+    /// Disassembly text -> number of times executed.
+    pub histogram: std::collections::BTreeMap<String, u64>,
+    pub result: String,
+    pub steps: u64,
+    pub cycle_count: u64,
+}
+
+fn step_result_label(result: StepResult) -> &'static str {
+    match result {
+        StepResult::Advanced => "advanced",
+        StepResult::Breakpoint => "breakpoint",
+        StepResult::Halted => "halted",
+    }
+}
+
+fn source_for(sim: &Simulator, address: u32) -> String {
+    sim.line_for_address(address)
+        .and_then(|(file, line)| sim.source_files.get(file).map(|s| (s.clone(), line)))
+        .map(|(file, line)| format!("{file}:{line}"))
+        .unwrap_or_default()
+}
+
+/// Step the simulator while collecting per-instruction trace, coverage and a
+/// mnemonic histogram. Stops at a breakpoint, halt, or after `max_steps`.
+pub fn analyze_run(sim: &mut Simulator, max_steps: u64, collect_trace: bool) -> RunAnalysis {
+    let mut analysis = RunAnalysis {
+        trace: Vec::new(),
+        coverage: std::collections::BTreeMap::new(),
+        histogram: std::collections::BTreeMap::new(),
+        result: "advanced".to_string(),
+        steps: 0,
+        cycle_count: 0,
+    };
+    let mut count = 0u64;
+    while count < max_steps {
+        let pc_before = sim.program_counter();
+        let result = sim.step();
+        let read = |addr: u32| -> u8 { read_code_byte(sim, addr) };
+        let text = ns_sim::disassemble_one_state(sim.arch, pc_before, &read, sim.arm_state());
+        let width = ns_sim::instruction_size(sim.arch, pc_before, &read, sim.arm_state());
+        let bytes: Vec<u8> = (0..width)
+            .map(|i| read_code_byte(sim, pc_before.wrapping_add(i as u32)))
+            .collect();
+        *analysis.coverage.entry(pc_before).or_insert(0) += 1;
+        *analysis.histogram.entry(text.clone()).or_insert(0) += 1;
+        if collect_trace {
+            analysis.trace.push(TraceEntry {
+                pc: pc_before,
+                text,
+                bytes,
+                source: source_for(sim, pc_before),
+                cycle: sim.cycle_count,
+            });
+        }
+        count += 1;
+        if result != StepResult::Advanced {
+            analysis.result = step_result_label(result).to_string();
+            break;
+        }
+    }
+    analysis.steps = count;
+    analysis.cycle_count = sim.cycle_count;
+    analysis
 }
 
 #[cfg(test)]

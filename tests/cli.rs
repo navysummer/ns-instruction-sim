@@ -6408,7 +6408,7 @@ fn mcp_handshake_and_list_tools() {
 
     let tools = client.request("tools/list", serde_json::json!({}));
     let list = tools["result"]["tools"].as_array().unwrap();
-    assert!(list.len() >= 50, "expected >= 50 tools, got {}", list.len());
+    assert!(list.len() >= 60, "expected >= 60 tools, got {}", list.len());
     let names: Vec<&str> = list
         .iter()
         .filter_map(|t| t["name"].as_str())
@@ -6419,7 +6419,7 @@ fn mcp_handshake_and_list_tools() {
         "run", "continue", "reg_list", "reg_get", "reg_set", "mem_read", "mem_write", "mem_fill",
         "mem_search", "mem_load", "mem_dump", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
         "cycle_get", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
-        "symbol_list", "watchdog_status", "csr_list",
+        "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
     }
@@ -6584,6 +6584,121 @@ fn mcp_all_arch_step() {
 }
 
 #[test]
+fn analyze_trace_coverage_profile() {
+    let sess = tmpdir().join(format!("analyze-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    // Create a RISC-V session and write two NOPs (addi x0, x0, 0).
+    let _ = Command::new(bin()).args(["state", "--arch", "riscv", "--session", s]).output();
+    for i in 0..4usize {
+        let addr = format!("0x{:08x}", 0x8000_0000u32 + (i * 4) as u32);
+        let out = Command::new(bin())
+            .args(["mem", "write", "--session", s, "--addr", &addr, "--bytes", "0x13", "0x00", "0x00", "0x00"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    // trace: 2 instructions with structured JSON.
+    let out = Command::new(bin())
+        .args(["trace", "--session", s, "--steps", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["steps"], 2);
+    assert_eq!(json["trace"].as_array().unwrap().len(), 2);
+    assert_eq!(json["trace"][0]["pc"], 0x8000_0000u64);
+    assert_eq!(json["trace"][0]["text"], "addi zero, zero, 0");
+
+    // coverage: two distinct PCs.
+    let _ = Command::new(bin()).args(["reset", "--session", s]).output();
+    let out = Command::new(bin())
+        .args(["coverage", "--session", s, "--steps", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["uniquePcs"], 2);
+    assert_eq!(json["steps"], 2);
+
+    // profile: one mnemonic counted twice.
+    let _ = Command::new(bin()).args(["reset", "--session", s]).output();
+    let out = Command::new(bin())
+        .args(["profile", "--session", s, "--steps", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["uniqueMnemonics"], 1);
+    assert_eq!(json["histogram"][0]["mnemonic"], "addi zero, zero, 0");
+    assert_eq!(json["histogram"][0]["count"], 2);
+
+    // Human-readable trace output contains the PC column.
+    let _ = Command::new(bin()).args(["reset", "--session", s]).output();
+    let out = Command::new(bin())
+        .args(["trace", "--session", s, "--steps", "1"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("0x80000000"));
+}
+
+#[test]
+fn mcp_trace_coverage_profile() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-analyze-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    // Two NOPs (addi x0, x0, 0).
+    for offset in 0..4usize {
+        let addr = format!("0x{:08x}", 0x8000_0000u32 + (offset * 4) as u32);
+        let r = client.call_tool("mem_write", serde_json::json!({ "session": s, "addr": addr, "bytes": ["0x13", "0x00", "0x00", "0x00"] }));
+        assert!(!r["isError"].as_bool().unwrap(), "mem_write: {}", r);
+    }
+
+    // trace returns structured per-instruction entries.
+    let r = client.call_tool("trace", serde_json::json!({ "session": s, "steps": 2 }));
+    assert!(!r["isError"].as_bool().unwrap(), "trace: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["steps"], 2);
+    let trace = sc["trace"].as_array().unwrap();
+    assert_eq!(trace.len(), 2);
+    assert_eq!(trace[0]["pc"], 0x8000_0000u64);
+    assert_eq!(trace[0]["text"], "addi zero, zero, 0");
+    assert_eq!(trace[1]["pc"], 0x8000_0004u64);
+
+    // coverage reports distinct PCs (reset first so the run starts at entry).
+    let _ = client.call_tool("reset", serde_json::json!({ "session": s }));
+    let r = client.call_tool("coverage", serde_json::json!({ "session": s, "steps": 2 }));
+    assert!(!r["isError"].as_bool().unwrap(), "coverage: {}", r);
+    assert_eq!(r["structuredContent"]["uniquePcs"], 2);
+
+    // profile reports the mnemonic histogram.
+    let _ = client.call_tool("reset", serde_json::json!({ "session": s }));
+    let r = client.call_tool("profile", serde_json::json!({ "session": s, "steps": 2 }));
+    assert!(!r["isError"].as_bool().unwrap(), "profile: {}", r);
+    assert_eq!(r["structuredContent"]["uniqueMnemonics"], 1);
+    assert_eq!(r["structuredContent"]["histogram"][0]["mnemonic"], "addi zero, zero, 0");
+    assert_eq!(r["structuredContent"]["histogram"][0]["count"], 2);
+
+    // An out-of-range `until` is rejected (16-bit-PC core: anything above
+    // 0xFFFF is unreachable for mcs51).
+    let s16 = tmpdir().join(format!("mcp-analyze16-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&s16);
+    let s16 = s16.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s16, "arch": "mcs51" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("trace", serde_json::json!({ "session": s16, "until": "0x10000" }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn help_every_command() {
     let commands: &[&[&str]] = &[
         &["version"],
@@ -6607,6 +6722,7 @@ fn help_every_command() {
         &["watchdog", "status"], &["watchdog", "feed"], &["watchdog", "config"],
         &["watchdog", "reset"],
         &["csr", "list"], &["csr", "get"], &["csr", "set"],
+        &["trace"], &["coverage"], &["profile"],
         &["mcp"],
     ];
     for flag in ["--help", "-h"] {
@@ -6637,6 +6753,9 @@ fn help_every_param() {
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
+        (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
+        (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
+        (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
         (&["mcp"], &["--session"]),
     ];
     for (args, needles) in checks {

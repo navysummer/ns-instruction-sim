@@ -27,7 +27,7 @@ use clap::{Args, Parser, Subcommand};
 
 use ns_sim::{Arch, Simulator, StepResult};
 use session::{FirmwareState, Session};
-use sim::{default_mem_base, detect_format, encode_intel_hex, load_firmware_into, parse_num, read_code_byte, read_mem_byte, read_mem_u32, write_mem_byte};
+use sim::{analyze_run, default_mem_base, detect_format, encode_intel_hex, load_firmware_into, parse_num, read_code_byte, read_mem_byte, read_mem_u32, write_mem_byte};
 
 #[derive(Parser)]
 #[command(
@@ -95,6 +95,12 @@ enum Command {
     Watchdog(WatchdogArgs),
     /// 读写 RISC-V 控制状态寄存器（CSR）。
     Csr(CsrArgs),
+    /// 逐步追踪执行并输出结构化指令轨迹（每条指令的 PC/反汇编/字节/来源/周期）。
+    Trace(AnalyzeArgs),
+    /// 运行并统计执行覆盖（哪些 PC 被执行、各执行多少次）。
+    Coverage(AnalyzeArgs),
+    /// 运行并统计指令助记符直方图。
+    Profile(AnalyzeArgs),
     /// 启动 MCP（Model Context Protocol）stdio 服务器，供大模型通过工具调用操作仿真器。
     Mcp {
         /// 默认会话文件路径（JSON）；MCP 工具未显式传入 `session` 时使用。
@@ -1162,6 +1168,34 @@ enum CsrSub {
     },
 }
 
+#[derive(Args)]
+struct AnalyzeArgs {
+    /// 会话文件（不提供则新建临时会话）。
+    #[arg(short, long)]
+    session: Option<PathBuf>,
+    /// 目标架构（无会话时使用）。
+    #[arg(short, long)]
+    arch: Option<String>,
+    /// 固件文件（无会话时使用）。
+    #[arg(long)]
+    firmware: Option<PathBuf>,
+    /// 固件加载基址（仅 BIN/HEX）。
+    #[arg(long, default_value = "0")]
+    base: String,
+    /// 精确追踪 N 条指令（优先级高于 --max-steps；到断点/停机则提前停止）。
+    #[arg(long)]
+    steps: Option<u64>,
+    /// 最大执行步数（默认 100,000）。
+    #[arg(long, default_value = "100000")]
+    max_steps: u64,
+    /// 运行到指定地址（临时断点，不持久化）。
+    #[arg(long)]
+    until: Option<String>,
+    /// 输出 JSON。
+    #[arg(long)]
+    json: bool,
+}
+
 fn main() {
     if let Err(e) = real_main() {
         eprintln!("错误: {e}");
@@ -1221,6 +1255,9 @@ fn real_main() -> Result<()> {
         Command::Interrupt(InterruptArgs { sub }) => cmd_interrupt(sub),
         Command::Watchdog(WatchdogArgs { sub }) => cmd_watchdog(sub),
         Command::Csr(CsrArgs { sub }) => cmd_csr(sub),
+        Command::Trace(args) => cmd_analyze(args, AnalyzeKind::Trace),
+        Command::Coverage(args) => cmd_analyze(args, AnalyzeKind::Coverage),
+        Command::Profile(args) => cmd_analyze(args, AnalyzeKind::Profile),
         Command::Mcp { session } => mcp::run(session),
     }
 }
@@ -3635,6 +3672,134 @@ fn cmd_csr(sub: CsrSub) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// The requested analysis output mode.
+enum AnalyzeKind {
+    Trace,
+    Coverage,
+    Profile,
+}
+
+/// Run the simulator while collecting per-instruction trace, coverage and a
+/// mnemonic histogram, then print or serialize the requested view.
+fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
+    let (mut sim, fw, _) = load_or_create(
+        args.session.as_deref(),
+        args.arch.as_deref(),
+        args.firmware.as_deref(),
+        &args.base,
+    )?;
+    // `--until ADDR` installs a temporary breakpoint removed before saving.
+    let until_addr = args.until.as_deref().map(parse_num).transpose()?;
+    if let Some(addr) = until_addr {
+        if addr > sim.pc_limit() {
+            bail!("until 地址 0x{addr:08x} 超出 {} 的 PC 可寻址范围", sim.arch.label());
+        }
+    }
+    let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
+    let limit = args.steps.unwrap_or(args.max_steps);
+    let collect_trace = matches!(kind, AnalyzeKind::Trace);
+    let analysis = analyze_run(&mut sim, limit, collect_trace);
+    if temp_bp {
+        if let Some(addr) = until_addr {
+            sim.clear_breakpoint(addr);
+        }
+    }
+    if let Some(sp) = args.session.as_ref() {
+        Session::capture(&sim, fw).save(sp)?;
+    }
+    let arch_name = session::arch_name(sim.arch);
+    match kind {
+        AnalyzeKind::Trace => {
+            if args.json {
+                print_json(&serde_json::json!({
+                    "arch": arch_name,
+                    "steps": analysis.steps,
+                    "cycleCount": analysis.cycle_count,
+                    "result": analysis.result,
+                    "trace": analysis.trace,
+                }))?;
+            } else {
+                for e in &analysis.trace {
+                    let bytes: String = e
+                        .bytes
+                        .iter()
+                        .map(|b| format!("{b:02x} "))
+                        .collect();
+                    let src = if e.source.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ; {}", e.source)
+                    };
+                    println!("0x{:08x}: {:<40} ; {}{src}", e.pc, e.text, bytes);
+                }
+                println!(
+                    "停止: {}（{} 条指令，周期 {}）",
+                    analysis.result, analysis.steps, analysis.cycle_count
+                );
+            }
+        }
+        AnalyzeKind::Coverage => {
+            if args.json {
+                let items: Vec<_> = analysis
+                    .coverage
+                    .iter()
+                    .map(|(pc, hits)| serde_json::json!({ "pc": pc, "hits": hits }))
+                    .collect();
+                print_json(&serde_json::json!({
+                    "arch": arch_name,
+                    "steps": analysis.steps,
+                    "cycleCount": analysis.cycle_count,
+                    "result": analysis.result,
+                    "uniquePcs": items.len(),
+                    "coverage": items,
+                }))?;
+            } else {
+                println!(
+                    "已执行 {} 条指令，覆盖 {} 个唯一 PC，停止: {}，周期 {}:",
+                    analysis.steps,
+                    analysis.coverage.len(),
+                    analysis.result,
+                    analysis.cycle_count
+                );
+                for (pc, hits) in &analysis.coverage {
+                    println!("  0x{pc:08x} x{hits}");
+                }
+            }
+        }
+        AnalyzeKind::Profile => {
+            if args.json {
+                let items: Vec<_> = analysis
+                    .histogram
+                    .iter()
+                    .map(|(mnemonic, count)| {
+                        serde_json::json!({ "mnemonic": mnemonic, "count": count })
+                    })
+                    .collect();
+                print_json(&serde_json::json!({
+                    "arch": arch_name,
+                    "steps": analysis.steps,
+                    "cycleCount": analysis.cycle_count,
+                    "result": analysis.result,
+                    "uniqueMnemonics": items.len(),
+                    "histogram": items,
+                }))?;
+            } else {
+                println!(
+                    "已执行 {} 条指令，{} 种助记符，停止: {}，周期 {}:",
+                    analysis.steps,
+                    analysis.histogram.len(),
+                    analysis.result,
+                    analysis.cycle_count
+                );
+                for (mnemonic, count) in &analysis.histogram {
+                    println!("  {mnemonic:<40} x{count}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

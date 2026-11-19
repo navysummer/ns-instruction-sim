@@ -128,6 +128,9 @@ ns-instruction-sim/
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
 | `watchdog` | `status` / `feed` / `config` / `reset` | 看门狗查询/喂狗/配置/强制复位 | `--enabled --timeout --base --entry --session --json` | 表/JSON |
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
+| `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期） | `--session --arch --firmware --base --steps --max-steps --until --json` | 轨迹/JSON |
+| `coverage` | — | 运行并统计执行覆盖（各 PC 执行次数、唯一 PC 数） | `--session --arch --firmware --base --steps --max-steps --until --json` | 覆盖表/JSON |
+| `profile` | — | 运行并统计指令助记符直方图 | `--session --arch --firmware --base --steps --max-steps --until --json` | 直方图/JSON |
 | `mcp` | — | 启动 MCP（Model Context Protocol）stdio 服务器，供大模型通过工具调用完整驱动仿真 | `--session`（默认会话文件） | JSON-RPC 2.0 / 工具结果 |
 
 ### 3.2 输出格式约定
@@ -179,6 +182,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `disasm`、`reset`、`cycle_get/estimate/tick`、`interrupt_take/pending/set`、
    `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/field_get/field_set/svd_load`、
    `symbol_list/at/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
+   `trace`、`coverage`、`profile` 与 CLI 同名子命令一一对应（`analyze_schema` 共享参数），
+   返回结构化轨迹/覆盖/直方图 JSON。
 
 ---
 
@@ -595,9 +600,15 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   `device_linker`/`device_startup`/`device_init` 代码生成（含未知设备错误路径）。
 - `mcp_all_arch_step`：12 架构通过 MCP `session_create`→`step`/`reg_list`/`mem_read`/`disasm`
   均成功，验证 MCP 工具在全部架构上可用。
+- `analyze_trace_coverage_profile`：`trace` 输出结构化指令轨迹（`pc`/`text`/`bytes`/`source`/
+  `cycle`，RISC-V `addi zero, zero, 0` 精确 2 条并推进 0x80000004）；`coverage` 统计唯一 PC 与
+  各 PC 命中次数；`profile` 统计助记符直方图（同一 NOP 计 2 次）；人读轨迹含 PC 列。
+- `mcp_trace_coverage_profile`：MCP `trace`/`coverage`/`profile` 工具返回同等结构化结果，
+  且 `until` 越界（16 位 PC 架构 mcs51 的 `0x10000`）以 `isError:true` 返回。
 - `help_every_command`：每个命令与子命令（含 `mcp`）的 `--help` 与 `-h` 均退出 0 且含 `Usage:`。
-- `help_every_param`：`run`/`bp set`/`mem read`/`reg set`/`periph reg-write`/`watchdog config`/`mcp`
-  的 `--help` 包含每个参数的帮助文本（`--session`、`--firmware`、`--arch`、`--addr`、`--condition`、`--once` 等）。
+- `help_every_param`：`run`/`bp set`/`mem read`/`reg set`/`periph reg-write`/`watchdog config`/
+  `trace`/`coverage`/`profile`/`mcp` 的 `--help` 包含每个参数的帮助文本
+  （`--session`、`--firmware`、`--arch`、`--addr`、`--condition`、`--once`、`--steps`、`--until` 等）。
 
 ### 5.2 反汇编宽度
 
