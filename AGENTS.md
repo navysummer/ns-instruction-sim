@@ -145,6 +145,9 @@ ns-instruction-sim/
 2. **机器可读**（`--json`）：稳定字段的 JSON 对象（`arch`、`pc`、`cycleCount`、`halted`、
    `lastResult`、`registers`、`armState`（仅 ARM，`a32`/`thumb`，其余架构 null）、`uartText`、`uart`、
    `armXpsr`（仅 ARM：N/Z/C/V 条件标志、Thumb 位、当前异常号的 xPSR 原值，其余架构 null）、
+   `armItState`（仅 ARM：`{mask,cond,index}`，`mask==0` 表示无活动 IT 块；其余架构 null，
+   用于在 Thumb-2 IT 块中途观察剩余条件指令）、`pcLimit`（本架构可执行的最大 PC 地址，
+   16 位 PC 架构为 0xFFFF，其余为 u32::MAX）、
    `peripherals`（UART/GPIO/定时器/看门狗/中断/`externalRegs`）、
    `csr`（mstatus/mtvec/mepc/mcause/mie/mhartid）、`breakpoints`（地址/条件/命中次数/一次性/启用状态/实际命中）、
    `firmware`（path/base/format，无则 null）、`pcSymbol`（最近 ELF 符号 name/address/size，无则 null）），
@@ -306,6 +309,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   其余架构为 null），供外部选择正确的反汇编模式。
 - `state_reports_arm_xpsr`：`state --json` 报告 ARM xPSR（`armXpsr`，含 N/Z/C/V 条件标志与
   Thumb 位；其余架构为 null），供外部无需执行指令即可读取条件标志。
+- `state_reports_arm_it_and_pc_limit`：`state --json` 报告 ARM Thumb-2 IT 块
+  （`armItState` 的 `mask/cond/index`，`it eq` 后 `mask=8`，IT 指令执行后归零）与
+  `pcLimit`（ARM 为 0xFFFFFFFF，mcs51 等 16 位 PC 架构为 0xFFFF；非 ARM 的 `armItState` 为 null）。
+- `mcp_state_reports_arm_it`：MCP `state` 同样返回 `armItState`/`pcLimit`。
 - `version_command_and_flag`：`version` 子命令（含 `--json`）与 `--version` 均输出版本号。
 - `mem_write_read_arm_roundtrip`：非 RISC-V（ARM）内存写跨会话持久化。
 - `periph_config_relocates_bases`：外设 UART/GPIO 基址重定位并持久化。

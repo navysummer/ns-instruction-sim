@@ -51,6 +51,7 @@ ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8 --raw
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8 --json
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8 --source
 ns-instruction-sim state --session s.json --json
+ns-instruction-sim state --session arm.json --json --fields armItState,pcLimit
 ns-instruction-sim state --session s.json --summary
 ns-instruction-sim reset --session s.json --entry 0x80000000 --json
 ns-instruction-sim periph status --session s.json

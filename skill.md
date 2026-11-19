@@ -144,8 +144,11 @@ ns-instruction-sim reset --session s.json --entry 0x80000000
 ns-instruction-sim reset --session s.json --entry 0x80000000 --json
 ns-instruction-sim state --session s.json --json
 ns-instruction-sim state --session s.json --json --fields pc,cycleCount,registers
+ns-instruction-sim state --session arm.json --json --fields armItState,pcLimit
 ns-instruction-sim state --session s.json --summary
 # state --json 另含 firmware{path,base,format} 与 pcSymbol{name,address,size}（无则 null）
+# 另含 armItState{mask,cond,index}（仅 ARM，mask==0 表示无活动 IT 块，其余架构 null）
+# 与 pcLimit（16 位 PC 架构为 0xFFFF，其余为 0xFFFFFFFF）
 ns-instruction-sim periph status --session s.json
 ns-instruction-sim periph gpio --session s.json --pin 0 --value 1
 ns-instruction-sim periph config --session s.json --uart-base 0x50000000 --gpio-base 0x50002000

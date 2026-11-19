@@ -475,7 +475,7 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "state",
-            description: "读取当前完整状态（寄存器/内存/外设/CSR/断点/固件/符号），可用 fields 选取字段子集。",
+            description: "读取当前完整状态（寄存器/内存/外设/CSR/断点/固件/符号/ARM IT 块/PC 上限），可用 fields 选取字段子集。",
             schema: obj(
                 &[
                     ("session", session.clone()),

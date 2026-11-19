@@ -1555,6 +1555,14 @@ pub(crate) struct StateOutput {
     /// null）。让外部调用方无需执行指令即可读取条件标志（例如评估条件分支）。
     #[serde(rename = "armXpsr")]
     arm_xpsr: Option<u32>,
+    /// ARM If-Then (IT) 块状态（仅 ARM：`{mask,cond,index}`，`mask==0` 表示无
+    /// 活动 IT 块；其余架构为 null）。让外部调用方在 Thumb-2 IT 块中途观察
+    /// 剩余条件指令（评估条件执行是否命中）。
+    #[serde(rename = "armItState")]
+    arm_it_state: Option<serde_json::Value>,
+    /// 本架构可执行的最大 PC 地址（16 位 PC 架构为 0xFFFF，其余为 u32::MAX）。
+    #[serde(rename = "pcLimit")]
+    pc_limit: u32,
     uart: Vec<u8>,
     #[serde(rename = "uartText")]
     uart_text: String,
@@ -1680,6 +1688,14 @@ pub(crate) fn state_output(sim: &Simulator, result: StepResult, firmware: Option
         } else {
             None
         },
+        arm_it_state: if sim.arch == ns_sim::Arch::Arm {
+            sim.arm_it_state().map(|(mask, cond, index)| {
+                serde_json::json!({ "mask": mask, "cond": cond, "index": index })
+            })
+        } else {
+            None
+        },
+        pc_limit: sim.pc_limit(),
         uart: sim.peripherals.outputs.clone(),
         uart_text: String::from_utf8_lossy(&sim.peripherals.outputs).into_owned(),
         peripherals: peripherals_json(sim),

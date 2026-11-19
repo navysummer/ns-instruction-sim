@@ -7381,6 +7381,105 @@ fn mcp_mem_region() {
 }
 
 #[test]
+fn state_reports_arm_it_and_pc_limit() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-itstate.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: movs r0,#0 (Z=1); it eq; moveq r0,r1.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x00", "0x20", "0x08", "0xBF", "0x08", "0x46"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let state = |s: &str| -> serde_json::Value {
+        let out = Command::new(bin())
+            .args(["state", "--session", s, "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let s = sess.to_str().unwrap();
+    // ARM: full 32-bit PC space, IT block initially inactive.
+    let json = state(s);
+    assert_eq!(json["pcLimit"], 0xFFFF_FFFFu64);
+    assert_eq!(json["armItState"]["mask"], 0u64);
+    // Step `movs r0,#0` then `it eq` — IT block becomes active with EQ (cond 0).
+    Command::new(bin()).args(["step", "--session", s]).output().unwrap();
+    Command::new(bin()).args(["step", "--session", s]).output().unwrap();
+    let json = state(s);
+    assert_eq!(json["armItState"]["mask"], 8u64, "{}", json);
+    assert_eq!(json["armItState"]["cond"], 0u64, "{}", json);
+    // Execute the IT instruction — the block drains (mask back to 0).
+    Command::new(bin()).args(["step", "--session", s]).output().unwrap();
+    let json = state(s);
+    assert_eq!(json["armItState"]["mask"], 0u64, "{}", json);
+
+    // A 16-bit-PC core reports a 0xFFFF limit and no ARM IT state.
+    let mcs = dir.join("mcs51-pclimit.json");
+    Command::new(bin())
+        .args(["state", "--arch", "mcs51", "--session", mcs.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["state", "--session", mcs.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pcLimit"], 0xFFFFu64);
+    assert!(json["armItState"].is_null());
+}
+
+#[test]
+fn mcp_state_reports_arm_it() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-armit-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    // Vector table + `movs r0,#0; it eq; moveq r0,r1`.
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "arch": "arm", "addr": 0x0800_0000u64,
+        "bytes": [0x00, 0x00, 0x00, 0x20, 0x11, 0x00, 0x00, 0x08],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write vec: {}", r);
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "addr": 0x0800_0010u64,
+        "bytes": [0x00, 0x20, 0x08, 0xBF, 0x08, 0x46],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write code: {}", r);
+    let r = client.call_tool("reset", serde_json::json!({ "session": s, "entry": 0x0800_0000u64 }));
+    assert!(!r["isError"].as_bool().unwrap(), "reset: {}", r);
+    let r = client.call_tool("step", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "step1: {}", r);
+    let r = client.call_tool("step", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "step2: {}", r);
+    let r = client.call_tool("state", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "state: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["pcLimit"], 0xFFFF_FFFFu64);
+    assert_eq!(sc["armItState"]["mask"], 8u64, "{}", r);
+    assert_eq!(sc["armItState"]["cond"], 0u64, "{}", r);
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
