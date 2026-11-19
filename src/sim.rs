@@ -414,6 +414,10 @@ pub struct TraceEntry {
     pub bytes: Vec<u8>,
     pub source: String,
     pub cycle: u64,
+    /// Register file snapshot after the instruction (only populated when the
+    /// caller requests register tracking).
+    #[serde(default)]
+    pub regs: std::collections::BTreeMap<String, u32>,
 }
 
 /// Result of an analysed run: optional per-instruction trace, an execution
@@ -447,7 +451,12 @@ fn source_for(sim: &Simulator, address: u32) -> String {
 
 /// Step the simulator while collecting per-instruction trace, coverage and a
 /// mnemonic histogram. Stops at a breakpoint, halt, or after `max_steps`.
-pub fn analyze_run(sim: &mut Simulator, max_steps: u64, collect_trace: bool) -> RunAnalysis {
+pub fn analyze_run(
+    sim: &mut Simulator,
+    max_steps: u64,
+    collect_trace: bool,
+    collect_regs: bool,
+) -> RunAnalysis {
     let mut analysis = RunAnalysis {
         trace: Vec::new(),
         coverage: std::collections::BTreeMap::new(),
@@ -475,7 +484,18 @@ pub fn analyze_run(sim: &mut Simulator, max_steps: u64, collect_trace: bool) -> 
                 bytes,
                 source: source_for(sim, pc_before),
                 cycle: sim.cycle_count,
+                regs: std::collections::BTreeMap::new(),
             });
+            if collect_regs {
+                let mut regs = std::collections::BTreeMap::new();
+                let count = ns_sim::reg_count_for(sim.arch);
+                for i in 0..count {
+                    regs.insert(ns_sim::reg_label_for(sim.arch, i), sim.read_reg(i));
+                }
+                if let Some(last) = analysis.trace.last_mut() {
+                    last.regs = regs;
+                }
+            }
         }
         count += 1;
         if result != StepResult::Advanced {

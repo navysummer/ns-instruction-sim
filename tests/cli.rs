@@ -6420,7 +6420,7 @@ fn mcp_handshake_and_list_tools() {
         "mem_search", "mem_load", "mem_dump", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
         "cycle_get", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
-        "bp_modify", "session_info", "session_diff", "device_memory_map",
+        "bp_modify", "session_info", "session_diff", "device_memory_map", "firmware_info",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
     }
@@ -6828,6 +6828,121 @@ fn mcp_bp_modify_tool() {
 }
 
 #[test]
+fn firmware_info_command() {
+    let elf = tmpdir().join(format!("fw-info-{}.elf", std::process::id()));
+    write_riscv_elf(&elf);
+    let elf = elf.to_str().unwrap();
+
+    // JSON metadata: detected arch, entry and the first instruction.
+    let out = Command::new(bin()).args(["firmware", "info", "--firmware", elf, "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["format"], "elf");
+    assert_eq!(json["arch"], "riscv");
+    assert_eq!(json["entry"], 0x8000_0000u64);
+    assert_eq!(json["entryText"], "addi ra, zero, 1");
+    assert!(json["bytes"].as_u64().unwrap() > 0);
+    assert_eq!(json["machine"], 243u64);
+
+    // Human view summarises the image.
+    let out = Command::new(bin()).args(["firmware", "info", "--firmware", elf]).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("格式 elf") && text.contains("0x80000000"), "{text}");
+
+    // A raw BIN with an explicit arch, and one without (defaults to RISC-V).
+    let bin_path = tmpdir().join(format!("fw-info-{}.bin", std::process::id()));
+    std::fs::write(&bin_path, [0x13u8, 0x00, 0x00, 0x00]).unwrap();
+    let bin_path = bin_path.to_str().unwrap();
+    let out = Command::new(bin()).args(["firmware", "info", "--firmware", bin_path, "--arch", "riscv", "--json"]).output().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["format"], "bin");
+    assert_eq!(json["arch"], "riscv");
+    assert_eq!(json["entryText"], "addi zero, zero, 0");
+
+    // Missing file is a real error.
+    let out = Command::new(bin()).args(["firmware", "info", "--firmware", "/tmp/nsim-no-fw.elf"]).output().unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn trace_regs_snapshot() {
+    let dir = tmpdir();
+    let s = dir.join(format!("trace-regs-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&s);
+    let s = s.to_str().unwrap();
+    let out = Command::new(bin()).args(["state", "--arch", "riscv", "--session", s]).output().unwrap();
+    assert!(out.status.success());
+    // addi x1, x0, 1 then addi x2, x1, 2.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", s, "--addr", "0x80000000", "--bytes", "0x93", "0x00", "0x10", "0x00"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", s, "--addr", "0x80000004", "--bytes", "0x13", "0x81", "0x20", "0x00"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    // Without --regs the snapshot map is empty (kept for backwards compat).
+    let out = Command::new(bin()).args(["trace", "--session", s, "--steps", "1", "--json"]).output().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["trace"][0]["regs"].as_object().unwrap().is_empty());
+
+    // With --regs each entry carries the post-instruction register file.
+    let out = Command::new(bin()).args(["trace", "--session", s, "--steps", "2", "--json", "--regs"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let trace = json["trace"].as_array().unwrap();
+    assert_eq!(trace.len(), 2);
+    assert_eq!(trace[0]["regs"]["ra"], 1u64); // addi ra, zero, 1
+    assert_eq!(trace[0]["regs"]["zero"], 0u64);
+    assert_eq!(trace[1]["regs"]["ra"], 1u64);
+    assert_eq!(trace[1]["regs"]["sp"], 3u64); // addi sp, ra, 2
+    assert!(trace[0]["regs"]["x0"].is_null()); // canonical names only
+}
+
+#[test]
+fn mcp_firmware_info_and_trace_regs() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-fw-{}.elf", std::process::id()));
+    write_riscv_elf(&elf);
+    let elf = elf.to_str().unwrap();
+
+    // firmware_info returns the detected arch/entry/first instruction.
+    let r = client.call_tool("firmware_info", serde_json::json!({ "firmware": elf }));
+    assert!(!r["isError"].as_bool().unwrap(), "firmware_info: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["arch"], "riscv");
+    assert_eq!(sc["entry"], 0x8000_0000u64);
+    assert_eq!(sc["entryText"], "addi ra, zero, 1");
+    assert_eq!(sc["format"], "elf");
+
+    // A missing firmware file is an error.
+    let r = client.call_tool("firmware_info", serde_json::json!({ "firmware": "/tmp/nsim-no-fw.elf" }));
+    assert!(r["isError"].as_bool().unwrap());
+
+    // trace with regs=true snapshots the register file per instruction.
+    let sess = dir.join(format!("mcp-trace-regs-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap());
+    let r = client.call_tool(
+        "mem_write",
+        serde_json::json!({ "session": s, "addr": "0x80000000", "bytes": ["0x93", "0x00", "0x10", "0x00"] }),
+    );
+    assert!(!r["isError"].as_bool().unwrap());
+    let r = client.call_tool("trace", serde_json::json!({ "session": s, "steps": 1, "regs": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "trace regs: {}", r);
+    assert_eq!(r["structuredContent"]["trace"][0]["regs"]["ra"], 1u64);
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
@@ -7111,6 +7226,7 @@ fn help_every_command() {
         &["csr", "list"], &["csr", "get"], &["csr", "set"],
         &["trace"], &["coverage"], &["profile"],
         &["session", "info"], &["session", "diff"], &["device", "memory-map"],
+        &["firmware", "info"],
         &["mcp"],
     ];
     for flag in ["--help", "-h"] {
@@ -7142,7 +7258,8 @@ fn help_every_param() {
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
-        (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
+        (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--regs", "--out", "--json"]),
+        (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
         (&["mcp"], &["--session"]),

@@ -65,6 +65,8 @@ ns-instruction-sim periph config --session s.json --uart-base 0x50000000
 
 # 执行轨迹 / 覆盖 / 助记符直方图 / 会话对比
 ns-instruction-sim trace --session s.json --steps 200 --json
+ns-instruction-sim trace --session s.json --steps 200 --regs --json
+ns-instruction-sim firmware info --firmware app.elf --json
 ns-instruction-sim trace --session s.json --steps 200 --out trace.json
 ns-instruction-sim coverage --session s.json --steps 2000 --json
 ns-instruction-sim profile --session s.json --steps 2000

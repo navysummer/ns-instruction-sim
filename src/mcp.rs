@@ -340,6 +340,7 @@ fn analyze_schema() -> Value {
             ("steps", prop_num("精确执行 N 条指令。")),
             ("max_steps", prop_num("最大执行步数（默认 100000）。")),
             ("until", prop_str("运行到指定地址（临时断点）。")),
+            ("regs", prop_bool("trace 时附带每条指令执行后的寄存器快照。")),
             ("out", prop_str("把结果写入文件（JSON）；缺省直接返回结果。")),
         ],
         &[],
@@ -433,6 +434,18 @@ fn tools() -> Vec<Tool> {
                 &["device"],
             ),
             handler: tool_device_init,
+        },
+        Tool {
+            name: "firmware_info",
+            description: "显示固件元信息（格式/大小/架构/入口/符号表/源文件/首条指令反汇编）。",
+            schema: obj(
+                &[
+                    ("firmware", prop_str("固件文件（ELF / Intel HEX / BIN）。")),
+                    ("arch", prop_str("目标架构（非 ELF 固件需要；ELF 自动检测）。")),
+                ],
+                &["firmware"],
+            ),
+            handler: tool_firmware_info,
         },
         Tool {
             name: "session_create",
@@ -1127,6 +1140,12 @@ fn tool_arch_list(_: &McpServer, _: &Map<String, Value>) -> Result<Value> {
         })
         .collect();
     Ok(json!({ "architectures": items }))
+}
+
+/// Show firmware metadata without needing a session (`firmware info`).
+fn tool_firmware_info(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let firmware = s(args, "firmware").ok_or_else(|| anyhow::anyhow!("缺少 firmware"))?;
+    crate::firmware_info_value(Path::new(&firmware), s(args, "arch").as_deref())
 }
 
 fn tool_device_list(_: &McpServer, _: &Map<String, Value>) -> Result<Value> {
@@ -2461,6 +2480,7 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
     let steps = u64(args, "steps");
     let max_steps = u64(args, "max_steps").unwrap_or(100_000);
     let collect_trace = matches!(kind, AnalyzeTool::Trace);
+    let collect_regs = b(args, "regs").unwrap_or(false);
     with_sim(server, args, true, |sim, _, _| {
         if let Some(addr) = until {
             if addr > sim.pc_limit() {
@@ -2468,7 +2488,8 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
             }
         }
         let temp_bp = until.map(|a| sim.set_breakpoint(a)).unwrap_or(false);
-        let analysis = crate::sim::analyze_run(sim, steps.unwrap_or(max_steps), collect_trace);
+        let analysis =
+            crate::sim::analyze_run(sim, steps.unwrap_or(max_steps), collect_trace, collect_regs);
         if temp_bp {
             if let Some(a) = until {
                 sim.clear_breakpoint(a);

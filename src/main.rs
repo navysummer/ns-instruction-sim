@@ -27,7 +27,7 @@ use clap::{Args, Parser, Subcommand};
 
 use ns_sim::{Arch, Simulator, StepResult};
 use session::{FirmwareState, Session};
-use sim::{analyze_run, default_mem_base, detect_format, encode_intel_hex, load_firmware_into, parse_num, read_code_byte, read_mem_byte, read_mem_u32, write_mem_byte};
+use sim::{FirmwareFormat, analyze_run, default_mem_base, detect_format, encode_intel_hex, load_firmware_into, parse_num, read_code_byte, read_mem_byte, read_mem_u32, write_mem_byte};
 
 #[derive(Parser)]
 #[command(
@@ -103,6 +103,11 @@ enum Command {
     Profile(AnalyzeArgs),
     /// 查询持久化会话的元信息或比较两个会话的差异。
     Session(SessionArgs),
+    /// 查询固件元信息（格式/架构/入口/符号表/首条指令）。
+    Firmware {
+        #[command(subcommand)]
+        sub: FirmwareSub,
+    },
     /// 启动 MCP（Model Context Protocol）stdio 服务器，供大模型通过工具调用操作仿真器。
     Mcp {
         /// 默认会话文件路径（JSON）；MCP 工具未显式传入 `session` 时使用。
@@ -218,6 +223,22 @@ enum SessionSub {
     Info(SessionInfoArgs),
     /// 比较两个会话文件，列出全部差异（标量/寄存器/断点/内存）。
     Diff(SessionDiffArgs),
+}
+
+#[derive(Subcommand)]
+enum FirmwareSub {
+    /// 显示固件元信息（格式/大小/架构/入口/符号表/源文件/首条指令反汇编）。
+    Info {
+        /// 固件文件（ELF / Intel HEX / BIN）。
+        #[arg(long)]
+        firmware: PathBuf,
+        /// 目标架构（非 ELF 固件需要；缺省 ELF 自动检测、其余默认 riscv）。
+        #[arg(short, long)]
+        arch: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -1245,6 +1266,9 @@ struct AnalyzeArgs {
     /// 运行到指定地址（临时断点，不持久化）。
     #[arg(long)]
     until: Option<String>,
+    /// trace 时附带每条指令执行后的寄存器快照（数据流追踪）。
+    #[arg(long)]
+    regs: bool,
     /// 写出文件路径（缺省打印到 stdout；文本或 JSON 均可）。
     #[arg(short, long)]
     out: Option<PathBuf>,
@@ -1345,6 +1369,9 @@ fn real_main() -> Result<()> {
         Command::Csr(CsrArgs { sub }) => cmd_csr(sub),
         Command::Session(SessionArgs { sub: SessionSub::Info(args) }) => cmd_session_info(args),
         Command::Session(SessionArgs { sub: SessionSub::Diff(args) }) => cmd_session_diff(args),
+        Command::Firmware { sub: FirmwareSub::Info { firmware, arch, json } } => {
+            cmd_firmware_info(&firmware, arch.as_deref(), json)
+        }
         Command::Trace(args) => cmd_analyze(args, AnalyzeKind::Trace),
         Command::Coverage(args) => cmd_analyze(args, AnalyzeKind::Coverage),
         Command::Profile(args) => cmd_analyze(args, AnalyzeKind::Profile),
@@ -3886,6 +3913,107 @@ fn cmd_csr(sub: CsrSub) -> Result<()> {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Read the ELF `e_machine` field (ELF32 at offset 18, ELF64 at offset 20).
+fn elf_machine(bytes: &[u8]) -> Option<u16> {
+    if bytes.len() < 20 || !bytes.starts_with(b"\x7fELF") {
+        return None;
+    }
+    let is64 = bytes[4] == 2;
+    let off = if is64 { 20 } else { 18 };
+    if bytes.len() < off + 2 {
+        return None;
+    }
+    Some(u16::from_le_bytes([bytes[off], bytes[off + 1]]))
+}
+
+/// `firmware info`: report the format, detected architecture, entry point and
+/// the symbol table of a firmware image without needing a session.
+fn cmd_firmware_info(firmware: &Path, arch_arg: Option<&str>, json: bool) -> Result<()> {
+    let value = firmware_info_value(firmware, arch_arg)?;
+    if json {
+        print_json(&value)?;
+        return Ok(());
+    }
+    println!("固件: {}", value["path"].as_str().unwrap_or(""));
+    println!(
+        "  格式 {}  大小 {} 字节  架构 {}  入口 0x{:08x}  {}",
+        value["format"].as_str().unwrap_or(""),
+        value["bytes"].as_u64().unwrap_or(0),
+        value["arch"].as_str().unwrap_or(""),
+        value["entry"].as_u64().unwrap_or(0) as u32,
+        value["entryText"].as_str().unwrap_or("")
+    );
+    println!(
+        "  符号 {} 个  源文件 {} 个",
+        value["symbolCount"].as_u64().unwrap_or(0),
+        value["sourceFiles"].as_u64().unwrap_or(0)
+    );
+    for s in value["symbols"].as_array().unwrap().iter().take(12) {
+        println!(
+            "    {:<32} 0x{:08x}",
+            s["name"].as_str().unwrap_or(""),
+            s["address"].as_u64().unwrap_or(0)
+        );
+    }
+    if value["symbolCount"].as_u64().unwrap_or(0) > 12 {
+        println!("    ...（共 {} 个）", value["symbolCount"].as_u64().unwrap_or(0));
+    }
+    Ok(())
+}
+
+/// Machine-readable firmware metadata shared by the CLI and the MCP server.
+pub(crate) fn firmware_info_value(
+    firmware: &Path,
+    arch_arg: Option<&str>,
+) -> Result<serde_json::Value> {
+    let format = detect_format(firmware);
+    let bytes = std::fs::read(firmware)
+        .with_context(|| format!("读取固件 {} 失败", firmware.display()))?;
+    let arch = if let Some(a) = arch_arg {
+        arch_from_arg(Some(a))?
+    } else if format == FirmwareFormat::Elf {
+        let machine = elf_machine(&bytes)
+            .ok_or_else(|| anyhow::anyhow!("无法读取 ELF e_machine"))?;
+        Arch::from_elf_machine(machine)
+            .ok_or_else(|| anyhow::anyhow!("不支持的 ELF 机器码 {machine}（无法确定架构）"))?
+    } else {
+        Arch::RiscV
+    };
+    let mut sim = Simulator::for_arch(arch)?;
+    load_firmware_into(&mut sim, firmware, 0)
+        .with_context(|| format!("加载固件 {} 失败", firmware.display()))?;
+    let entry = sim.program_counter();
+    let first_text = {
+        let read = |a: u32| -> u8 { read_code_byte(&sim, a) };
+        ns_sim::disassemble_one_state(arch, entry, &read, sim.arm_state())
+    };
+    let symbols: Vec<_> = sim
+        .symbols
+        .iter()
+        .take(200)
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "address": s.address,
+                "size": s.size,
+            })
+        })
+        .collect();
+    let machine = elf_machine(&bytes);
+    Ok(serde_json::json!({
+        "path": firmware.display().to_string(),
+        "format": format.label(),
+        "bytes": bytes.len(),
+        "arch": session::arch_name(arch),
+        "entry": entry,
+        "entryText": first_text,
+        "machine": machine,
+        "symbolCount": sim.symbols.len(),
+        "sourceFiles": sim.source_files.len(),
+        "symbols": symbols,
+    }))
+}
+
 /// `session info`: show persisted-session metadata in a compact table.
 fn cmd_session_info(args: SessionInfoArgs) -> Result<()> {
     let value = Session::load(&args.file)?.info_value(Some(&args.file));
@@ -4006,7 +4134,7 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
     let limit = args.steps.unwrap_or(args.max_steps);
     let collect_trace = matches!(kind, AnalyzeKind::Trace);
-    let analysis = analyze_run(&mut sim, limit, collect_trace);
+    let analysis = analyze_run(&mut sim, limit, collect_trace, args.regs);
     if temp_bp {
         if let Some(addr) = until_addr {
             sim.clear_breakpoint(addr);

@@ -183,6 +183,8 @@ ns-instruction-sim periph timer --session s.json --index 1 --enabled true --pres
 
 # 执行轨迹 / 覆盖 / 助记符直方图（分析模式）
 ns-instruction-sim trace --session s.json --steps 200 --json
+ns-instruction-sim trace --session s.json --steps 200 --regs --json
+ns-instruction-sim firmware info --firmware app.elf --json
 ns-instruction-sim trace --session s.json --until 0x8000000c --out trace.json
 ns-instruction-sim coverage --session s.json --steps 5000 --json
 ns-instruction-sim profile --session s.json --steps 5000
@@ -232,7 +234,7 @@ print(rpc("tools/call", {"name": "step", "arguments": {"session": "s.json"}})["r
 等 `pub(crate)` 助手，不复制核心逻辑。新增 MCP 工具时在 `tools()` 列表添加 `Tool { name, description,
 schema, handler }`，并在 `tests/cli.rs` 增加 `mcp_*` 端到端用例。**每个新功能必须同时提供 MCP 工具**：
 CLI 侧已有的分析/设备/会话能力对应 `trace`/`coverage`/`profile`/`device_memory_map`/`session_info`/
-`session_diff`/`bp_modify`，其中 `trace` 等分析工具用 `analyze_schema()` 共享参数（含 `out` 落盘参数），
+`session_diff`/`bp_modify`/`firmware_info`，其中 `trace` 等分析工具用 `analyze_schema()` 共享参数（含 `out` 落盘参数），
 `session_diff` 复用 `session::session_diff()`，`session_info` 复用 `Session::info_value()`——
 核心逻辑只写在 CLI/`session.rs` 一侧，MCP 侧只做参数适配与序列化。
 

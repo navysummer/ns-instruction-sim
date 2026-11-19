@@ -130,7 +130,8 @@ ns-instruction-sim/
 | `watchdog` | `status` / `feed` / `config` / `reset` | 看门狗查询/喂狗/配置/强制复位 | `--enabled --timeout --base --entry --session --json` | 表/JSON |
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
 | `session` | `info` / `diff` | 会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）或比较两个会话的全部差异 | `--file` / `--a --b --limit [--json]` | 文本/JSON |
-| `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期） | `--session --arch --firmware --base --steps --max-steps --until --json` | 轨迹/JSON |
+| `firmware` | `info` | 固件元信息（格式/大小/架构/入口/符号表/源文件/首条指令反汇编），ELF 自动检测架构 | `--firmware --arch [--json]` | 文本/JSON |
+| `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期/寄存器快照） | `--session --arch --firmware --base --steps --max-steps --until --regs --out --json` | 轨迹/JSON |
 | `coverage` | — | 运行并统计执行覆盖（各 PC 执行次数、唯一 PC 数） | `--session --arch --firmware --base --steps --max-steps --until --json` | 覆盖表/JSON |
 | `profile` | — | 运行并统计指令助记符直方图 | `--session --arch --firmware --base --steps --max-steps --until --json` | 直方图/JSON |
 | `mcp` | — | 启动 MCP（Model Context Protocol）stdio 服务器，供大模型通过工具调用完整驱动仿真 | `--session`（默认会话文件） | JSON-RPC 2.0 / 工具结果 |
@@ -190,7 +191,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `trace`、`coverage`、`profile` 与 CLI 同名子命令一一对应（`analyze_schema` 共享参数），
    返回结构化轨迹/覆盖/直方图 JSON，并支持 `out` 参数把结果写入文件；
    `device_memory_map`（设备内存区域与地址所属区域）、`session_info`（会话元信息）、
-   `session_diff`（两个会话文件的完整差异：标量/寄存器/断点/内存）补齐设备与会话维度的工具。
+   `session_diff`（两个会话文件的完整差异：标量/寄存器/断点/内存）、
+   `firmware_info`（固件元信息：格式/架构/入口/符号表/首条指令）补齐设备与会话维度的工具。
 
 ---
 
@@ -624,6 +626,12 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   （`access`/`start`/`end`/`size`），`--addr` 解析所属区域；越界地址与未知设备报错。
 - `disasm_and_trace_write_files`：`disasm --out` 写出汇编清单、`trace --json --out` 写出结构化
   轨迹、`profile --out` 写出文本直方图，文件内容均可被重新解析校验。
+- `firmware_info_command`：`firmware info` 对 ELF 自动检测架构与入口（`entryText` 反汇编首条指令、
+  `machine=243`），BIN 可 `--arch` 显式指定，缺失文件报错。
+- `trace_regs_snapshot`：`trace --regs` 每条指令附带执行后寄存器快照（`addi ra,zero,1`→ra=1、
+  `addi sp,ra,2`→sp=3），不带 `--regs` 时 `regs` 为空（向后兼容）。
+- `mcp_firmware_info_and_trace_regs`：MCP `firmware_info` 返回同等元信息（含缺失文件错误路径），
+  `trace` 的 `regs: true` 参数返回每条指令后的寄存器快照。
 - `mcp_session_and_memory_map_tools`：MCP `session_info` / `session_diff` / `device_memory_map`
   工具端到端（含未知设备错误路径）与 `trace` 的 `out` 参数把轨迹写入文件并回报 `file`/`bytes`。
 - `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff`、`device memory-map`）的
