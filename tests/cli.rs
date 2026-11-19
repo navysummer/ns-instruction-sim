@@ -6420,6 +6420,7 @@ fn mcp_handshake_and_list_tools() {
         "mem_search", "mem_load", "mem_dump", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
         "cycle_get", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
+        "bp_modify", "session_info", "session_diff", "device_memory_map",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
     }
@@ -6699,6 +6700,134 @@ fn mcp_trace_coverage_profile() {
 }
 
 #[test]
+fn bp_modify_updates_existing_breakpoint() {
+    let dir = tmpdir();
+    let s = dir.join(format!("bpmodify-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&s);
+    let s = s.to_str().unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(bin()).args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}: {}",
+            args.first().copied().unwrap_or(""),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    run(&["state", "--arch", "riscv", "--session", s]);
+    // Three NOPs (addi x0,x0,0), so 0x8000000c is reachable.
+    for i in 0..3usize {
+        let addr = format!("0x{a:08x}", a = 0x8000_0000u32 + (i * 4) as u32);
+        run(&[
+            "mem", "write", "--session", s, "--addr", &addr,
+            "--bytes", "0x13", "0x00", "0x00", "0x00",
+        ]);
+    }
+    // A breakpoint that only pauses on its second hit.
+    run(&["bp", "set", "--session", s, "--addr", "0x8000000c", "--hit-count", "2"]);
+
+    // Step until 0x8000000c is visited once: the first hit does not stop
+    // because the breakpoint only pauses on its second hit.
+    for _ in 0..4 {
+        run(&["step", "--session", s]);
+    }
+    let out = run(&["bp", "list", "--session", s, "--json"]);
+    let list: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(list[0]["hits"], 1u64, "{list}");
+
+    // `bp modify` changes the condition and hit count but keeps the runtime
+    // hit counter.
+    let out = run(&[
+        "bp", "modify", "--session", s, "--addr", "0x8000000c",
+        "--condition", "x1 == 7", "--hit-count", "3", "--json",
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["address"], 0x8000_000cu64);
+    assert_eq!(v["condition"], "x1 == 7");
+    assert_eq!(v["hitCount"], 3u64);
+    assert_eq!(v["hits"], 1u64, "{v}");
+
+    // Only one of the two attributes may be given; the other is preserved.
+    let out = run(&["bp", "modify", "--session", s, "0x8000000c", "--condition", "x2 == 9"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("断点已更新"));
+    let out = run(&["bp", "list", "--session", s, "--json"]);
+    let list: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(list[0]["condition"], "x2 == 9");
+    assert_eq!(list[0]["hitCount"], 3u64);
+
+    // Missing attributes, a missing breakpoint and an out-of-range address all
+    // fail loudly.
+    let out = Command::new(bin())
+        .args(["bp", "modify", "--session", s, "--addr", "0x8000000c"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin())
+        .args(["bp", "modify", "--session", s, "--addr", "0x80000020"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+
+    // A 16-bit-PC core rejects out-of-range breakpoint addresses.
+    let s16 = dir.join(format!("bpmodify16-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&s16);
+    let s16 = s16.to_str().unwrap();
+    run(&["state", "--arch", "mcs51", "--session", s16]);
+    run(&["bp", "set", "--session", s16, "--addr", "0x20"]);
+    let out = Command::new(bin())
+        .args(["bp", "modify", "--session", s16, "--addr", "0x10000", "--condition", "a == 1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mcp_bp_modify_tool() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-bpmodify-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool(
+        "bp_set",
+        serde_json::json!({ "session": s, "addr": "0x8000000c", "hit_count": 2 }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "bp_set: {}", r);
+
+    // Modify the condition and the hit count in one call.
+    let r = client.call_tool(
+        "bp_modify",
+        serde_json::json!({ "session": s, "addr": "0x8000000c", "condition": "x1 == 7", "hit_count": 5 }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "bp_modify: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["address"], 0x8000_000cu64);
+    assert_eq!(sc["condition"], "x1 == 7");
+    assert_eq!(sc["hitCount"], 5u64);
+
+    // The change survives in the session (bp_list reads it back).
+    let r = client.call_tool("bp_list", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_list: {}", r);
+    let bps = &r["structuredContent"]["breakpoints"];
+    assert_eq!(bps[0]["condition"], "x1 == 7");
+    assert_eq!(bps[0]["hitCount"], 5u64);
+
+    // No attribute changes anything, and a missing breakpoint is an error.
+    let r = client.call_tool("bp_modify", serde_json::json!({ "session": s, "addr": "0x8000000c" }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    let r = client.call_tool(
+        "bp_modify",
+        serde_json::json!({ "session": s, "addr": "0x80000020", "condition": "x1 == 1" }),
+    );
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
@@ -6967,7 +7096,7 @@ fn help_every_command() {
         &["reg", "list"], &["reg", "get"], &["reg", "set"],
         &["mem", "read"], &["mem", "write"], &["mem", "fill"], &["mem", "search"],
         &["mem", "load"], &["mem", "dump"],
-        &["bp", "list"], &["bp", "set"], &["bp", "clear"], &["bp", "clear-all"],
+        &["bp", "list"], &["bp", "set"], &["bp", "modify"], &["bp", "clear"], &["bp", "clear-all"],
         &["bp", "enable"], &["bp", "disable"],
         &["disasm"], &["reset"], &["state"],
         &["periph", "status"], &["periph", "config"], &["periph", "svd-load"],
@@ -7008,6 +7137,7 @@ fn help_every_param() {
     let checks: &[(&[&str], &[&str])] = &[
         (&["run"], &["--session", "--firmware", "--arch", "--base", "--max-steps", "--steps", "--until", "--save-session", "--cycle-accurate", "--json", "--trace", "--source"]),
         (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
+        (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
         (&["mem", "read"], &["--session", "--arch", "--addr", "--len", "--width", "--out", "--json"]),
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),

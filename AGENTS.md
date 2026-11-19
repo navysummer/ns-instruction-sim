@@ -119,7 +119,7 @@ ns-instruction-sim/
 | `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json --trace --source` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` | 内存读/写/填充/搜索模式/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图） | `--addr --len --bytes --values --file --value --pattern --firmware --base --arch --name --format --width --out --json` | hex/C/JSON |
-| `bp` | `list` / `set` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置） | `--addr --symbol --line --condition --hit-count --once --session --json` | 表/JSON |
+| `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数） | `--addr --symbol --line --condition --hit-count --once --session --json` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/原始字节/JSON） | `--arch --addr --count --arm-state --source --raw --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要） | `--session --arch --firmware --base --json --fields --summary` | 状态/JSON/摘要 |
@@ -183,7 +183,7 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
 5. **工具覆盖**：`arch_list`、`device_list`、`device_info`、`device_svd/linker/startup/init`、
    `session_create/load/save`、
    `state`、`step`、`step_over`、`step_out`、`run`、`continue`、`reg_list/get/set`、
-   `mem_read/write/fill/search/load/dump`、`bp_set/clear/list/enable/disable/clear_all`、
+   `mem_read/write/fill/search/load/dump`、`bp_set/modify/clear/list/enable/disable/clear_all`、
    `disasm`、`reset`、`cycle_get/estimate/tick`、`interrupt_take/pending/set`、
    `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/field_get/field_set/svd_load`、
    `symbol_list/at/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
@@ -261,6 +261,11 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `bp_list_shows_hits`：断点命中次数持久化并展示。
 - `bp_once_autoclears`：`bp set --once` 命中后自动清除，再次 `continue` 不再停靠。
 - `bp_enable_disable_roundtrip`：`bp disable` 不再暂停，`bp enable` 恢复暂停。
+- `bp_modify_updates_existing_breakpoint`：`bp modify` 更新条件与命中次数但保留运行时命中计数
+  （先走到断点一次 `hits=1`，再 `--condition`/`--hit-count` 改属性后 `hits` 仍为 1；
+  仅改一个属性时另一属性保留；无属性/断点不存在/16 位 PC 越界均报错）。
+- `mcp_bp_modify_tool`：MCP `bp_modify` 修改 `condition`+`hit_count` 并在 `bp_list` 读回持久化，
+  缺属性与断点不存在以 `isError:true` 返回。
 - `bp_set_by_symbol`：`bp set --symbol` 按符号名解析地址设置断点（含未找到错误路径）。
 - `bp_set_by_line`：`bp set --line file:line` 按源码行号设置断点（含非法行号错误路径）。
 - `bp_management_json`：`bp set/clear/clear-all/enable/disable --json` 机器可读确认。

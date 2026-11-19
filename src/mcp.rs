@@ -693,6 +693,21 @@ fn tools() -> Vec<Tool> {
             handler: tool_bp_set,
         },
         Tool {
+            name: "bp_modify",
+            description: "修改已有断点的条件与命中次数（保留运行时命中计数，不重建断点）。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("addr", addr.clone()),
+                    ("symbol", prop_str("按符号名定位断点（与 addr 二选一）。")),
+                    ("condition", prop_str("新的条件表达式，如 x1 == 10。")),
+                    ("hit_count", prop_num("新的命中次数（第 N 次命中时暂停）。")),
+                ],
+                &[],
+            ),
+            handler: tool_bp_modify,
+        },
+        Tool {
             name: "bp_clear",
             description: "清除指定地址的断点。",
             schema: obj(&[("session", session.clone()), ("addr", addr.clone())], &["addr"]),
@@ -1701,6 +1716,49 @@ fn tool_bp_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
             "hitCount": hit_count,
             "once": once,
             "set": set,
+        }))
+    })
+}
+
+/// Modify an existing breakpoint's condition / hit count without recreating
+/// it (the runtime hit counter is preserved).
+fn tool_bp_modify(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let addr_arg = s(args, "addr");
+    let symbol = s(args, "symbol");
+    let condition = s(args, "condition");
+    let hit_count = u(args, "hit_count");
+    if condition.is_none() && hit_count.is_none() {
+        bail!("至少需要 condition 或 hit_count 之一");
+    }
+    with_sim(server, args, true, |sim, _, _| {
+        let addr = if let Some(a) = &addr_arg {
+            parse_num(a)?
+        } else if let Some(sym) = &symbol {
+            sim.symbols
+                .iter()
+                .find(|s| s.name == *sym)
+                .ok_or_else(|| anyhow::anyhow!("未找到符号: {sym}"))?
+                .address
+        } else {
+            bail!("请提供 addr 或 symbol")
+        };
+        let (cond, hits) = sim
+            .breakpoints
+            .iter()
+            .find(|bp| bp.address == addr)
+            .map(|bp| (bp.condition.clone(), bp.hit_count))
+            .ok_or_else(|| anyhow::anyhow!("断点不存在 @ 0x{addr:08x}"))?;
+        let cond = condition.unwrap_or(cond);
+        let hits = hit_count.unwrap_or(hits);
+        sim.update_breakpoint(addr, cond.clone(), hits);
+        let live = sim.breakpoints.iter().find(|bp| bp.address == addr).unwrap();
+        Ok(json!({
+            "address": addr,
+            "condition": live.condition,
+            "hitCount": live.hit_count,
+            "once": live.once,
+            "enabled": live.enabled,
+            "hits": sim.breakpoint_hits(addr),
         }))
     })
 }

@@ -590,6 +590,30 @@ enum BpSub {
         #[arg(long)]
         json: bool,
     },
+    /// 修改已有断点的条件与命中次数（保留运行时命中计数，不重建断点）。
+    Modify {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 按符号名定位断点（与地址互斥）。
+        #[arg(long, conflicts_with_all = ["addr", "addr_flag"])]
+        symbol: Option<String>,
+        /// 新的条件表达式（如 `x1 == 10`）。
+        #[arg(long)]
+        condition: Option<String>,
+        /// 新的命中次数（第 N 次命中时暂停）。
+        #[arg(long)]
+        hit_count: Option<u32>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
     /// 清除断点。
     Clear {
         /// 会话文件路径（JSON）。
@@ -2680,6 +2704,58 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                 println!("一次性断点已设置 @ 0x{:08x}", addr_num);
             } else {
                 println!("断点已设置 @ 0x{:08x}", addr_num);
+            }
+            Ok(())
+        }
+        BpSub::Modify { session, addr, addr_flag, symbol, condition, hit_count, json } => {
+            if condition.is_none() && hit_count.is_none() {
+                bail!("至少需要 --condition 或 --hit-count 之一");
+            }
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let addr_num = if let Some(sym) = &symbol {
+                sim.symbols
+                    .iter()
+                    .find(|s| s.name.eq_ignore_ascii_case(sym))
+                    .ok_or_else(|| anyhow::anyhow!("符号未找到: {sym}"))?
+                    .address
+            } else {
+                let a = addr_flag
+                    .or(addr)
+                    .ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+                parse_num(&a)?
+            };
+            let (cond, hits) = sim
+                .breakpoints
+                .iter()
+                .find(|bp| bp.address == addr_num)
+                .map(|bp| (bp.condition.clone(), bp.hit_count))
+                .ok_or_else(|| anyhow::anyhow!("断点不存在 @ 0x{addr_num:08x}"))?;
+            let cond = condition.unwrap_or(cond);
+            let hits = hit_count.unwrap_or(hits);
+            sim.update_breakpoint(addr_num, cond.clone(), hits);
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            let live = sim
+                .breakpoints
+                .iter()
+                .find(|bp| bp.address == addr_num)
+                .unwrap();
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr_num,
+                    "condition": live.condition,
+                    "hitCount": live.hit_count,
+                    "once": live.once,
+                    "enabled": live.enabled,
+                    "hits": sim.breakpoint_hits(addr_num),
+                }))?;
+            } else {
+                println!(
+                    "断点已更新 @ 0x{addr_num:08x}（条件 '{}'，命中次数 {}，历史命中 {}）",
+                    live.condition,
+                    live.hit_count,
+                    sim.breakpoint_hits(addr_num)
+                );
             }
             Ok(())
         }

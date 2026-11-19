@@ -38,6 +38,7 @@ ns-instruction-sim bp set --session s.json --addr 0x80000008 --once
 ns-instruction-sim bp set --session s.json --symbol main
 ns-instruction-sim bp set --session s.json --line main.c:10
 ns-instruction-sim bp set --session s.json --addr 0x80000004 --json
+ns-instruction-sim bp modify --session s.json --addr 0x80000004 --condition "x1 == 5" --hit-count 3
 ns-instruction-sim bp disable --session s.json --addr 0x80000004
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8
 ns-instruction-sim disasm --session arm.json --addr 0x0 --count 4 --arm-state thumb
