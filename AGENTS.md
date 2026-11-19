@@ -410,6 +410,45 @@ done
   `smull r4,r5,r6,r7`（0xFBC64507，−7×2=−14=0xFFFFFFFFFFFFFFF2）、
   `umlal r8,r9,r10,r11`（0xFBAA891B，0+3×5=15），
   `state --json` 校验，锁定 Thumb-2 UMULL/SMULL/UMLAL/SMLAL 64 位乘加执行。
+- `run_arm_thumb2_sat_q_sel_extend`：端到端分九次 `step --session` 执行
+  `qadd r0,r1,r2`（0xFA8281F0，0x40000000+0x40000000 饱和 → 0x7FFFFFFF）、
+  `qdadd r3,r4,r5`（0xFA8594F3，r5+2·r4=0x4000）、
+  `qsub r6,r7,r8`（0xFA88A7F6，r8−r7=0x1000）、
+  `qdsub r9,r10,r11`（0xFA8BBAF9，r11−2·r10=0）、
+  `sel r0,r1,r2`（0xFAA182F0，GE=0 → Rm=0x22222222）、
+  `sxtah r3,r4,r5`（0xFA0485F3，0x10+0xFFFF8000=0xFFFF8010）、
+  `uxtah r6,r7,r8`（0xFA1788F6，0x20+0x8000=0x8020）、
+  `sxtab r9,r10,r11`（0xFA4A8BF9，0x30+0xFFFFFF80=0xFFFFFFB0）、
+  `uxtab r12,r0,r1`（0xFA5081FC，r0+0x11=0x22222233），`state --json` 校验，
+  锁定 Thumb-2 饱和加减/选择/扩展加执行（QADD 家族操作数序 Rd,Rm,Rn；
+  扩展加的操作码位于首半字 bits 7-4，Rn≠PC）。
+- `disasm_thumb2_sat_q_sel_extend`：`disasm --arm-state thumb` 将
+  `qadd`/`qdadd`/`qsub`/`qdsub`/`sel`/`sxtah`/`uxtah`/`sxtab`/`uxtab`
+  反汇编为真实助记符（共享 0xFAxx 空间，须按 bits 7-4 与 Rn≠PC 区分扩展加）。
+- `run_arm_thumb2_ssat_usat`：端到端分四次 `step --session` 执行
+  `ssat r0,#8,r1`（0xF3010007，128→127=0x7F）、
+  `ssat r2,#16,r3,lsl #4`（0xF3030F12，0x2000<<4=0x20000→0x7FFF）、
+  `usat r4,#8,r5`（0xF3850804，−1→0）、
+  `usat r6,#16,r7,asr #4`（0xF3A71016，0x10000 asr 4→0x1000），
+  `state --json` 校验，锁定 Thumb-2 SSAT/USAT 饱和立即执行（第二半字 bit15=0，
+  与 B&lt;cond&gt;.W 区分）。
+- `disasm_thumb2_ssat_usat`：`disasm --arm-state thumb` 将
+  `ssat`/`usat`（含 `lsl #n`/`asr #n` 移位形式）反汇编为真实助记符。
+- `run_arm_thumb2_mul_wide`：端到端分八次 `step --session` 执行
+  `smulbb r0,r1,r2`（0xFB1102F0，−1×5=−5）、
+  `smulbt r3,r4,r5`（0xFB1415F3，6×−1=−6）、
+  `smlabb r6,r7,r8,r9`（0xFB170896，7×8+9=0x41）、
+  `smmul r10,r11,r12`（0xFB5B0CFA，0x10000000×0x10&gt;&gt;32=1）、
+  `smmla r0,r1,r2,r3`（0xFB510230，0+4=4）、
+  `smmls r4,r5,r6,r7`（0xFB650674，7−0=7）、
+  `smlald r8,r9,r10,r11`（0xFBCACB89，0+10×11=110）、
+  `smlsld r12,r0,r1,r2`（0xFBD1C2C0，0−12×13=−156=0xFFFFFF64:0xFFFFFFFF），
+  `state --json` 校验，锁定 Thumb-2 有符号 16×16 与最高有效字乘加、
+  SMLALD/SMLSLD 64 位乘减执行。
+- `disasm_thumb2_mul_wide`：`disasm --arm-state thumb` 将
+  `smulbb`/`smulbt`/`smlabb`/`smmul`/`smmla`/`smmls`/`smlald`/`smlsld`
+  反汇编为真实助记符（UMULL/SMULL 家族按第二半字 bits 7-5=000 与
+  SMLALD/SMLSLD bits 7-5=110 区分）。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。

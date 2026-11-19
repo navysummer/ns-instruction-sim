@@ -3632,8 +3632,11 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
 
     // UMULL/SMULL/UMLAL/SMLAL RdLo, RdHi, Rn, Rm. The first halfword is
     // `1111 1011 1s10 Rn` (bit 6 selects signed); the second halfword is
-    // `RdLo RdHi 000a Rm` (bit 4 selects accumulate).
-    if first & 0xFFF0 == 0xFBA0 || first & 0xFFF0 == 0xFBC0 {
+    // `RdLo RdHi 000a Rm` (bit 4 selects accumulate). The second halfword bits
+    // 7-5 are 000, which separates them from SMLALD/SMLSLD (bits 7-5 = 110).
+    if (first & 0xFFF0 == 0xFBA0 || first & 0xFFF0 == 0xFBC0)
+        && second & 0x00E0 == 0
+    {
         let rn = (first & 0x0F) as usize;
         let rdlo = ((second >> 12) & 0x0F) as usize;
         let rdhi = ((second >> 8) & 0x0F) as usize;
@@ -3985,8 +3988,12 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         };
         return format!("mrs r{rd}, {name}");
     }
-    // MSR <apsr|xpsr>_<mask>, Rm (0xF380-0xF38F 0x8maskSYSm).
-    if first & 0xFFF0 == 0xF380 && second & 0x00F0 == 0x0000 {
+    // MSR <apsr|xpsr>_<mask>, Rm (0xF380-0xF38F 0x8maskSYSm). Second bits 15-12
+    // are 1000, which separates it from USAT (0xF380|Rn, bits 15-12 = 0).
+    if first & 0xFFF0 == 0xF380
+        && second & 0xF000 == 0x8000
+        && second & 0x00F0 == 0x0000
+    {
         let mask = (second >> 8) & 0x0F;
         let rm = first & 0x0F;
         let mut mask_str = String::new();
@@ -4050,6 +4057,139 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
                 format!("{mnem} r{rd}, r{rm}, ror #{rotate}")
             };
         }
+    }
+
+    // QADD/QSUB/QDADD/QDSUB Rd, Rm, Rn (`0xFA80|Rn` prefix). Second halfword
+    // `1111 Rd op Rm`; bits 7-4 select QADD=1000 / QDADD=1001 / QSUB=1010 /
+    // QDSUB=1011. Checked before SXTAB (which shares `first & 0xFF0F == 0xFA00`).
+    if first & 0xFFF0 == 0xFA80 {
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let rn = (first & 0x0F) as usize;
+        let mnem = match (second >> 4) & 0x0F {
+            0x8 => "qadd",
+            0x9 => "qdadd",
+            0xA => "qsub",
+            _ => "qdsub",
+        };
+        return format!("{mnem} r{rd}, r{rm}, r{rn}");
+    }
+
+    // SEL Rd, Rn, Rm (`0xFAA0|Rn`, second `1111 Rd 1000 Rm`). Checked before
+    // SXTAB (which shares `first & 0xFF0F == 0xFA00`).
+    if first & 0xFFF0 == 0xFAA0 && second & 0x00F0 == 0x0080 {
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let rn = (first & 0x0F) as usize;
+        return format!("sel r{rd}, r{rn}, r{rm}");
+    }
+
+    // SXTAH/SXTB/UXTAH/UXTB Rd, Rn, Rm (extend and add). First halfword
+    // `0xFA00|Rn` (SXTAH) / `0xFA10|Rn` (UXTAH) / `0xFA40|Rn` (SXTAB) /
+    // `0xFA50|Rn` (UXTAB), with Rn != PC; second `1111 Rd 1000 Rm`. The
+    // operation is encoded in bits 7-4 of the first halfword.
+    let ext_op = (first >> 4) & 0x0F;
+    if first & 0xFF00 == 0xFA00
+        && second & 0x00F0 == 0x0080
+        && (ext_op == 0 || ext_op == 1 || ext_op == 4 || ext_op == 5)
+        && first & 0x0F != 0x0F
+    {
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let rn = (first & 0x0F) as usize;
+        let mnem = match ext_op {
+            0 => "sxtah",
+            1 => "uxtah",
+            4 => "sxtab",
+            _ => "uxtab",
+        };
+        return format!("{mnem} r{rd}, r{rn}, r{rm}");
+    }
+
+    // SSAT Rd, #sat, Rm {, shift} (`0xF300|Rn` prefix, bit 5 = ASR). Second
+    // `0 sh sat Rd 00 imm5`; sat = imm5 + 1, shift = bit12:bits7-6. Second bit
+    // 15 is clear, which separates SSAT from B<cond>.W (which sets bit 15).
+    if first & 0xFFC0 == 0xF300 && second & 0x8000 == 0 {
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rn = (first & 0x0F) as usize;
+        let sat = (second & 0x1F) + 1;
+        let shift = ((((second >> 12) & 1) << 2) | ((second >> 6) & 0x3)) as u32;
+        let asr = first & 0x0020 != 0;
+        let shift_str = if shift == 0 {
+            String::new()
+        } else {
+            format!(", {} #{shift}", if asr { "asr" } else { "lsl" })
+        };
+        return format!("ssat r{rd}, #{sat}, r{rn}{shift_str}");
+    }
+
+    // USAT Rd, #sat, Rm {, shift} (`0xF380|Rn` prefix, bit 5 = ASR). Second
+    // `0 sh sat Rd 00 imm5`; sat = imm5 (0-31), shift = bit12:bits7-6. Second
+    // bit 15 is clear, which separates USAT from B<cond>.W and MSR.
+    if first & 0xFFC0 == 0xF380 && second & 0x8000 == 0 {
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rn = (first & 0x0F) as usize;
+        let sat = second & 0x1F;
+        let shift = ((((second >> 12) & 1) << 2) | ((second >> 6) & 0x3)) as u32;
+        let asr = first & 0x0020 != 0;
+        let shift_str = if shift == 0 {
+            String::new()
+        } else {
+            format!(", {} #{shift}", if asr { "asr" } else { "lsl" })
+        };
+        return format!("usat r{rd}, #{sat}, r{rn}{shift_str}");
+    }
+
+    // SMULxy/SMLAxy Rd, Rn, Rm {, Ra} (signed 16x16 multiply / multiply-
+    // accumulate, `0xFB10|Rn`). Second `Ra Rd 00 yx Rm`: bits 15-12 = Ra (F =
+    // SMUL, no accumulate), bit 5 = Rn half (B/T), bit 4 = Rm half (B/T).
+    if first & 0xFFF0 == 0xFB10 {
+        let rn = (first & 0x0F) as usize;
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let ra = (second >> 12) & 0x0F;
+        let x = if second & 0x0020 != 0 { 't' } else { 'b' };
+        let y = if second & 0x0010 != 0 { 't' } else { 'b' };
+        return if ra == 0xF {
+            format!("smul{x}{y} r{rd}, r{rn}, r{rm}")
+        } else {
+            format!("smla{x}{y} r{rd}, r{rn}, r{rm}, r{ra}")
+        };
+    }
+
+    // SMMUL/SMMLA/SMMLS Rd, Rn, Rm {, Ra} (signed most-significant word
+    // multiply, `0xFB50|Rn` / `0xFB60|Rn`). Second `Ra Rd 0000 Rm`.
+    if first & 0xFFF0 == 0xFB50 || first & 0xFFF0 == 0xFB60 {
+        let rn = (first & 0x0F) as usize;
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let ra = (second >> 12) & 0x0F;
+        let sub = first & 0xFFF0 == 0xFB60;
+        return if ra == 0xF {
+            format!("smmul r{rd}, r{rn}, r{rm}")
+        } else if sub {
+            format!("smmls r{rd}, r{rn}, r{rm}, r{ra}")
+        } else {
+            format!("smmla r{rd}, r{rn}, r{rm}, r{ra}")
+        };
+    }
+
+    // SMLALD/SMLSLD RdLo, RdHi, Rn, Rm (signed 64-bit multiply-accumulate,
+    // `0xFBC0|Rn` / `0xFBD0|Rn`, second bits 7-4 = 1100). Second `RdLo RdHi
+    // 1100 Rm`; separated from UMULL/SMULL (second bits 7-4 = 0000).
+    if (first & 0xFFF0 == 0xFBC0 || first & 0xFFF0 == 0xFBD0)
+        && second & 0x00F0 == 0x00C0
+    {
+        let rn = (first & 0x0F) as usize;
+        let rdlo = ((second >> 12) & 0x0F) as usize;
+        let rdhi = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let mnem = if first & 0xFFF0 == 0xFBD0 {
+            "smlsld"
+        } else {
+            "smlald"
+        };
+        return format!("{mnem} r{rdlo}, r{rdhi}, r{rn}, r{rm}");
     }
 
     // Bit-field extract/insert/clear: SBFX (0xF340), BFI (0xF360 with

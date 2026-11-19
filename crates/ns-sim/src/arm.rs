@@ -1056,7 +1056,11 @@ impl ArmCore {
         // `1111 1011 1s10 Rn` (bits 7-4 = 1010 unsigned / 1100 signed, so bit
         // 6 selects signed). The second halfword is `RdLo RdHi 000a Rm`, where
         // bit 4 selects accumulate (UMLAL/SMLAL).
-        if first & 0xFFF0 == 0xFBA0 || first & 0xFFF0 == 0xFBC0 {
+        // The second halfword bits 7-5 are 000 for UMULL/SMULL/UMLAL/SMLAL,
+        // which separates them from SMLALD/SMLSLD (bits 7-5 = 110).
+        if (first & 0xFFF0 == 0xFBA0 || first & 0xFFF0 == 0xFBC0)
+            && second & 0x00E0 == 0
+        {
             let rn = (first & 0x0F) as usize;
             let rdlo = ((second >> 12) & 0x0F) as usize;
             let rdhi = ((second >> 8) & 0x0F) as usize;
@@ -1503,7 +1507,12 @@ impl ArmCore {
         // MSR <apsr|xpsr>_<mask>, Rm (0xF380-0xF38F 0x8maskSYSm): the source
         // register is bits 3-0 of the first halfword, the special register is
         // bits 3-0 of the second, and the mask selects which fields to write.
-        if first & 0xFFF0 == 0xF380 && second & 0x00F0 == 0x0000 {
+        // MSR requires second bits 15-12 = 1000 (0x8maskSYSm), which separates
+        // it from USAT (0xF380|Rn, second bits 15-12 = 0).
+        if first & 0xFFF0 == 0xF380
+            && second & 0xF000 == 0x8000
+            && second & 0x00F0 == 0x0000
+        {
             let special = second & 0x0F;
             let mask = ((second >> 8) & 0x0F) as u32;
             let rm = (first & 0x0F) as usize;
@@ -1573,6 +1582,178 @@ impl ArmCore {
                 self.regs[rd] = r;
                 return;
             }
+        }
+
+        // QADD/QSUB/QDADD/QDSUB (saturating add/sub, `0xFA80|Rn` prefix).
+        // Second halfword `1111 Rd op Rm`; bits 7-4 select QADD=1000 /
+        // QDADD=1001 / QSUB=1010 / QDSUB=1011.
+        if first & 0xFFF0 == 0xFA80 {
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let rn = (first & 0x0F) as usize;
+            let rn_v = self.regs[rn] as i32;
+            let rm_v = self.regs[rm] as i32;
+            let r = match (second >> 4) & 0x0F {
+                0x8 => sat_q(rn_v as i64 + rm_v as i64),                       // QADD
+                0x9 => sat_q(rn_v as i64 + sat_q(rm_v as i64 * 2) as i64),     // QDADD
+                0xA => sat_q(rn_v as i64 - rm_v as i64),                       // QSUB
+                _ => sat_q(rn_v as i64 - sat_q(rm_v as i64 * 2) as i64),       // QDSUB
+            };
+            self.regs[rd] = r as u32;
+            return;
+        }
+
+        // SEL Rd, Rn, Rm (`0xFAA0|Rn`, second `1111 Rd 1000 Rm`): each byte is
+        // taken from Rn when the corresponding GE flag is set, else from Rm.
+        if first & 0xFFF0 == 0xFAA0 && second & 0x00F0 == 0x0080 {
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let rn = (first & 0x0F) as usize;
+            let ge = (self.xpsr >> 16) & 0xF;
+            let mut result = 0u32;
+            for byte in 0..4 {
+                let shift = byte * 8;
+                let sel = (ge >> byte) & 1 != 0;
+                let src = if sel { rn } else { rm };
+                result |= ((self.regs[src] >> shift) & 0xFF) << shift;
+            }
+            self.regs[rd] = result;
+            return;
+        }
+
+        // SXTAB/SXTAH/UXTAB/UXTAH (extend and add). First halfword `0xFA00|Rn`
+        // (SXTAH) / `0xFA10|Rn` (UXTAH) / `0xFA40|Rn` (SXTAB) / `0xFA50|Rn`
+        // (UXTAB), with Rn != PC; second `1111 Rd 1000 Rm`. The operation is
+        // encoded in bits 7-4 of the first halfword. The low halfword or byte
+        // of Rm is sign/zero extended and added to Rn.
+        let ext_op = (first >> 4) & 0x0F;
+        if first & 0xFF00 == 0xFA00
+            && second & 0x00F0 == 0x0080
+            && (ext_op == 0 || ext_op == 1 || ext_op == 4 || ext_op == 5)
+            && first & 0x0F != 0x0F
+        {
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let rn = (first & 0x0F) as usize;
+            let v = self.regs[rm];
+            let ext = match ext_op {
+                0 => v as u16 as i16 as i32 as u32, // SXTAH
+                1 => (v as u16) as u32,             // UXTAH
+                4 => v as u8 as i8 as i32 as u32,   // SXTAB
+                _ => (v as u8) as u32,              // UXTAB
+            };
+            self.regs[rd] = self.regs[rn].wrapping_add(ext);
+            return;
+        }
+
+        // SSAT Rd, #sat, Rm {, shift} (`0xF300|Rn` prefix, bit 5 = ASR).
+        // Second `0 sh sat Rd 00 imm5`; sat = imm5 + 1, shift = bit12:bits7-6.
+        // Second bit 15 is clear, which separates SSAT from the shared 0xF3xx
+        // conditional-branch wide space (B<cond>.W sets second bit 15).
+        if first & 0xFFC0 == 0xF300 && second & 0x8000 == 0 {
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rn = (first & 0x0F) as usize;
+            let sat = ((second & 0x1F) as u32) + 1;
+            let shift = ((((second >> 12) & 1) as u32) << 2) | (((second >> 6) & 0x3) as u32);
+            let asr = first & 0x0020 != 0;
+            let v = if asr {
+                (self.regs[rn] as i32).wrapping_shr(shift) as i64
+            } else {
+                (self.regs[rn] as i32 as i64) << shift
+            };
+            self.regs[rd] = sat_signed(v, sat) as u32;
+            return;
+        }
+
+        // USAT Rd, #sat, Rm {, shift} (`0xF380|Rn` prefix, bit 5 = ASR).
+        // Second `0 sh sat Rd 00 imm5`; sat = imm5 (0-31), shift = bit12:bits7-6.
+        // Second bit 15 is clear, which separates USAT from B<cond>.W.
+        if first & 0xFFC0 == 0xF380 && second & 0x8000 == 0 {
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rn = (first & 0x0F) as usize;
+            let sat = (second & 0x1F) as u32;
+            let shift = ((((second >> 12) & 1) as u32) << 2) | (((second >> 6) & 0x3) as u32);
+            let asr = first & 0x0020 != 0;
+            let v = if asr {
+                (self.regs[rn] as i32).wrapping_shr(shift) as i64
+            } else {
+                (self.regs[rn] as i32 as i64) << shift
+            };
+            self.regs[rd] = sat_unsigned(v, sat) as u32;
+            return;
+        }
+
+        // SMULxy/SMLAxy (signed 16x16 multiply / multiply-accumulate,
+        // `0xFB10|Rn`). Second `Ra Rd 00 yx Rm`: bits 15-12 = Ra (F = SMUL,
+        // no accumulate), bit 5 = Rn half (B/T), bit 4 = Rm half (B/T).
+        if first & 0xFFF0 == 0xFB10 {
+            let rn = (first & 0x0F) as usize;
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let ra = (second >> 12) & 0x0F;
+            let rn_half = if second & 0x0020 != 0 {
+                (self.regs[rn] >> 16) as u16
+            } else {
+                self.regs[rn] as u16
+            };
+            let rm_half = if second & 0x0010 != 0 {
+                (self.regs[rm] >> 16) as u16
+            } else {
+                self.regs[rm] as u16
+            };
+            let product = (rn_half as i16 as i32).wrapping_mul(rm_half as i16 as i32);
+            let result = if ra == 0xF {
+                product as u32
+            } else {
+                product.wrapping_add(self.regs[ra as usize] as i32) as u32
+            };
+            self.regs[rd] = result;
+            return;
+        }
+
+        // SMMUL/SMMLA/SMMLS (signed most-significant word multiply,
+        // `0xFB50|Rn` / `0xFB60|Rn`). Second `Ra Rd 0000 Rm`: Ra = F (SMMUL) or
+        // the accumulator register.
+        if first & 0xFFF0 == 0xFB50 || first & 0xFFF0 == 0xFB60 {
+            let rn = (first & 0x0F) as usize;
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let ra = (second >> 12) & 0x0F;
+            let product =
+                ((self.regs[rn] as i32 as i64).wrapping_mul(self.regs[rm] as i32 as i64)) >> 32;
+            let sub = first & 0xFFF0 == 0xFB60; // SMMLS
+            let result = if ra == 0xF {
+                product as i32
+            } else if sub {
+                (self.regs[ra as usize] as i32).wrapping_sub(product as i32)
+            } else {
+                (product as i32).wrapping_add(self.regs[ra as usize] as i32)
+            };
+            self.regs[rd] = result as u32;
+            return;
+        }
+
+        // SMLALD/SMLSLD (signed 64-bit multiply-accumulate, `0xFBC0|Rn` /
+        // `0xFBD0|Rn`, second bits 7-4 = 1100). Second `RdLo RdHi 1100 Rm`.
+        if (first & 0xFFF0 == 0xFBC0 || first & 0xFFF0 == 0xFBD0)
+            && second & 0x00F0 == 0x00C0
+        {
+            let rn = (first & 0x0F) as usize;
+            let rdlo = ((second >> 12) & 0x0F) as usize;
+            let rdhi = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let sub = first & 0xFFF0 == 0xFBD0;
+            let acc = ((self.regs[rdhi] as u64) << 32) | (self.regs[rdlo] as u64);
+            let product = (self.regs[rn] as i32 as i64).wrapping_mul(self.regs[rm] as i32 as i64)
+                as u64;
+            let result = if sub {
+                acc.wrapping_sub(product)
+            } else {
+                acc.wrapping_add(product)
+            };
+            self.regs[rdlo] = result as u32;
+            self.regs[rdhi] = (result >> 32) as u32;
+            return;
         }
 
         // Bit-field extract/insert/clear: SBFX (0xF340), BFI (0xF360 with
@@ -2534,6 +2715,38 @@ fn thumb_shift_value(value: u32, amount: u32, kind: u32) -> (u32, bool, bool) {
 fn sign_extend_thumb(value: u32, bits: u32) -> u32 {
     let shift = 32 - bits;
     ((value << shift) as i32 >> shift) as u32
+}
+
+/// Saturate a signed 32-bit add/sub result to the Q range [-2^31, 2^31-1].
+fn sat_q(value: i64) -> i32 {
+    if value > i32::MAX as i64 {
+        i32::MAX
+    } else if value < i32::MIN as i64 {
+        i32::MIN
+    } else {
+        value as i32
+    }
+}
+
+/// Saturate a value to a signed `bits`-bit range (used by SSAT).
+fn sat_signed(value: i64, bits: u32) -> i64 {
+    if bits >= 32 {
+        value
+    } else {
+        let max = (1i64 << (bits - 1)) - 1;
+        let min = -(1i64 << (bits - 1));
+        value.clamp(min, max)
+    }
+}
+
+/// Saturate a value to an unsigned `bits`-bit range (used by USAT).
+fn sat_unsigned(value: i64, bits: u32) -> i64 {
+    if bits >= 32 {
+        value.clamp(0, i32::MAX as i64)
+    } else {
+        let max = (1i64 << bits) - 1;
+        value.clamp(0, max)
+    }
 }
 
 /// Expand a Thumb-2 modified immediate (12-bit `imm12`) to its 32-bit value.
