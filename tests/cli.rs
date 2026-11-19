@@ -6417,7 +6417,7 @@ fn mcp_handshake_and_list_tools() {
         "arch_list", "device_list", "session_create", "state", "step", "step_over", "step_out",
         "run", "continue", "reg_list", "reg_get", "reg_set", "mem_read", "mem_write", "mem_fill",
         "mem_search", "mem_load", "mem_dump", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
-        "cycle_get", "interrupt_take", "periph_status", "periph_reg_read", "periph_reg_write",
+        "cycle_get", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
@@ -6479,6 +6479,17 @@ fn mcp_call_step_and_state() {
     assert!(!r["isError"].as_bool().unwrap(), "disasm failed: {}", r);
     let insns = r["structuredContent"]["instructions"].as_array().unwrap();
     assert_eq!(insns.len(), 2);
+
+    // Peripheral base relocation persists across calls.
+    let r = client.call_tool(
+        "periph_config",
+        serde_json::json!({ "session": sess, "uart_base": "0x50000000", "gpio_base": "0x50002000" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "periph_config failed: {}", r);
+    assert_eq!(r["structuredContent"]["uartBase"], 0x5000_0000u64);
+    assert_eq!(r["structuredContent"]["gpioBase"], 0x5000_2000u64);
+    let r = client.call_tool("periph_status", serde_json::json!({ "session": sess }));
+    assert_eq!(r["structuredContent"]["uartBase"], 0x5000_0000u64);
 
     // An error tool call surfaces isError, not a JSON-RPC error.
     let r = client.call_tool("reg_set", serde_json::json!({ "session": sess, "name": "bogus", "value": "1" }));

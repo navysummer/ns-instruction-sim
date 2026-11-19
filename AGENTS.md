@@ -176,7 +176,7 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `state`、`step`、`step_over`、`step_out`、`run`、`continue`、`reg_list/get/set`、
    `mem_read/write/fill/search/load/dump`、`bp_set/clear/list/enable/disable/clear_all`、
    `disasm`、`reset`、`cycle_get/estimate/tick`、`interrupt_take/pending/set`、
-   `periph_status/uart/gpio/timer/reg_read/reg_write/reg_list/field_get/field_set/svd_load`、
+   `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/field_get/field_set/svd_load`、
    `symbol_list/at/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
 
 ---

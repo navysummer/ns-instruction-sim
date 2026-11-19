@@ -703,6 +703,19 @@ fn tools() -> Vec<Tool> {
             handler: tool_periph_status,
         },
         Tool {
+            name: "periph_config",
+            description: "配置虚拟外设基址（UART/GPIO 重定位并持久化）。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("uart_base", prop_str("UART 寄存器基址（默认 0x40000000）。")),
+                    ("gpio_base", prop_str("GPIO 寄存器基址（默认 0x40002000）。")),
+                ],
+                &[],
+            ),
+            handler: tool_periph_config,
+        },
+        Tool {
             name: "periph_uart",
             description: "读取 UART 输出（可清空缓冲）。",
             schema: obj(
@@ -1628,6 +1641,26 @@ fn tool_periph_status(server: &McpServer, args: &Map<String, Value>) -> Result<V
     with_sim(server, args, false, |sim, fw, _| {
         let state = full_state(sim, fw);
         Ok(state.get("peripherals").cloned().unwrap_or(Value::Null))
+    })
+}
+
+fn tool_periph_config(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let uart_base = s(args, "uart_base").map(|x| parse_num(&x)).transpose()?;
+    let gpio_base = s(args, "gpio_base").map(|x| parse_num(&x)).transpose()?;
+    if uart_base.is_none() && gpio_base.is_none() {
+        bail!("至少提供 uart_base 或 gpio_base");
+    }
+    with_sim(server, args, true, |sim, _, _| {
+        if let Some(v) = uart_base {
+            sim.peripherals.uart_base = v;
+        }
+        if let Some(v) = gpio_base {
+            sim.peripherals.gpio_base = v;
+        }
+        Ok(json!({
+            "uartBase": sim.peripherals.uart_base,
+            "gpioBase": sim.peripherals.gpio_base,
+        }))
     })
 }
 
