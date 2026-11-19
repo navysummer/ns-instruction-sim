@@ -123,7 +123,7 @@ ns-instruction-sim/
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON） | `--arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要） | `--session --arch --firmware --base --json --fields --summary` | 状态/JSON/摘要 |
-| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载 | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --file --device --peripheral --register --field --force --session --json` | 表/JSON |
+| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费） | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --input --file --device --peripheral --register --field --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `line` / `addr` | ELF 符号与源行号映射 | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` | 周期计数/指令周期估算/外设推进 | `--addr --cycles --session --json` | 值/JSON |
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
@@ -149,13 +149,14 @@ ns-instruction-sim/
    `armItState`（仅 ARM：`{mask,cond,index}`，`mask==0` 表示无活动 IT 块；其余架构 null，
    用于在 Thumb-2 IT 块中途观察剩余条件指令）、`pcLimit`（本架构可执行的最大 PC 地址，
    16 位 PC 架构为 0xFFFF，其余为 u32::MAX）、
-   `peripherals`（UART/GPIO/定时器/看门狗/中断/`externalRegs`）、
+   `peripherals`（UART 输出/`uartInput`（未消费的注入输入字节）/GPIO/定时器/看门狗/中断/`externalRegs`）、
    `csr`（mstatus/mtvec/mepc/mcause/mie/mhartid）、`breakpoints`（地址/条件/命中次数/一次性/启用状态/实际命中）、
    `firmware`（path/base/format，无则 null）、`pcSymbol`（最近 ELF 符号 name/address/size，无则 null）），
    字段名不随版本随意变动。
 3. **错误**：一律写 stderr，格式 `错误: <消息>`，进程退出码 `1`。成功的 `--json` 退出码 `0`。
 4. **会话文件**：JSON，含 `arch`、`pc`、`cycle_count`、`registers`、`memory`、`breakpoints`、
-   `memory_overlay`（显式内存写，跨架构重放）、`peripherals`（含 `external_regs`）、`csr`、`firmware`（路径/格式/基址）。
+   `memory_overlay`（显式内存写，跨架构重放）、`peripherals`（含 `external_regs` 与
+   `uart_input` 未消费输入字节）、`csr`、`firmware`（路径/格式/基址）。
    缺失路径时自动新建临时会话。
 
 ### 3.3 新增命令必须满足
@@ -281,6 +282,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `mcp_bp_list_symbols`：MCP `bp_list {"symbols":true}` 返回符号注释，缺省为 null。
 - `bp_set_out_of_range_rejected`：16 位 PC 架构（mcs51/c166/avr）越界断点地址被拒绝，不静默回绕；`--until` 同校验。
 - `periph_timer_config_and_uart_write`：定时器配置与 UART 寄存器写输出。
+- `periph_uart_input_injects_and_firmware_reads`：`periph uart --bytes/--input` 注入输入字节，
+  固件从 UART 数据寄存器读取（FIFO 消费、跨会话持久化），`state --json` 的
+  `peripherals.uartInput` 显示未消费字节。
+- `mcp_periph_uart_input`：MCP `periph_uart {"bytes":[...]}` 注入后 `run` 读到首字节。
 - `device_svd_parse_and_filter`：SVD 文件解析、外设/寄存器过滤与错误路径。
 - `run_steps_runs_exactly_n_instructions`：`--steps N` 精确运行 N 条指令并停住。
 - `run_until_stops_at_address`：`run --until` 临时断点运行到指定地址且不持久化。

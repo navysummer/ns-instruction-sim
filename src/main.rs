@@ -885,7 +885,7 @@ enum PeriphSub {
         #[arg(long)]
         json: bool,
     },
-    /// 读取 UART 输出字节数 / 清空。
+    /// 读取 UART 输出字节数 / 清空 / 注入输入字节（供固件从数据寄存器读取）。
     Uart {
         /// 会话文件路径（JSON）。
         #[arg(short, long)]
@@ -893,6 +893,12 @@ enum PeriphSub {
         /// 清空输出缓冲。
         #[arg(long)]
         clear: bool,
+        /// 注入 UART 输入文本（UTF-8 字节，FIFO）。
+        #[arg(long)]
+        input: Option<String>,
+        /// 注入 UART 输入字节（空格分隔，支持 0xNN；与 --input 互斥）。
+        #[arg(long, value_delimiter = ' ', num_args = 1.., conflicts_with = "input")]
+        bytes: Vec<String>,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -1674,6 +1680,7 @@ fn peripherals_json(sim: &Simulator) -> serde_json::Value {
         .collect();
     serde_json::json!({
         "uartBase": sim.peripherals.uart_base,
+        "uartInput": sim.peripherals.uart_rx.borrow().iter().copied().collect::<Vec<_>>(),
         "gpioBase": sim.peripherals.gpio_base,
         "uart": sim.peripherals.outputs,
         "uartText": String::from_utf8_lossy(&sim.peripherals.outputs),
@@ -3562,23 +3569,48 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             Ok(())
         }
-        PeriphSub::Uart { session, clear, json } => {
+        PeriphSub::Uart { session, clear, input, bytes, json } => {
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
-            let text = String::from_utf8_lossy(&sim.peripherals.outputs).into_owned();
-            let len = sim.peripherals.outputs.len();
-            if clear {
-                sim.peripherals.outputs.clear();
+            let mut injected = 0usize;
+            if let Some(text) = &input {
+                injected = text.len();
+                sim.push_uart_input(text.as_bytes());
+            } else if !bytes.is_empty() {
+                let mut data = Vec::with_capacity(bytes.len());
+                for b in &bytes {
+                    let v = parse_num(b)?;
+                    if v > 0xff {
+                        bail!("字节超出 0..=255: {}", b);
+                    }
+                    data.push(v as u8);
+                }
+                injected = data.len();
+                sim.push_uart_input(&data);
+            }
+            if injected > 0 || clear {
+                if clear {
+                    sim.peripherals.outputs.clear();
+                }
                 let s = Session::capture(&sim, fw);
                 s.save(&session)?;
             }
+            let text = String::from_utf8_lossy(&sim.peripherals.outputs).into_owned();
+            let len = sim.peripherals.outputs.len();
+            let rx_len = sim.peripherals.uart_rx.borrow().len();
             if json {
                 print_json(&serde_json::json!({
                     "len": len,
                     "text": text,
                     "cleared": clear,
+                    "injected": injected,
+                    "inputLen": rx_len,
                 }))?;
             } else {
-                println!("UART 输出 ({len} 字节): {text}");
+                let mut msg = format!("UART 输出 ({len} 字节): {text}");
+                if injected > 0 {
+                    msg.push_str(&format!("\nUART 注入 {injected} 字节（剩余接收队列 {rx_len}）"));
+                }
+                println!("{msg}");
             }
             Ok(())
         }

@@ -6,6 +6,8 @@
 //! memory-mapped UART whose output the IDE can surface in the console.
 
 use serde::Serialize;
+use std::cell::RefCell;
+use std::collections::VecDeque;
 
 pub mod mcs51;
 
@@ -199,6 +201,10 @@ pub struct VirtualPeripherals {
     pub uart_base: u32,
     pub putchar: Box<dyn FnMut(u8) + Send>,
     pub outputs: Vec<u8>,
+    /// UART receive queue: bytes an external caller injected (`periph uart
+    /// --input`/`--bytes`). A firmware load from the UART data register pops
+    /// the next byte (0 when empty).
+    pub uart_rx: RefCell<VecDeque<u8>>,
     /// GPIO register base address.
     pub gpio_base: u32,
     /// GPIO output value (bit per pin).
@@ -320,6 +326,7 @@ impl VirtualPeripherals {
             uart_base,
             putchar: Box::new(|_| {}),
             outputs: Vec::new(),
+            uart_rx: RefCell::new(VecDeque::new()),
             gpio_base: 0x4000_2000,
             gpio_out: 0,
             gpio_dir: 0,
@@ -2623,6 +2630,12 @@ impl Simulator {
         self.peripheral_write(address, byte);
     }
 
+    /// Inject bytes into the UART receive queue so a firmware load from the
+    /// UART data register consumes them (in FIFO order).
+    pub fn push_uart_input(&mut self, bytes: &[u8]) {
+        self.peripherals.uart_rx.borrow_mut().extend(bytes.iter().copied());
+    }
+
 
     fn set_reg(&mut self, index: usize, value: u32) {
         if index != 0 {
@@ -2792,6 +2805,14 @@ impl Simulator {
                     _ => 0,
                 });
             }
+        }
+        // UART data register: a firmware read pops the next injected input
+        // byte (0 when the receive queue is empty).
+        if address >= self.peripherals.uart_base
+            && address < self.peripherals.uart_base + 8
+            && !self.peripherals.external_regs.contains_key(&address)
+        {
+            return Some(self.peripherals.uart_rx.borrow_mut().pop_front().unwrap_or(0) as u32);
         }
         if let Some(value) = self.peripherals.external_regs.get(&address) {
             return Some(*value);

@@ -59,6 +59,8 @@ ns-instruction-sim state --session arm.json --json --fields armItState,pcLimit
 ns-instruction-sim state --session s.json --summary
 ns-instruction-sim reset --session s.json --entry 0x80000000 --json
 ns-instruction-sim periph status --session s.json
+ns-instruction-sim periph uart --session s.json --input "AT\r\n"
+ns-instruction-sim periph uart --session s.json --bytes 0x41 0x42 0x43
 
 # 符号 / 行号 / 周期 / 中断 / 看门狗 / CSR / 外设寄存器
 ns-instruction-sim symbol list --session s.json

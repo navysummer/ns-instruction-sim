@@ -886,11 +886,13 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "periph_uart",
-            description: "读取 UART 输出（可清空缓冲）。",
+            description: "读取 UART 输出 / 注入输入字节（固件从数据寄存器读取）。",
             schema: obj(
                 &[
                     ("session", session.clone()),
                     ("clear", prop_bool("清空输出缓冲。")),
+                    ("input", prop_str("注入 UART 输入文本（UTF-8 字节，FIFO）。")),
+                    ("bytes", prop_arr("注入 UART 输入字节（支持 0xNN）。")),
                 ],
                 &["session"],
             ),
@@ -2230,13 +2232,39 @@ fn tool_periph_config(server: &McpServer, args: &Map<String, Value>) -> Result<V
 
 fn tool_periph_uart(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let clear = b(args, "clear").unwrap_or(false);
+    let mut injected = 0usize;
     with_sim(server, args, true, |sim, _, _| {
+        if let Some(text) = s(args, "input") {
+            injected = text.len();
+            sim.push_uart_input(text.as_bytes());
+        } else {
+            let items = arr(args, "bytes");
+            if !items.is_empty() {
+                let mut data = Vec::with_capacity(items.len());
+                for item in &items {
+                    let v = parse_num(item)?;
+                    if v > 0xff {
+                        bail!("字节超出 0..=255: {item}");
+                    }
+                    data.push(v as u8);
+                }
+                injected = data.len();
+                sim.push_uart_input(&data);
+            }
+        }
         let text = String::from_utf8_lossy(&sim.peripherals.outputs).into_owned();
         let len = sim.peripherals.outputs.len();
         if clear {
             sim.peripherals.outputs.clear();
         }
-        Ok(json!({ "len": len, "text": text, "cleared": clear }))
+        let input_len = sim.peripherals.uart_rx.borrow().len();
+        Ok(json!({
+            "len": len,
+            "text": text,
+            "cleared": clear,
+            "injected": injected,
+            "inputLen": input_len,
+        }))
     })
 }
 

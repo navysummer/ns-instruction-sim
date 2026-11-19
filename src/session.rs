@@ -54,6 +54,9 @@ pub struct PeriphState {
     /// UART register base address.
     #[serde(default)]
     pub uart_base: u32,
+    /// Bytes injected into the UART receive queue (FIFO, unconsumed).
+    #[serde(default)]
+    pub uart_input: Vec<u8>,
     /// GPIO register base address.
     #[serde(default)]
     pub gpio_base: u32,
@@ -207,6 +210,7 @@ impl Session {
             firmware,
             peripherals: PeriphState {
                 uart_base: sim.peripherals.uart_base,
+                uart_input: sim.peripherals.uart_rx.borrow().iter().copied().collect(),
                 gpio_base: sim.peripherals.gpio_base,
                 gpio_out: sim.peripherals.gpio_out,
                 gpio_dir: sim.peripherals.gpio_dir,
@@ -313,6 +317,7 @@ impl Session {
         }
         // Restore virtual-peripheral state.
         sim.peripherals.uart_base = self.peripherals.uart_base;
+        sim.peripherals.uart_rx.borrow_mut().extend(self.peripherals.uart_input.iter().copied());
         sim.peripherals.gpio_base = self.peripherals.gpio_base;
         sim.peripherals.gpio_out = self.peripherals.gpio_out;
         sim.peripherals.gpio_dir = self.peripherals.gpio_dir;

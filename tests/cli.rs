@@ -7672,6 +7672,103 @@ fn mcp_run_until_condition() {
 }
 
 #[test]
+fn periph_uart_input_injects_and_firmware_reads() {
+    let dir = tmpdir();
+    let sess = dir.join("uart-in.json");
+    let elf = dir.join("uart-in.elf");
+    // lui x2,0x40000 (x2 = UART base); lbu x1,0(x2); sb x1,16(x0); ecall.
+    let code: [u8; 16] = [
+        0x37, 0x01, 0x00, 0x40,
+        0x83, 0x00, 0x01, 0x00,
+        0x23, 0x08, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_code(&elf, &code);
+    Command::new(bin())
+        .args(["state", "--arch", "riscv", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    // Inject bytes via `--bytes`; they appear in the UART receive queue.
+    let out = Command::new(bin())
+        .args(["periph", "uart", "--session", sess.to_str().unwrap(),
+               "--bytes", "0x41", "0x42", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["injected"], 2u64, "{}", json);
+    assert_eq!(json["inputLen"], 2u64, "{}", json);
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["peripherals"]["uartInput"], serde_json::json!([0x41, 0x42]));
+    // Firmware load from the UART data register consumes the first byte.
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(), "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["registers"]["ra"], 0x41u64, "{}", json);
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--len", "1"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("41"));
+    // One byte remains in the receive queue (persisted across invocations).
+    let out = Command::new(bin())
+        .args(["periph", "uart", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["inputLen"], 1u64, "{}", json);
+    // `--input` text form injects UTF-8 bytes.
+    let out = Command::new(bin())
+        .args(["periph", "uart", "--session", sess.to_str().unwrap(), "--input", "Hi"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("注入 2 字节"));
+}
+
+#[test]
+fn mcp_periph_uart_input() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-uart-{}.elf", std::process::id()));
+    let code: [u8; 16] = [
+        0x37, 0x01, 0x00, 0x40,
+        0x83, 0x00, 0x01, 0x00,
+        0x23, 0x08, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_code(&elf, &code);
+    let sess = dir.join(format!("mcp-uart-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({
+        "session": s, "arch": "riscv", "firmware": elf.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("periph_uart", serde_json::json!({
+        "session": s, "bytes": ["0x41", "0x42"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_uart: {}", r);
+    assert_eq!(r["structuredContent"]["injected"], 2u64, "{}", r);
+    assert_eq!(r["structuredContent"]["inputLen"], 2u64, "{}", r);
+    let r = client.call_tool("run", serde_json::json!({
+        "session": s, "firmware": elf.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "run: {}", r);
+    assert_eq!(r["structuredContent"]["registers"]["ra"], 0x41u64, "{}", r);
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
@@ -7991,6 +8088,7 @@ fn help_every_param() {
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--json"]),
+        (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--json"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
