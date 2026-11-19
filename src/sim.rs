@@ -456,6 +456,7 @@ pub fn analyze_run(
     max_steps: u64,
     collect_trace: bool,
     collect_regs: bool,
+    max_cycles: Option<u64>,
 ) -> RunAnalysis {
     let mut analysis = RunAnalysis {
         trace: Vec::new(),
@@ -467,6 +468,12 @@ pub fn analyze_run(
     };
     let mut count = 0u64;
     while count < max_steps {
+        if let Some(mc) = max_cycles {
+            if sim.cycle_count >= mc {
+                analysis.result = "cycles".to_string();
+                break;
+            }
+        }
         let pc_before = sim.program_counter();
         let result = sim.step();
         let read = |addr: u32| -> u8 { read_code_byte(sim, addr) };
@@ -501,6 +508,12 @@ pub fn analyze_run(
         if result != StepResult::Advanced {
             analysis.result = step_result_label(result).to_string();
             break;
+        }
+        if let Some(mc) = max_cycles {
+            if sim.cycle_count >= mc {
+                analysis.result = "cycles".to_string();
+                break;
+            }
         }
     }
     analysis.steps = count;

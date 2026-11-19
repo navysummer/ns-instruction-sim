@@ -12,6 +12,7 @@ ns-instruction-sim run --firmware app.elf --steps 1000 --json
 ns-instruction-sim run --firmware app.elf --session s.json --json
 ns-instruction-sim run --firmware app.elf --until 0x80000008 --json
 ns-instruction-sim run --firmware app.elf --until-condition "x1 == 5" --json
+ns-instruction-sim run --firmware app.elf --cycle-accurate --max-cycles 1000 --json
 ns-instruction-sim run --firmware app.elf --steps 1000 --trace
 ns-instruction-sim run --firmware app.elf --steps 100 --trace --trace-regs
 ns-instruction-sim version
@@ -21,6 +22,7 @@ ns-instruction-sim version --json
 ns-instruction-sim step --session s.json
 ns-instruction-sim continue --session s.json --max-steps 100000
 ns-instruction-sim continue --session s.json --until 0x80000008
+ns-instruction-sim continue --session s.json --max-cycles 1000 --json
 ns-instruction-sim continue --session s.json --until 0x80000008 --trace
 ns-instruction-sim continue --session s.json --until 0x80000008 --source
 ns-instruction-sim continue --session s.json --until-condition "x1 == 5"

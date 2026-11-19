@@ -112,11 +112,11 @@ ns-instruction-sim/
 | `arch` | `list` | 列出支持的架构与示例设备 | `--json` | 表/JSON |
 | `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析（文件或内置）/链接脚本/启动文件/外设初始化 C 骨架 | `--file --device --peripheral --register --out --json` | 表/文本/JSON |
 | `device` | `memory-map` | 列出设备内存区域（FLASH/RAM/PERIPHERALS），可用 `--addr` 查询地址所属区域 | `device [--addr] [--json]` | 表/JSON |
-| `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址/条件成立（可指定会话保留外设/SVD 寄存器；`--trace-regs` 打印每条指令后变化的寄存器） | `--firmware --session --arch --base --max-steps --steps --until --until-condition --cycle-accurate --save-session --json --trace --trace-regs --source` | 状态 |
+| `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址/条件成立/周期上限（可指定会话保留外设/SVD 寄存器；`--trace-regs` 打印每条指令后变化的寄存器；`--max-cycles` 到达即停并报 `lastResult="cycles"`） | `--firmware --session --arch --base --max-steps --steps --until --until-condition --max-cycles --cycle-accurate --save-session --json --trace --trace-regs --source` | 状态 |
 | `step` | — | 单步一条指令 | `--session --arch --firmware --base --json --source` | 状态 |
 | `step-over` | — | 步过（跳过调用） | 同上 | 状态 |
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
-| `continue` | — | 连续运行至断点/停止/上限/指定地址/条件成立（临时断点/条件每步后求值；`--trace-regs` 打印每条指令后变化的寄存器） | `--session --until --until-condition --max-steps --save --json --trace --trace-regs --source` | 状态 |
+| `continue` | — | 连续运行至断点/停止/上限/指定地址/条件成立/周期上限（临时断点/条件每步后求值；`--trace-regs` 打印每条指令后变化的寄存器；`--max-cycles` 到达即停并报 `lastResult="cycles"`） | `--session --until --until-condition --max-steps --max-cycles --save --json --trace --trace-regs --source` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` / `region` / `copy` | 内存读/写/填充（含确定性伪随机）/搜索模式/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验）/复制内存区域（源→目标，重叠范围按 memmove 语义） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --src --dst --name --format --width --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数；`list --symbols` 用 ELF 符号注释断点地址） | `--addr --symbol --line --condition --hit-count --once --symbols --session --json` | 表/JSON |
@@ -131,9 +131,9 @@ ns-instruction-sim/
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
 | `session` | `info` / `diff` | 会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）或比较两个会话的全部差异 | `--file` / `--a --b --limit [--json]` | 文本/JSON |
 | `firmware` | `info` | 固件元信息（格式/大小/架构/入口/符号表/源文件/首条指令反汇编），ELF 自动检测架构 | `--firmware --arch [--json]` | 文本/JSON |
-| `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期/寄存器快照） | `--session --arch --firmware --base --steps --max-steps --until --regs --out --json` | 轨迹/JSON |
-| `coverage` | — | 运行并统计执行覆盖（各 PC 执行次数、唯一 PC 数） | `--session --arch --firmware --base --steps --max-steps --until --json` | 覆盖表/JSON |
-| `profile` | — | 运行并统计指令助记符直方图 | `--session --arch --firmware --base --steps --max-steps --until --json` | 直方图/JSON |
+| `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期/寄存器快照；`--max-cycles` 到达即停并报 `result="cycles"`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --regs --out --json` | 轨迹/JSON |
+| `coverage` | — | 运行并统计执行覆盖（各 PC 执行次数、唯一 PC 数；`--max-cycles` 到达即停并报 `result="cycles"`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --json` | 覆盖表/JSON |
+| `profile` | — | 运行并统计指令助记符直方图（`--max-cycles` 到达即停并报 `result="cycles"`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --json` | 直方图/JSON |
 | `mcp` | — | 启动 MCP（Model Context Protocol）stdio 服务器，供大模型通过工具调用完整驱动仿真 | `--session`（默认会话文件） | JSON-RPC 2.0 / 工具结果 |
 
 > `trace` / `coverage` / `profile` / `disasm` 均支持 `--out FILE`，把 JSON 或文本结果直接写入文件
@@ -188,7 +188,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `session_save` 显式管理会话；`state` 读取完整快照。
 5. **工具覆盖**：`arch_list`、`device_list`、`device_info`、`device_svd/linker/startup/init`、
    `session_create/load/save`、
-   `state`（支持 `mem`/`mem_len` 附带内存快照）、`step`、`step_over`、`step_out`、`run`、`continue`、`reg_list/get/set`、
+   `state`（支持 `mem`/`mem_len` 附带内存快照）、`step`、`step_over`、`step_out`、
+   `run`/`continue`/`trace`/`coverage`/`profile`（均支持 `max_cycles` 周期上限，`lastResult`/`result="cycles"`）、`reg_list/get/set`、
    `mem_read/write/fill/search/load/dump/region/copy`、`bp_set/modify/clear/list/enable/disable/clear_all`
    （`bp_list` 支持 `symbols` 参数）、
    `disasm`、`reset`、`cycle_get/estimate/tick/set`、`interrupt_take/pending/set`、
@@ -292,6 +293,9 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `device_svd_parse_and_filter`：SVD 文件解析、外设/寄存器过滤与错误路径。
 - `run_steps_runs_exactly_n_instructions`：`--steps N` 精确运行 N 条指令并停住。
 - `run_until_stops_at_address`：`run --until` 临时断点运行到指定地址且不持久化。
+- `run_max_cycles_stops_at_cycle_bound`：`run --max-cycles N` 到达周期计数即停
+  （`lastResult="cycles"`，PC/周期/寄存器持久化）；`continue --max-cycles` 从会话续跑并停靠下一周期边界。
+- `mcp_run_max_cycles`：MCP `run`/`trace` 的 `max_cycles` 参数返回 `lastResult`/`result="cycles"`。
 - `run_until_condition_stops`：`run/continue --until-condition "x1 == 1"` 每步后求值，
   条件成立即停（`lastResult="condition"`，PC/寄存器持久化）；永不成立的条件运行到停机
   （`lastResult="halted"`）；`--trace` 与条件结合打印追踪并在停止点报 `result=condition`。

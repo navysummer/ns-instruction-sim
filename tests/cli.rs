@@ -1474,6 +1474,40 @@ fn run_until_stops_at_address() {
 }
 
 #[test]
+fn run_max_cycles_stops_at_cycle_bound() {
+    let dir = tmpdir();
+    let elf = dir.join("cycles.elf");
+    let sess = dir.join("cycles.json");
+    write_riscv_elf(&elf);
+    // cycle-accurate off: each instruction consumes 1 cycle, so --max-cycles 2
+    // stops after 2 instructions at PC 0x80000008 with lastResult="cycles".
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--max-cycles", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8000_0008u64);
+    assert_eq!(json["cycleCount"], 2u64);
+    assert_eq!(json["lastResult"], "cycles");
+    assert_eq!(json["registers"]["ra"], 1u64);
+    assert_eq!(json["registers"]["sp"], 3u64);
+    // `continue` resumes from the saved session and stops at the next bound.
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess.to_str().unwrap(),
+               "--max-cycles", "3", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8000_000cu64);
+    assert_eq!(json["cycleCount"], 3u64);
+    assert_eq!(json["lastResult"], "cycles");
+    assert_eq!(json["registers"]["ra"], 1u64);
+}
+
+#[test]
 fn state_includes_peripherals_and_csr() {
     let dir = tmpdir();
     let sess = dir.join("state_full.json");
@@ -8034,6 +8068,29 @@ fn mcp_state_mem() {
 }
 
 #[test]
+fn mcp_run_max_cycles() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let elf = tmpdir().join(format!("mcp-cycles-{}.elf", std::process::id()));
+    write_riscv_elf(&elf);
+    let r = client.call_tool("run", serde_json::json!({
+        "firmware": elf.to_str().unwrap(), "max_cycles": 2,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "run max_cycles: {}", r);
+    assert_eq!(r["structuredContent"]["pc"], 0x8000_0008u64);
+    assert_eq!(r["structuredContent"]["cycleCount"], 2u64);
+    assert_eq!(r["structuredContent"]["lastResult"], "cycles");
+    // The trace/coverage/profile analysis tools also honour max_cycles.
+    let r = client.call_tool("trace", serde_json::json!({
+        "firmware": elf.to_str().unwrap(), "max_cycles": 2,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "trace max_cycles: {}", r);
+    assert_eq!(r["structuredContent"]["cycleCount"], 2u64);
+    assert_eq!(r["structuredContent"]["result"], "cycles");
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
@@ -8342,8 +8399,8 @@ fn help_every_command() {
 fn help_every_param() {
     // Every CLI argument must appear (with its help text) in `--help`.
     let checks: &[(&[&str], &[&str])] = &[
-        (&["run"], &["--session", "--firmware", "--arch", "--base", "--max-steps", "--steps", "--until", "--until-condition", "--save-session", "--cycle-accurate", "--json", "--trace", "--trace-regs", "--source"]),
-        (&["continue"], &["--session", "--until", "--until-condition", "--max-steps", "--save", "--json", "--trace", "--trace-regs", "--source"]),
+        (&["run"], &["--session", "--firmware", "--arch", "--base", "--max-steps", "--steps", "--until", "--until-condition", "--max-cycles", "--save-session", "--cycle-accurate", "--json", "--trace", "--trace-regs", "--source"]),
+        (&["continue"], &["--session", "--until", "--until-condition", "--max-steps", "--max-cycles", "--save", "--json", "--trace", "--trace-regs", "--source"]),
         (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
         (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
         (&["bp", "list"], &["--session", "--symbols", "--json"]),
@@ -8356,12 +8413,12 @@ fn help_every_param() {
         (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--json"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
         (&["cycle", "set"], &["--session", "--count", "--json"]),
-        (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--regs", "--out", "--json"]),
+        (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--len", "--value", "--random", "--seed", "--json"]),
-        (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
-        (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
+        (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--json"]),
+        (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--json"]),
         (&["mcp"], &["--session"]),
         (&["state"], &["--session", "--arch", "--firmware", "--base", "--json", "--fields", "--mem", "--mem-len", "--summary"]),
     ];

@@ -267,6 +267,9 @@ struct RunArgs {
     /// 运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`；到断点/停机/步数上限提前停止）。
     #[arg(long)]
     until_condition: Option<String>,
+    /// 运行到周期计数达到该值即停止（含 cycle-accurate 模式的指令周期预估；`lastResult="cycles"`）。
+    #[arg(long)]
+    max_cycles: Option<u64>,
     /// 保存会话到指定文件（JSON）。
     #[arg(long)]
     save_session: Option<PathBuf>,
@@ -323,6 +326,9 @@ struct ContinueArgs {
     /// 运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`；到断点/停机/步数上限提前停止）。
     #[arg(long)]
     until_condition: Option<String>,
+    /// 运行到周期计数达到该值即停止（含 cycle-accurate 模式的指令周期预估；`lastResult="cycles"`）。
+    #[arg(long)]
+    max_cycles: Option<u64>,
     /// 最大执行步数（默认 1,000,000）。
     #[arg(long, default_value = "1000000")]
     max_steps: u64,
@@ -1389,6 +1395,9 @@ struct AnalyzeArgs {
     /// 最大执行步数（默认 100,000）。
     #[arg(long, default_value = "100000")]
     max_steps: u64,
+    /// 运行到周期计数达到该值即停止（含 cycle-accurate 模式的指令周期预估；`result="cycles"`）。
+    #[arg(long)]
+    max_cycles: Option<u64>,
     /// 运行到指定地址（临时断点，不持久化）。
     #[arg(long)]
     until: Option<String>,
@@ -2245,24 +2254,74 @@ fn cmd_device_memory_map(device: &str, addr: Option<&str>, json: bool) -> Result
     Ok(())
 }
 
+/// Why a bounded run stopped early (beyond a breakpoint/halt/max-steps).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StopReason {
+    None,
+    Condition,
+    Cycles,
+}
+
+fn at_cycle_bound(sim: &Simulator, max_cycles: Option<u64>) -> bool {
+    max_cycles.map_or(false, |mc| sim.cycle_count >= mc)
+}
+
 /// Run up to `max_steps` instructions, stopping early when `expr` evaluates
-/// true (checked at entry and after each step). Returns `(result, met)`.
-pub(crate) fn run_until_condition(sim: &mut Simulator, max_steps: u64, expr: &str) -> (StepResult, bool) {
+/// true (checked at entry and after each step) or when the cycle counter
+/// reaches `max_cycles`. Returns `(result, reason)`.
+pub(crate) fn run_until_condition(
+    sim: &mut Simulator,
+    max_steps: u64,
+    expr: &str,
+    max_cycles: Option<u64>,
+) -> (StepResult, StopReason) {
     if ns_sim::eval_condition(expr, &sim.reg_view(), sim.program_counter(), sim.cycle_count) {
-        return (StepResult::Advanced, true);
+        return (StepResult::Advanced, StopReason::Condition);
+    }
+    if at_cycle_bound(sim, max_cycles) {
+        return (StepResult::Advanced, StopReason::Cycles);
     }
     let mut steps = 0u64;
     while steps < max_steps {
         let result = sim.step();
         if result != StepResult::Advanced {
-            return (result, false);
+            return (result, StopReason::None);
         }
         steps += 1;
         if ns_sim::eval_condition(expr, &sim.reg_view(), sim.program_counter(), sim.cycle_count) {
-            return (StepResult::Advanced, true);
+            return (StepResult::Advanced, StopReason::Condition);
+        }
+        if at_cycle_bound(sim, max_cycles) {
+            return (StepResult::Advanced, StopReason::Cycles);
         }
     }
-    (StepResult::Advanced, false)
+    (StepResult::Advanced, StopReason::None)
+}
+
+/// Run up to `max_steps` instructions, stopping early when the cycle counter
+/// reaches `max_cycles` (checked at entry and after each step; meaningful in
+/// cycle-accurate mode where one instruction may consume several cycles).
+/// Returns `(result, reason)`.
+pub(crate) fn run_until_cycles(
+    sim: &mut Simulator,
+    max_steps: u64,
+    max_cycles: Option<u64>,
+) -> (StepResult, StopReason) {
+    if at_cycle_bound(sim, max_cycles) {
+        return (StepResult::Advanced, StopReason::Cycles);
+    }
+    let mut steps = 0u64;
+    while steps < max_steps {
+        let result = sim.step();
+        if result != StepResult::Advanced {
+            return (result, StopReason::None);
+        }
+        steps += 1;
+        if at_cycle_bound(sim, max_cycles) {
+            return (StepResult::Advanced, StopReason::Cycles);
+        }
+    }
+    (StepResult::Advanced, StopReason::None)
 }
 
 fn cmd_run(args: RunArgs) -> Result<()> {
@@ -2291,24 +2350,25 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     // `--steps N` is a bounded "run exactly N instructions" mode; otherwise
     // run to completion with the `--max-steps` upper bound.
     let tracing = args.trace || args.trace_regs;
-    let mut cond_met = false;
+    let reason;
     let result = if let Some(expr) = &args.until_condition {
         if tracing {
-            let (r, met) = trace_run(&mut sim, args.steps, args.max_steps, Some(expr), args.trace_regs);
-            cond_met = met;
+            let (r, rsn) = trace_run(&mut sim, args.steps, args.max_steps, Some(expr), args.trace_regs, args.max_cycles);
+            reason = rsn;
             r
         } else {
-            let (r, met) = run_until_condition(&mut sim, args.max_steps, expr);
-            cond_met = met;
+            let (r, rsn) = run_until_condition(&mut sim, args.max_steps, expr, args.max_cycles);
+            reason = rsn;
             r
         }
     } else if tracing {
-        trace_run(&mut sim, args.steps, args.max_steps, None, args.trace_regs).0
+        let (r, rsn) = trace_run(&mut sim, args.steps, args.max_steps, None, args.trace_regs, args.max_cycles);
+        reason = rsn;
+        r
     } else {
-        match args.steps {
-            Some(n) => sim.run(n),
-            None => sim.run(args.max_steps),
-        }
+        let (r, rsn) = run_until_cycles(&mut sim, args.steps.unwrap_or(args.max_steps), args.max_cycles);
+        reason = rsn;
+        r
     };
     if temp_bp {
         if let Some(addr) = until_addr {
@@ -2316,8 +2376,10 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         }
     }
     let mut output = state_output(&sim, result, fw_state.as_ref());
-    if cond_met {
-        output.last_result = "condition".to_string();
+    match reason {
+        StopReason::Condition => output.last_result = "condition".to_string(),
+        StopReason::Cycles => output.last_result = "cycles".to_string(),
+        StopReason::None => {}
     }
 
     if let Some(session_path) = args.save_session.as_ref().or_else(|| args.session.as_ref()) {
@@ -2375,14 +2437,15 @@ pub(crate) struct TraceLine {
 }
 
 /// Run with per-instruction collection, returning the structured trace plus
-/// whether a `--until-condition` expression stopped the run early.
+/// the reason a `--until-condition`/`--max-cycles` bound stopped the run early.
 pub(crate) fn collect_trace_run(
     sim: &mut Simulator,
     steps: Option<u64>,
     max_steps: u64,
     cond: Option<&str>,
     trace_regs: bool,
-) -> (StepResult, bool, Vec<TraceLine>) {
+    max_cycles: Option<u64>,
+) -> (StepResult, StopReason, Vec<TraceLine>) {
     let limit = steps.unwrap_or(max_steps);
     let mut count = 0u64;
     let check = |sim: &Simulator| -> bool {
@@ -2391,11 +2454,14 @@ pub(crate) fn collect_trace_run(
     };
     let mut lines = Vec::new();
     if check(sim) {
-        return (StepResult::Advanced, true, lines);
+        return (StepResult::Advanced, StopReason::Condition, lines);
+    }
+    if at_cycle_bound(sim, max_cycles) {
+        return (StepResult::Advanced, StopReason::Cycles, lines);
     }
     loop {
         if count >= limit {
-            return (StepResult::Advanced, false, lines);
+            return (StepResult::Advanced, StopReason::None, lines);
         }
         let pc_before = sim.program_counter();
         let regs_before = if trace_regs { reg_map(sim) } else { BTreeMap::new() };
@@ -2426,10 +2492,13 @@ pub(crate) fn collect_trace_run(
         });
         count += 1;
         if result != StepResult::Advanced {
-            return (result, false, lines);
+            return (result, StopReason::None, lines);
         }
         if check(sim) {
-            return (StepResult::Advanced, true, lines);
+            return (StepResult::Advanced, StopReason::Condition, lines);
+        }
+        if at_cycle_bound(sim, max_cycles) {
+            return (StepResult::Advanced, StopReason::Cycles, lines);
         }
     }
 }
@@ -2440,8 +2509,9 @@ fn trace_run(
     max_steps: u64,
     cond: Option<&str>,
     trace_regs: bool,
-) -> (StepResult, bool) {
-    let (result, met, lines) = collect_trace_run(sim, steps, max_steps, cond, trace_regs);
+    max_cycles: Option<u64>,
+) -> (StepResult, StopReason) {
+    let (result, reason, lines) = collect_trace_run(sim, steps, max_steps, cond, trace_regs, max_cycles);
     for (i, line) in lines.iter().enumerate() {
         let regs_changed = line
             .regs
@@ -2458,7 +2528,7 @@ fn trace_run(
             regs_changed,
         );
     }
-    (result, met)
+    (result, reason)
 }
 
 enum StepKind {
@@ -2514,21 +2584,25 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
     }
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
     let tracing = args.trace || args.trace_regs;
-    let mut cond_met = false;
+    let reason;
     let result = if let Some(expr) = &args.until_condition {
         if tracing {
-            let (r, met) = trace_run(&mut sim, None, args.max_steps, Some(expr), args.trace_regs);
-            cond_met = met;
+            let (r, rsn) = trace_run(&mut sim, None, args.max_steps, Some(expr), args.trace_regs, args.max_cycles);
+            reason = rsn;
             r
         } else {
-            let (r, met) = run_until_condition(&mut sim, args.max_steps, expr);
-            cond_met = met;
+            let (r, rsn) = run_until_condition(&mut sim, args.max_steps, expr, args.max_cycles);
+            reason = rsn;
             r
         }
     } else if tracing {
-        trace_run(&mut sim, None, args.max_steps, None, args.trace_regs).0
+        let (r, rsn) = trace_run(&mut sim, None, args.max_steps, None, args.trace_regs, args.max_cycles);
+        reason = rsn;
+        r
     } else {
-        sim.run(args.max_steps)
+        let (r, rsn) = run_until_cycles(&mut sim, args.max_steps, args.max_cycles);
+        reason = rsn;
+        r
     };
     if temp_bp {
         if let Some(addr) = until_addr {
@@ -2536,8 +2610,10 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
         }
     }
     let mut output = state_output(&sim, result, fw.as_ref());
-    if cond_met {
-        output.last_result = "condition".to_string();
+    match reason {
+        StopReason::Condition => output.last_result = "condition".to_string(),
+        StopReason::Cycles => output.last_result = "cycles".to_string(),
+        StopReason::None => {}
     }
     if args.save {
         let session = Session::capture(&sim, fw);
@@ -4681,7 +4757,7 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
     let limit = args.steps.unwrap_or(args.max_steps);
     let collect_trace = matches!(kind, AnalyzeKind::Trace);
-    let analysis = analyze_run(&mut sim, limit, collect_trace, args.regs);
+    let analysis = analyze_run(&mut sim, limit, collect_trace, args.regs, args.max_cycles);
     if temp_bp {
         if let Some(addr) = until_addr {
             sim.clear_breakpoint(addr);

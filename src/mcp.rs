@@ -339,6 +339,7 @@ fn analyze_schema() -> Value {
             ("base", prop_str("加载基址（十六进制或十进制）。")),
             ("steps", prop_num("精确执行 N 条指令。")),
             ("max_steps", prop_num("最大执行步数（默认 100000）。")),
+            ("max_cycles", prop_num("运行到周期计数达到该值即停止（含 cycle-accurate 预估；result=\"cycles\"）。")),
             ("until", prop_str("运行到指定地址（临时断点）。")),
             ("regs", prop_bool("trace 时附带每条指令执行后的寄存器快照。")),
             ("out", prop_str("把结果写入文件（JSON）；缺省直接返回结果。")),
@@ -546,6 +547,7 @@ fn tools() -> Vec<Tool> {
                     ("base", base.clone()),
                     ("steps", prop_num("只运行 N 条指令。")),
                     ("max_steps", prop_num("最大执行步数（默认 1000000）。")),
+                    ("max_cycles", prop_num("运行到周期计数达到该值即停止（含 cycle-accurate 预估；lastResult=\"cycles\"）。")),
                     ("until", addr.clone()),
                     ("until_condition", prop_str("运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`）。")),
                     ("cycle_accurate", prop_bool("周期精确模式（按指令预估周期推进）。")),
@@ -565,6 +567,7 @@ fn tools() -> Vec<Tool> {
                     ("until", addr.clone()),
                     ("until_condition", prop_str("运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`）。")),
                     ("max_steps", prop_num("最大执行步数（默认 1000000）。")),
+                    ("max_cycles", prop_num("运行到周期计数达到该值即停止（含 cycle-accurate 预估；lastResult=\"cycles\"）。")),
                     ("trace", prop_bool("返回每条执行指令的轨迹（含 PC/反汇编/来源/寄存器变化）。")),
                     ("trace_regs", prop_bool("trace 时附带每条指令后发生变化的寄存器。")),
                 ],
@@ -1534,7 +1537,8 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let temp_bp = until_addr.map(|a| sim.set_breakpoint(a)).unwrap_or(false);
     let trace = b(args, "trace").unwrap_or(false) || b(args, "trace_regs").unwrap_or(false);
     let trace_regs = b(args, "trace_regs").unwrap_or(false);
-    let mut cond_met = false;
+    let max_cycles = u64(args, "max_cycles");
+    let reason;
     let mut trace_lines = Value::Null;
     let result = if trace {
         let cond = s(args, "until_condition");
@@ -1544,8 +1548,9 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
             u64(args, "max_steps").unwrap_or(1_000_000),
             cond.as_deref(),
             trace_regs,
+            max_cycles,
         );
-        cond_met = met;
+        reason = met;
         trace_lines = serde_json::to_value(&lines)?;
         r
     } else {
@@ -1555,14 +1560,20 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
                     &mut sim,
                     u64(args, "max_steps").unwrap_or(1_000_000),
                     &expr,
+                    max_cycles,
                 );
-                cond_met = met;
+                reason = met;
                 r
             }
-            None => match u64(args, "steps") {
-                Some(n) => sim.run(n),
-                None => sim.run(u64(args, "max_steps").unwrap_or(1_000_000)),
-            },
+            None => {
+                let (r, met) = crate::run_until_cycles(
+                    &mut sim,
+                    u64(args, "steps").unwrap_or(u64(args, "max_steps").unwrap_or(1_000_000)),
+                    max_cycles,
+                );
+                reason = met;
+                r
+            }
         }
     };
     if temp_bp {
@@ -1571,8 +1582,14 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
         }
     }
     let mut output = serde_json::to_value(crate::state_output(&sim, result, Some(&fw_state)))?;
-    if cond_met {
-        output["lastResult"] = Value::String("condition".to_string());
+    match reason {
+        crate::StopReason::Condition => {
+            output["lastResult"] = Value::String("condition".to_string());
+        }
+        crate::StopReason::Cycles => {
+            output["lastResult"] = Value::String("cycles".to_string());
+        }
+        crate::StopReason::None => {}
     }
     if trace {
         output["trace"] = trace_lines;
@@ -1594,7 +1611,8 @@ fn tool_continue(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
         let temp_bp = until_addr.map(|a| sim.set_breakpoint(a)).unwrap_or(false);
         let trace = b(args, "trace").unwrap_or(false) || b(args, "trace_regs").unwrap_or(false);
         let trace_regs = b(args, "trace_regs").unwrap_or(false);
-        let mut cond_met = false;
+        let max_cycles = u64(args, "max_cycles");
+        let reason;
         let mut trace_lines = Value::Null;
         let result = if trace {
             let cond = s(args, "until_condition");
@@ -1604,19 +1622,32 @@ fn tool_continue(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
                 u64(args, "max_steps").unwrap_or(1_000_000),
                 cond.as_deref(),
                 trace_regs,
+                max_cycles,
             );
-            cond_met = met;
+            reason = met;
             trace_lines = serde_json::to_value(&lines)?;
             r
         } else {
             match s(args, "until_condition") {
                 Some(expr) => {
-                    let (r, met) =
-                        crate::run_until_condition(sim, u64(args, "max_steps").unwrap_or(1_000_000), &expr);
-                    cond_met = met;
+                    let (r, met) = crate::run_until_condition(
+                        sim,
+                        u64(args, "max_steps").unwrap_or(1_000_000),
+                        &expr,
+                        max_cycles,
+                    );
+                    reason = met;
                     r
                 }
-                None => sim.run(u64(args, "max_steps").unwrap_or(1_000_000)),
+                None => {
+                    let (r, met) = crate::run_until_cycles(
+                        sim,
+                        u64(args, "max_steps").unwrap_or(1_000_000),
+                        max_cycles,
+                    );
+                    reason = met;
+                    r
+                }
             }
         };
         if temp_bp {
@@ -1625,8 +1656,14 @@ fn tool_continue(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
             }
         }
         let mut output = serde_json::to_value(crate::state_output(sim, result, fw))?;
-        if cond_met {
-            output["lastResult"] = Value::String("condition".to_string());
+        match reason {
+            crate::StopReason::Condition => {
+                output["lastResult"] = Value::String("condition".to_string());
+            }
+            crate::StopReason::Cycles => {
+                output["lastResult"] = Value::String("cycles".to_string());
+            }
+            crate::StopReason::None => {}
         }
         if trace {
             output["trace"] = trace_lines;
@@ -2844,6 +2881,7 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
     let max_steps = u64(args, "max_steps").unwrap_or(100_000);
     let collect_trace = matches!(kind, AnalyzeTool::Trace);
     let collect_regs = b(args, "regs").unwrap_or(false);
+    let max_cycles = u64(args, "max_cycles");
     with_sim(server, args, true, |sim, _, _| {
         if let Some(addr) = until {
             if addr > sim.pc_limit() {
@@ -2851,8 +2889,13 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
             }
         }
         let temp_bp = until.map(|a| sim.set_breakpoint(a)).unwrap_or(false);
-        let analysis =
-            crate::sim::analyze_run(sim, steps.unwrap_or(max_steps), collect_trace, collect_regs);
+        let analysis = crate::sim::analyze_run(
+            sim,
+            steps.unwrap_or(max_steps),
+            collect_trace,
+            collect_regs,
+            max_cycles,
+        );
         if temp_bp {
             if let Some(a) = until {
                 sim.clear_breakpoint(a);
