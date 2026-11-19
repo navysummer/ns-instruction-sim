@@ -2285,3 +2285,131 @@ fn set_csr_value(sim: &mut Simulator, name: &str, value: u32) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn server() -> McpServer {
+        McpServer { default_session: None }
+    }
+
+    #[test]
+    fn read_message_parses_content_length_frame() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        let input = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        let mut cursor = Cursor::new(input.as_bytes());
+        let msg = read_message(&mut cursor).unwrap().unwrap();
+        assert_eq!(msg, body);
+        // EOF after the message.
+        assert!(read_message(&mut cursor).unwrap().is_none());
+    }
+
+    #[test]
+    fn read_message_requires_content_length() {
+        let input = "X-Header: 1\r\n\r\n{}";
+        let mut cursor = Cursor::new(input.as_bytes());
+        let err = read_message(&mut cursor).unwrap_err();
+        assert!(err.to_string().contains("Content-Length"));
+    }
+
+    #[test]
+    fn read_message_eof_returns_none() {
+        let mut cursor = Cursor::new(b"".as_slice());
+        assert!(read_message(&mut cursor).unwrap().is_none());
+    }
+
+    #[test]
+    fn write_message_frames_with_content_length() {
+        let mut out = Vec::new();
+        write_message(&mut out, "{\"a\":1}").unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("Content-Length: 7\r\n\r\n"));
+        assert!(text.ends_with("{\"a\":1}"));
+    }
+
+    #[test]
+    fn handle_ping_returns_null() {
+        assert_eq!(server().handle("ping", &Value::Null).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn handle_initialize_advertises_tools() {
+        let result = server()
+            .handle("initialize", &json!({ "protocolVersion": "2024-11-05" }))
+            .unwrap();
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert_eq!(result["serverInfo"]["name"], "ns-instruction-sim");
+        assert_eq!(result["capabilities"]["tools"], json!({}));
+    }
+
+    #[test]
+    fn handle_unknown_method_errors() {
+        let err = server().handle("bogus", &Value::Null).unwrap_err();
+        assert!(err.to_string().contains("未知方法"));
+    }
+
+    #[test]
+    fn handle_tools_list_lists_all_tools_with_schemas() {
+        let result = server().handle("tools/list", &Value::Null).unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        assert!(tools.len() >= 60, "expected >= 60 tools, got {}", tools.len());
+        for t in tools {
+            assert!(t["name"].as_str().is_some());
+            assert!(t["description"].as_str().is_some());
+            assert!(t["inputSchema"]["type"] == "object");
+        }
+    }
+
+    #[test]
+    fn handle_tools_call_unknown_tool_errors() {
+        let err = server()
+            .handle("tools/call", &json!({ "name": "nope", "arguments": {} }))
+            .unwrap_err();
+        assert!(err.to_string().contains("未知工具"));
+    }
+
+    #[test]
+    fn handle_tools_call_missing_name_errors() {
+        let err = server().handle("tools/call", &json!({ "arguments": {} })).unwrap_err();
+        assert!(err.to_string().contains("缺少 name"));
+    }
+
+    #[test]
+    fn handle_tools_call_success_returns_structured_content() {
+        let result = server()
+            .handle("tools/call", &json!({ "name": "arch_list", "arguments": {} }))
+            .unwrap();
+        assert_eq!(result["isError"], false);
+        let archs = result["structuredContent"]["architectures"].as_array().unwrap();
+        assert!(archs.len() >= 12);
+        assert_eq!(result["content"][0]["type"], "text");
+    }
+
+    #[test]
+    fn handle_tools_call_tool_error_returns_is_error() {
+        // `reg_set` with no `name` must surface isError=true (not a JSON-RPC error).
+        let result = server()
+            .handle("tools/call", &json!({ "name": "reg_set", "arguments": {} }))
+            .unwrap();
+        assert_eq!(result["isError"], true);
+        assert!(result["content"][0]["text"].as_str().unwrap().contains("错误"));
+    }
+
+    #[test]
+    fn arg_helpers_extract_typed_values() {
+        let args = json!({
+            "name": "x1",
+            "count": 4,
+            "enabled": true,
+            "bytes": ["0x01", 2],
+        });
+        let map = args.as_object().unwrap();
+        assert_eq!(s(map, "name").as_deref(), Some("x1"));
+        assert_eq!(u(map, "count"), Some(4));
+        assert_eq!(u64(map, "count"), Some(4));
+        assert_eq!(b(map, "enabled"), Some(true));
+        assert_eq!(arr(map, "bytes"), vec!["0x01".to_string(), "2".to_string()]);
+    }
+}

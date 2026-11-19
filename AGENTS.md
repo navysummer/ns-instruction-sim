@@ -223,6 +223,10 @@ for a in riscv arm mcs51 mcs251 c166 xtensa avr msp430 v850 stm8 rx rl78; do
 done
 ```
 
+MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`），覆盖 `Content-Length`
+帧解析/写出、`initialize`/`ping`、未知方法/未知工具/缺参错误、`tools/list` 完整 schema、
+`tools/call` 成功与工具错误（`isError:true`）路径以及参数类型提取。
+
 ### 5.1 端到端覆盖（tests/cli.rs）
 
 - `arch_list_shows_all`：12 架构全部列出。
