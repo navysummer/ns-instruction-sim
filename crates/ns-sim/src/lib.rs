@@ -3481,7 +3481,16 @@ fn disassemble_thumb1(half: u16, pc: u32) -> String {
             } else if half & 0xFF00 == 0xBF00 {
                 let mask = half & 0x0F;
                 if mask == 0 {
-                    format!("nop")
+                    // When the mask is zero the condition field selects a hint:
+                    // 0 = NOP, 1 = YIELD, 2 = WFE, 3 = WFI, 4 = SEV.
+                    let hint = match (half >> 4) & 0x0F {
+                        1 => "yield",
+                        2 => "wfe",
+                        3 => "wfi",
+                        4 => "sev",
+                        _ => "nop",
+                    };
+                    format!("{hint}")
                 } else {
                     // IT (If-Then): the mnemonic is `it` followed by `t`/`e`
                     // for each arm after the first (determined by the mask).
@@ -3857,6 +3866,19 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             _ => "dmb",
         };
         return format!("{name} sy");
+    }
+
+    // Hint instructions (0xF3AF 0x8000-0x8004): NOP.W / YIELD.W / WFE.W /
+    // WFI.W / SEV.W.
+    if first == 0xF3AF && second & 0xFFF0 == 0x8000 {
+        let name = match second & 0x0F {
+            0 => "nop.w",
+            1 => "yield.w",
+            2 => "wfe.w",
+            3 => "wfi.w",
+            _ => "sev.w",
+        };
+        return name.to_string();
     }
 
     // MRS Rd, <apsr|ipsr|epsr|xpsr> (0xF3EF 0x8Rd0SYSm).
@@ -6082,6 +6104,11 @@ mod tests {
             (0xBF02, "ittt eq"),
             (0xBF01, "itttt eq"),
             (0xBE03, "bkpt #0x3"),
+            (0xBF00, "nop"),
+            (0xBF10, "yield"),
+            (0xBF20, "wfe"),
+            (0xBF30, "wfi"),
+            (0xBF40, "sev"),
         ];
         for (half, expected) in cases {
             let bytes = [*half as u8, (*half >> 8) as u8];
@@ -6164,6 +6191,12 @@ mod tests {
             (0xF9B3_2008, "ldrsh r2, [r3, #0x8]"),
             (0xF99F_0004, "ldrsb r0, [pc, #0x4]"),
             (0xF9BF_1008, "ldrsh r1, [pc, #0x8]"),
+            // Hint instructions.
+            (0xF3AF_8000, "nop.w"),
+            (0xF3AF_8001, "yield.w"),
+            (0xF3AF_8002, "wfe.w"),
+            (0xF3AF_8003, "wfi.w"),
+            (0xF3AF_8004, "sev.w"),
         ];
         for (insn, expected) in cases {
             let bytes = [

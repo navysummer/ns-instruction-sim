@@ -359,6 +359,13 @@ done
 - `disasm_thumb2_ldrsb_ldrsh`：`disasm --arm-state thumb` 将
   `ldrsb`/`ldrsh` 的寄存器偏移、立即偏移与 `[pc, #imm]` 字面量形式反汇编为
   真实助记符。
+- `run_arm_thumb2_hints`：端到端分五次 `step --session` 执行
+  `nop.w`（0xF3AF8000）/`yield.w`（0xF3AF8001）/`wfe.w`（0xF3AF8002）/
+  `wfi.w`（0xF3AF8003）/`sev.w`（0xF3AF8004），校验均为无操作（不 halt、
+  PC 按 4 字节推进到 0x08000024），锁定 Thumb-2 提示指令执行。
+- `disasm_thumb2_hints`：`disasm --arm-state thumb` 将
+  `nop.w`/`yield.w`/`wfe.w`/`wfi.w`/`sev.w` 与 Thumb-1 `yield`/`wfe`/`wfi`/`sev`
+  反汇编为真实助记符。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -610,6 +617,10 @@ done
   `Rt imm12`，字面量基址为 `Align(PC,4)`）。`LDRSB` 有符号扩展字节、`LDRSH`
   有符号扩展半字。由 ns-sim 单测 `thumb2_ldrsb_ldrsh` 与 CLI
   `run_arm_thumb2_ldrsb_ldrsh`/`disasm_thumb2_ldrsb_ldrsh` 锁定。
+  Thumb-2 提示指令 `NOP.W`/`YIELD.W`/`WFE.W`/`WFI.W`/`SEV.W`（`0xF3AF 0x8000-8004`）
+  与 Thumb-1 `YIELD`/`WFE`/`WFI`/`SEV`（`0xBF10`/`0xBF20`/`0xBF30`/`0xBF40`，低半字节
+  为 0 时按 bits7-4 区分提示与 NOP）现执行（均为无操作）并反汇编为真实助记符。由
+  ns-sim 单测 `thumb2_hints` 与 CLI `run_arm_thumb2_hints`/`disasm_thumb2_hints` 锁定。
   Thumb-1 高寄存器 `BLX rX`（`0x47xx` bit7 置位）现链接返回地址到 LR（原与 `BX` 一样不写 LR），
   由 ns-sim 单测 `thumb1_bx_blx_register` 锁定。
   A32 操作数 2 的移位由 ns-sim 单测 `disassembles_a32_operand2_shifts` 与 CLI

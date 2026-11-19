@@ -2784,6 +2784,54 @@ fn run_arm_thumb2_ldrsb_ldrsh() {
 }
 
 #[test]
+fn run_arm_thumb2_hints() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-hints.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: nop.w; yield.w; wfe.w; wfi.w; sev.w.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0xAF", "0xF3", "0x00", "0x80", // nop.w
+               "0xAF", "0xF3", "0x01", "0x80", // yield.w
+               "0xAF", "0xF3", "0x02", "0x80", // wfe.w
+               "0xAF", "0xF3", "0x03", "0x80", // wfi.w
+               "0xAF", "0xF3", "0x04", "0x80"]) // sev.w
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for _ in 0..5 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(json["halted"], false, "hints must not halt the core");
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0024u64);
+    assert_eq!(json["halted"], false);
+}
+
+#[test]
 fn run_arm_thumb1_it_bkpt() {
     let dir = tmpdir();
     let sess = dir.join("arm-itbkpt.json");
@@ -3061,6 +3109,49 @@ fn disasm_thumb2_ldrsb_ldrsh() {
         "0x0000000c: ldrsh r2, [r3, #0x8]",
         "0x00000010: ldrsb r0, [pc, #0x4]",
         "0x00000014: ldrsh r1, [pc, #0x8]",
+    ] {
+        assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
+    }
+}
+
+#[test]
+fn disasm_thumb2_hints() {
+    let dir = tmpdir();
+    let binfile = dir.join("thumb2-hints.bin");
+    let sess = dir.join("thumb2-hints.json");
+    // Thumb-2 hint instructions and Thumb-1 hint forms the core accepts.
+    let bytes: &[u8] = &[
+        0xAF, 0xF3, 0x00, 0x80, // nop.w
+        0xAF, 0xF3, 0x01, 0x80, // yield.w
+        0xAF, 0xF3, 0x02, 0x80, // wfe.w
+        0xAF, 0xF3, 0x03, 0x80, // wfi.w
+        0xAF, 0xF3, 0x04, 0x80, // sev.w
+        0x10, 0xBF,             // yield
+        0x20, 0xBF,             // wfe
+        0x30, 0xBF,             // wfi
+        0x40, 0xBF,             // sev
+    ];
+    std::fs::write(&binfile, bytes).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "9", "--arm-state", "thumb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "0x00000000: nop.w",
+        "0x00000004: yield.w",
+        "0x00000008: wfe.w",
+        "0x0000000c: wfi.w",
+        "0x00000010: sev.w",
+        "0x00000014: yield",
+        "0x00000016: wfe",
+        "0x00000018: wfi",
+        "0x0000001a: sev",
     ] {
         assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
     }

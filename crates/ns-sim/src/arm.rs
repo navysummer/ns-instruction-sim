@@ -1381,6 +1381,12 @@ impl ArmCore {
             return;
         }
 
+        // Hint instructions (0xF3AF 0x8000-0x8004): NOP.W / YIELD.W / WFE.W /
+        // WFI.W / SEV.W. These are no-ops for the simulator.
+        if first == 0xF3AF && second & 0xFFF0 == 0x8000 {
+            return;
+        }
+
         // MRS Rd, <apsr|ipsr|epsr|xpsr> (0xF3EF 0x8Rd0SYSm): Rd = bits 11-8
         // of the second halfword, the special register = bits 3-0.
         if first == 0xF3EF && second & 0x00F0 == 0x0000 {
@@ -3061,6 +3067,25 @@ mod tests {
         c.write_u16(0xC, 0x8000);
         run(&mut c, &[0xF9BF, 0x1008], 1);
         assert_eq!(c.regs[1], 0xFFFF_8000);
+    }
+
+    #[test]
+    fn thumb2_hints() {
+        // nop.w (0xF3AF8000), yield.w (0xF3AF8001), wfe.w (0xF3AF8002),
+        // wfi.w (0xF3AF8003) and sev.w (0xF3AF8004) are no-ops: they advance
+        // PC without halting or touching registers.
+        let mut c = core();
+        c.regs[1] = 0x1234;
+        run(&mut c, &[0xF3AF, 0x8000, 0xF3AF, 0x8001, 0xF3AF, 0x8002], 3);
+        assert!(!c.halted);
+        assert_eq!(c.regs[1], 0x1234);
+        assert_eq!(c.regs[PC], 12);
+
+        // The Thumb-1 hints (0xBF10/0xBF20/0xBF30/0xBF40) are also no-ops.
+        let mut c = core();
+        run(&mut c, &[0xBF10, 0xBF20, 0xBF30, 0xBF40], 4);
+        assert!(!c.halted);
+        assert_eq!(c.regs[PC], 8);
     }
 
     #[test]
