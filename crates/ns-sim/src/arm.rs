@@ -1001,13 +1001,23 @@ impl ArmCore {
             return;
         }
 
-        // MOVW/MOVT (0xF240-0xF2FF, second bits 15-12 = 0100).
-        if first & 0xFBF0 == 0xF240 && second & 0xF000 == 0x4000 {
+        // MOVW/MOVT (T3): `1111 0 i 10 0op imm4 | 0 imm3 Rd imm8`, where the
+        // opcode is bits 7-4 = 0100 (MOVW) or 1100 (MOVT, bit 7 set). The
+        // 16-bit immediate packs
+        // imm4 (first bits 3-0) at bits 15-12, i (first bit 10) at bit 11,
+        // imm3 (second bits 14-12) at bits 10-8, imm8 (second bits 7-0) at 7-0.
+        if first & 0xF800 == 0xF000
+            && first & 0x0300 == 0x0200
+            && (first & 0x00F0 == 0x0040 || first & 0x00F0 == 0x00C0)
+            && second & 0x8000 == 0
+        {
             let rd = ((second >> 8) & 0x0F) as usize;
-            let imm16 = ((first & 0x000F) as u32) << 12
-                | ((first & 0x0F00) as u32)
-                | ((second & 0x00FF) as u32);
-            let top = second & 0x0800 != 0; // MOVT when bit 11 set
+            let i = ((first >> 10) & 1) as u32;
+            let imm4 = (first & 0x000F) as u32;
+            let imm3 = ((second >> 12) & 0x7) as u32;
+            let imm8 = (second & 0x00FF) as u32;
+            let imm16 = (imm4 << 12) | (i << 11) | (imm3 << 8) | imm8;
+            let top = first & 0x0080 != 0;
             if top {
                 self.regs[rd] = (self.regs[rd] & 0x0000_FFFF) | (imm16 << 16);
             } else {
@@ -1090,12 +1100,21 @@ impl ArmCore {
             return;
         }
 
-        // ADDW/SUBW (0xF200-0xF2FF, second bits 14-12 = 010, bit 15 = 0).
-        if first & 0xFBF0 == 0xF200 && second & 0xF000 == 0x2000 {
+        // ADDW/SUBW (T3): `1111 0 i 10 0s00 Rn | 0 imm3 Rd imm8`, where s = bit 5
+        // (0 = ADDW, 1 = SUBW); the opcode is bits 7-4 = 0000 (ADDW) or 1010
+        // (SUBW). The 12-bit immediate is i:imm3:imm8.
+        if first & 0xF800 == 0xF000
+            && first & 0x0300 == 0x0200
+            && (first & 0x00F0 == 0x0000 || first & 0x00F0 == 0x00A0)
+            && second & 0x8000 == 0
+        {
             let rd = ((second >> 8) & 0x0F) as usize;
-            let rn = (first & 0x000F) as usize;
-            let imm12 = ((first & 0x0F00) as u32) << 4 | ((second & 0x00FF) as u32);
-            let sub = second & 0x0400 != 0; // bit 10
+            let rn = (first & 0x0F) as usize;
+            let i = ((first >> 10) & 1) as u32;
+            let imm3 = ((second >> 12) & 0x7) as u32;
+            let imm8 = (second & 0x00FF) as u32;
+            let imm12 = (i << 11) | (imm3 << 8) | imm8;
+            let sub = first & 0x00F0 == 0x00A0;
             if sub {
                 self.regs[rd] = self.regs[rn].wrapping_sub(imm12);
             } else {
@@ -1501,8 +1520,8 @@ impl ArmCore {
             return;
         }
 
-        // CLZ Rd, Rm (0xFAB0-0xFABF 0xF0Rd0087).
-        if first & 0xFFF0 == 0xFAB0 && second & 0x00FF == 0x0087 {
+        // CLZ Rd, Rm (0xFAB0-0xFABF, second halfword `0xF0Rd 1000 0Rm`).
+        if first & 0xFFF0 == 0xFAB0 && second & 0x00F8 == 0x0080 {
             let rd = ((second >> 8) & 0x0F) as usize;
             let rm = (first & 0x0F) as usize;
             self.regs[rd] = self.regs[rm].leading_zeros();
@@ -4160,14 +4179,43 @@ mod tests {
     #[test]
     fn movw_wide_loads_immediate() {
         let mut c = core();
-        // MOVW r0, #0x1234: first=0xF241 (imm4=1), second=0x4034
+        // MOVW r0, #0x1234: first=0xF241 (imm4=1), second=0x2034
         c.write_u16(0, 0xF241);
-        c.write_u16(2, 0x4034);
+        c.write_u16(2, 0x2034);
         c.regs[PC] = 0;
         c.set_thumb(true);
         let r = c.step(&[]);
         assert_eq!(r, ArmStep::Advanced);
         assert_eq!(c.regs[0], 0x1234);
+    }
+
+    #[test]
+    fn thumb2_movw_movt_addw_subw_wide() {
+        let mut c = core();
+        // movw r0, #0x200 (0xF240 0x2000); movt r1, #0x1234 (0xF2C1 0x2134);
+        // addw r2, r3, #0x567 (0xF203 0x5267); subw r4, r5, #0x89a
+        // (0xF6A5 0x049A).
+        let insns: &[(u16, u16)] = &[
+            (0xF240, 0x2000),
+            (0xF2C1, 0x2134),
+            (0xF203, 0x5267),
+            (0xF6A5, 0x049A),
+        ];
+        for (i, (hi, lo)) in insns.iter().enumerate() {
+            c.write_u16((i * 4) as u32, *hi);
+            c.write_u16((i * 4 + 2) as u32, *lo);
+        }
+        c.regs[PC] = 0;
+        c.set_thumb(true);
+        for _ in 0..4 {
+            assert_eq!(c.step(&[]), ArmStep::Advanced);
+        }
+        assert_eq!(c.regs[0], 0x200);
+        assert_eq!(c.regs[1], 0x1234_0000);
+        assert_eq!(c.regs[3], 0);
+        assert_eq!(c.regs[2], 0x567);
+        assert_eq!(c.regs[5], 0);
+        assert_eq!(c.regs[4], (-0x89ai32) as u32);
     }
 
     // -------- ARM state (A32) --------

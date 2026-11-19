@@ -3587,13 +3587,23 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         };
     }
 
-    // MOVW/MOVT (0xF240-0xF2FF, second bits 15-12 = 0100).
-    if first & 0xFBF0 == 0xF240 && second & 0xF000 == 0x4000 {
+    // MOVW/MOVT (T3): `1111 0 i 10 0op imm4 | 0 imm3 Rd imm8`, where the
+    // opcode is bits 7-4 = 0100 (MOVW) or 1100 (MOVT, bit 7 set). The 16-bit
+    // immediate packs
+    // imm4 (first bits 3-0) at bits 15-12, i (first bit 10) at bit 11,
+    // imm3 (second bits 14-12) at bits 10-8, imm8 (second bits 7-0) at 7-0.
+    if first & 0xF800 == 0xF000
+        && first & 0x0300 == 0x0200
+        && (first & 0x00F0 == 0x0040 || first & 0x00F0 == 0x00C0)
+        && second & 0x8000 == 0
+    {
         let rd = ((second >> 8) & 0x0F) as usize;
-        let imm16 = ((first & 0x000F) as u32) << 12
-            | ((first & 0x0F00) as u32)
-            | ((second & 0x00FF) as u32);
-        let top = second & 0x0800 != 0;
+        let i = ((first >> 10) & 1) as u32;
+        let imm4 = (first & 0x000F) as u32;
+        let imm3 = ((second >> 12) & 0x7) as u32;
+        let imm8 = (second & 0x00FF) as u32;
+        let imm16 = (imm4 << 12) | (i << 11) | (imm3 << 8) | imm8;
+        let top = first & 0x0080 != 0;
         return if top {
             format!("movt r{rd}, #0x{imm16:x}")
         } else {
@@ -3648,12 +3658,21 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("{mnem} r{rd}, r{rn}, r{rm}");
     }
 
-    // ADDW/SUBW (0xF200-0xF2FF, second bits 14-12 = 010, bit 15 = 0).
-    if first & 0xFBF0 == 0xF200 && second & 0xF000 == 0x2000 {
+    // ADDW/SUBW (T3): `1111 0 i 10 0s00 Rn | 0 imm3 Rd imm8`, where s = bit 5
+    // (0 = ADDW, 1 = SUBW); the opcode is bits 7-4 = 0000 (ADDW) or 1010
+    // (SUBW). The 12-bit immediate is i:imm3:imm8.
+    if first & 0xF800 == 0xF000
+        && first & 0x0300 == 0x0200
+        && (first & 0x00F0 == 0x0000 || first & 0x00F0 == 0x00A0)
+        && second & 0x8000 == 0
+    {
         let rd = ((second >> 8) & 0x0F) as usize;
-        let rn = (first & 0x000F) as usize;
-        let imm12 = ((first & 0x0F00) as u32) << 4 | ((second & 0x00FF) as u32);
-        let sub = second & 0x0400 != 0;
+        let rn = (first & 0x0F) as usize;
+        let i = ((first >> 10) & 1) as u32;
+        let imm3 = ((second >> 12) & 0x7) as u32;
+        let imm8 = (second & 0x00FF) as u32;
+        let imm12 = (i << 11) | (imm3 << 8) | imm8;
+        let sub = first & 0x00F0 == 0x00A0;
         return if sub {
             format!("subw r{rd}, r{rn}, #0x{imm12:x}")
         } else {
@@ -3986,8 +4005,8 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("msr xpsr_{mask_str}, r{rm}");
     }
 
-    // CLZ Rd, Rm (0xFAB0-0xFABF 0xF0Rd0087).
-    if first & 0xFFF0 == 0xFAB0 && second & 0x00FF == 0x0087 {
+    // CLZ Rd, Rm (0xFAB0-0xFABF, second halfword `0xF0Rd 1000 0Rm`).
+    if first & 0xFFF0 == 0xFAB0 && second & 0x00F8 == 0x0080 {
         let rd = ((second >> 8) & 0x0F) as usize;
         let rm = (first & 0x0F) as usize;
         return format!("clz r{rd}, r{rm}");
@@ -6235,8 +6254,11 @@ mod tests {
             (0xF47F_ADA6, "bnew 0xfffffb50"),
             (0xF049_8620, "bnew 0x9c44"),
             (0xF300_8002, "bgtw 0x8"),
-            (0xF240_4000, "movw r0, #0x200"),
-            (0xF200_2000, "addw r0, r0, #0x2000"),
+            (0xF240_2000, "movw r0, #0x200"),
+            (0xF200_2000, "addw r0, r0, #0x200"),
+            (0xF2C1_2134, "movt r1, #0x1234"),
+            (0xF64A_32CD, "movw r2, #0xabcd"),
+            (0xF6A5_049A, "subw r4, r5, #0x89a"),
             (0xF8D0_0000, "ldr r0, [r0, #0x0]"),
             (0xF8C0_0000, "str r0, [r0, #0x0]"),
             (0xF890_0000, "ldrb r0, [r0, #0x0]"),

@@ -331,6 +331,15 @@ done
 - `disasm_thumb2_cond_branch_wide`：`disasm --arm-state thumb` 将
   `beq.w 0x24`/`bne.w 0x38`/`bne.w 0xfffffb58`/`bne.w 0x9c50`/`bgt.w 0x18`
   反汇编为真实助记符，按 20 位 S:J1:imm6:J2:imm10:0 符号扩展偏移计算目标。
+- `run_arm_thumb2_movw_movt_addw_subw`：端到端分四次 `step --session` 执行
+  `movw r0,#0x200`（0xF2402000，r0=0x200）、`movt r1,#0x1234`（0xF2C12134，
+  r1=0x12340000）、`addw r2,r3,#0x567`（0xF2035267，0+0x567）、
+  `subw r4,r5,#0x89a`（0xF6A5049A，0−0x89A），`state --json` 校验寄存器，
+  锁定 Thumb-2 MOVW/MOVT/ADDW/SUBW 宽格式执行（opcode bits7-4：MOVW=0100、
+  MOVT=1100、ADDW=0000、SUBW=1010；立即按 imm4:i:imm3:imm8 组合）。
+- `disasm_thumb2_movw_movt_addw_subw`：`disasm --arm-state thumb` 将
+  `movw r0,#0x200`/`movt r1,#0x1234`/`movw r2,#0xabcd`/`addw r2,r3,#0x567`/
+  `subw r8,r9,#0xfff` 反汇编为真实助记符。
 - `run_arm_thumb1_it_bkpt`：端到端分八次 `step --session` 执行
   `movs r0,#0`（0x2000，置 Z）、`it eq`（0xBF08，`moveq r0,r1` 执行）、
   `movs r2,#1`（0x2201，清 Z）、`ite eq`（0xBF0C，`moveq r3,r4` 跳过、
@@ -575,9 +584,21 @@ done
   `REV` 家族执行；`REV/REV16/REVSH`（`0xBA00-0xBAFF`，编码 `1011 1010 0 op Rm Rd`，
   op=bits7-6：0=REV、1=REV16、2=REVSH、Rm=bits5-3、Rd=bits2-0）现执行字节/半字反序
   （REVSH 对反转后的半字符号扩展）；Thumb-2 `CLZ Rd,Rm`（0xFAB0-0xFABF 且
-  second & 0x00FF == 0x0087，Rd=second bits11-8、Rm=first bits3-0）现返回前导零计数
-  （0 输入返回 32）。由 ns-sim 单测 `thumb1_cps_primask`/`thumb1_rev_family`/
-  `thumb2_clz` 与 CLI `run_arm_thumb1_rev_and_clz` 锁定。
+  second & 0x00F8 == 0x0080，即第二半字 `0xF0Rd 1000 0Rm`，Rd=second bits11-8、
+  Rm=first bits3-0）现返回前导零计数（0 输入返回 32），低位 Rm 位随源寄存器变化
+  （原误判为固定 0x87，导致 `clz r2,r2` 等真实编码未被识别）。由 ns-sim 单测
+  `thumb1_cps_primask`/`thumb1_rev_family`/`thumb2_clz` 与 CLI
+  `run_arm_thumb1_rev_and_clz` 锁定。
+  Thumb-2 `MOVW`/`MOVT`/`ADDW`/`SUBW`（`1111 0 i 10 0op ...`，opcode bits7-4：
+  MOVW=0100、MOVT=1100、ADDW=0000、SUBW=1010；第二半字 `0 imm3 Rd imm8`，bit15=0；
+  立即数 `imm16=(imm4<<12)|(i<<11)|(imm3<<8)|imm8`，`imm12=(i<<11)|(imm3<<8)|imm8`，
+  i=first bit10、imm4=first bits3-0、imm3=second bits14-12、imm8=second bits7-0）现执行
+  与反汇编：MOVW 写低半字、MOVT 写高半字（top 由 first bit7 选，非 second bit11），
+  ADDW/SUBW 加/减 12 位立即。此前门控误用 `second & 0xF000`（MOVW 需 0x4000、
+  ADDW 需 0x2000），且 imm16/imm12 从 first bits11-8 取位，导致真实编码
+  `0xF240 0x2000`（movw r0,#0x200）、`0xF2C1 0x2134`（movt r1,#0x1234）等被误判或
+  显示为 `.word`。由 ns-sim 单测 `thumb2_movw_movt_addw_subw_wide` 与 CLI
+  `run_arm_thumb2_movw_movt_addw_subw`/`disasm_thumb2_movw_movt_addw_subw` 锁定。
   Thumb-2 寄存器偏移存取（`0xF800-0xF85F`，宽 bits7-5 选字/半字/字节、bit4 选载入，
   second 的 bits5-4 为 `LSL #imm2`）与字面量载入（`LDR` 0xF8DF / `LDRB` 0xF89F /
   `LDRH` 0xF8BF，基址 = Align(PC,4)+imm12）现正确执行（原把字面量误当作

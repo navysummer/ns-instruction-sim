@@ -1671,8 +1671,8 @@ fn disasm_thumb_full_families() {
         0x01, 0xE0, // b 0x2c
         // ---- Thumb-2 (each 4 bytes) ----
         0x00, 0xF0, 0x00, 0xD0, // bl 0x2c
-        0x40, 0xF2, 0x00, 0x40, // movw r0, #0x200
-        0x00, 0xF2, 0x00, 0x20, // addw r0, r0, #0x2000
+        0x40, 0xF2, 0x00, 0x20, // movw r0, #0x200
+        0x00, 0xF2, 0x00, 0x20, // addw r0, r0, #0x200
         0xD0, 0xF8, 0x00, 0x00, // ldr r0, [r0, #0x0]
         0xC0, 0xF8, 0x00, 0x00, // str r0, [r0, #0x0]
         0x90, 0xF8, 0x00, 0x00, // ldrb r0, [r0, #0x0]
@@ -1701,7 +1701,7 @@ fn disasm_thumb_full_families() {
         "0x00000026: b 0x2c",
         "0x00000028: bl 0x2c",
         "0x0000002c: movw r0, #0x200",
-        "0x00000030: addw r0, r0, #0x2000",
+        "0x00000030: addw r0, r0, #0x200",
         "0x00000034: ldr r0, [r0, #0x0]",
         "0x00000038: str r0, [r0, #0x0]",
         "0x0000003c: ldrb r0, [r0, #0x0]",
@@ -2447,6 +2447,55 @@ fn run_arm_thumb2_cond_branch_wide() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["pc"], 0x0800_0018u64);
     assert_eq!(json["registers"]["r3"], 3);
+}
+
+#[test]
+fn run_arm_thumb2_movw_movt_addw_subw() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-t2movw.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // movw r0,#0x200; movt r1,#0x1234; addw r2,r3,#0x567; subw r4,r5,#0x89a.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x00", "0xF2", "0x00", "0x20", // movw r0, #0x200
+               "0xC1", "0xF2", "0x34", "0x21", // movt r1, #0x1234
+               "0x03", "0xF2", "0x67", "0x52", // addw r2, r3, #0x567
+               "0xA5", "0xF6", "0x9A", "0x04"]) // subw r4, r5, #0x89a
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for _ in 0..4 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["registers"]["r0"], 0x200u64);
+    assert_eq!(json["registers"]["r1"], 0x1234_0000u64);
+    assert_eq!(json["registers"]["r2"], 0x567u64);
+    assert_eq!(json["registers"]["r3"], 0u64);
+    assert_eq!(json["registers"]["r4"], (-0x89ai32) as u64 & 0xFFFF_FFFFu64);
+    assert_eq!(json["registers"]["r5"], 0u64);
 }
 
 #[test]
@@ -3409,6 +3458,41 @@ fn disasm_thumb2_cond_branch_wide() {
         "0x00000008: bnew 0xfffffb58",
         "0x0000000c: bnew 0x9c50",
         "0x00000010: bgtw 0x18",
+    ] {
+        assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
+    }
+}
+
+#[test]
+fn disasm_thumb2_movw_movt_addw_subw() {
+    let dir = tmpdir();
+    let binfile = dir.join("thumb2-movw.bin");
+    let sess = dir.join("thumb2-movw.json");
+    // Thumb-2 MOVW/MOVT/ADDW/SUBW wide forms the core executes.
+    let bytes: &[u8] = &[
+        0x40, 0xF2, 0x00, 0x20, // movw r0, #0x200
+        0xC1, 0xF2, 0x34, 0x21, // movt r1, #0x1234
+        0x4A, 0xF6, 0xCD, 0x32, // movw r2, #0xabcd
+        0x03, 0xF2, 0x67, 0x52, // addw r2, r3, #0x567
+        0xA9, 0xF6, 0xFF, 0x78, // subw r8, r9, #0xfff
+    ];
+    std::fs::write(&binfile, bytes).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "5", "--arm-state", "thumb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "0x00000000: movw r0, #0x200",
+        "0x00000004: movt r1, #0x1234",
+        "0x00000008: movw r2, #0xabcd",
+        "0x0000000c: addw r2, r3, #0x567",
+        "0x00000010: subw r8, r9, #0xfff",
     ] {
         assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
     }
