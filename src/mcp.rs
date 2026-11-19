@@ -993,12 +993,13 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "periph_reg_dump",
-            description: "转储设备全部外设寄存器的当前值（命名地址到值）。",
+            description: "转储设备全部外设寄存器的当前值（命名地址到值；默认附带 SVD 位域解码）。",
             schema: obj(
                 &[
                     ("session", session.clone()),
                     ("device", prop_str("内置设备键，如 stm32f103c8。")),
                     ("peripheral", prop_str("只转储指定外设（按名称，可选）。")),
+                    ("fields", prop_bool("附带每个寄存器的 SVD 位域解码（位偏移/宽度/当前值/描述）；默认 true。")),
                 ],
                 &["device"],
             ),
@@ -2540,37 +2541,13 @@ fn tool_periph_reg_list(server: &McpServer, args: &Map<String, Value>) -> Result
 fn tool_periph_reg_dump(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let device = s(args, "device").ok_or_else(|| anyhow::anyhow!("缺少 device"))?;
     let filter = s(args, "peripheral");
+    // Decoded SVD bit fields are returned by default (useful for models);
+    // `fields: false` omits them for a compact dump.
+    let with_fields = b(args, "fields").unwrap_or(true);
     let dev = ns_device::device_for_target(&device)
         .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {device}"))?;
     with_sim(server, args, false, |sim, _, _| {
-        let mut out = Vec::new();
-        for p in dev.sorted_peripherals() {
-            if let Some(f) = filter.as_deref() {
-                if !p.name.eq_ignore_ascii_case(f) {
-                    continue;
-                }
-            }
-            for r in &p.registers {
-                let addr = r.address as u32;
-                let value = sim.peripheral_read_reg(addr).unwrap_or_else(|| {
-                    let mut v = 0u32;
-                    let size = (r.size as usize).max(1);
-                    for i in 0..size.min(4) {
-                        v |= (read_mem_byte(sim, addr.wrapping_add(i as u32)) as u32) << (i * 8);
-                    }
-                    v
-                });
-                out.push(json!({
-                    "peripheral": p.name,
-                    "register": r.name,
-                    "address": addr,
-                    "value": value,
-                    "size": r.size,
-                    "resetValue": r.reset_value,
-                    "description": r.description,
-                }));
-            }
-        }
+        let out = crate::device_reg_dump(sim, &dev, filter.as_deref(), with_fields);
         Ok(json!({ "device": device, "count": out.len(), "registers": out }))
     })
 }

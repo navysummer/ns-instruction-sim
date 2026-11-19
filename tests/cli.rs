@@ -1320,6 +1320,78 @@ fn periph_field_access() {
 }
 
 #[test]
+fn periph_reg_dump_decodes_fields() {
+    let dir = tmpdir();
+    let sess = dir.join("dump-fields.json");
+    let s = sess.to_str().unwrap();
+    bootstrap(&sess);
+    Command::new(bin())
+        .args(["periph", "svd-load", "--session", s, "--device", "stm32f103c8"])
+        .output()
+        .unwrap();
+    // Set RCC.CR.HSION so the decoded field is non-zero.
+    let out = Command::new(bin())
+        .args(["periph", "field-set", "--session", s, "--device", "stm32f103c8",
+               "--peripheral", "RCC", "--register", "CR", "--field", "HSION",
+               "--value", "1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // `reg-dump --fields --json` decodes each register's SVD bit fields.
+    let out = Command::new(bin())
+        .args(["periph", "reg-dump", "--session", s, "--device", "stm32f103c8",
+               "--peripheral", "RCC", "--fields", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let cr = json["registers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["register"] == "CR")
+        .expect("RCC.CR missing");
+    assert_eq!(cr["value"], 1u64);
+    let fields = cr["fields"].as_array().unwrap();
+    let hion = fields.iter().find(|f| f["name"] == "HSION").unwrap();
+    assert_eq!(hion["bitOffset"], 0u64);
+    assert_eq!(hion["bitWidth"], 1u64);
+    assert_eq!(hion["value"], 1u64);
+    let hse = fields.iter().find(|f| f["name"] == "HSEON").unwrap();
+    assert_eq!(hse["bitOffset"], 16u64);
+    assert_eq!(hse["value"], 0u64);
+
+    // Without --fields the dump stays compact.
+    let out = Command::new(bin())
+        .args(["periph", "reg-dump", "--session", s, "--device", "stm32f103c8",
+               "--peripheral", "RCC", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let cr = json["registers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["register"] == "CR")
+        .unwrap();
+    assert!(cr.get("fields").is_none(), "fields should be omitted");
+
+    // Human mode prints the decoded bit range and value.
+    let out = Command::new(bin())
+        .args(["periph", "reg-dump", "--session", s, "--device", "stm32f103c8",
+               "--peripheral", "RCC", "--fields"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("RCC.CR"), "{text}");
+    assert!(text.contains("HSION"), "{text}");
+    assert!(text.contains("bit 0:0"), "{text}");
+    assert!(text.contains("bit 16:16"), "{text}");
+}
+
+#[test]
 fn periph_reg_write_data_space_avr() {
     // On AVR the I/O space (0x20-0x5F) is part of the data space; a
     // peripheral-register write must land there (not program memory) so both
@@ -7107,11 +7179,23 @@ fn mcp_periph_reg_dump_tool() {
         .find(|x| x["register"] == "CRL" && x["peripheral"] == "GPIOA")
         .unwrap();
     assert_eq!(crl["value"], 0x4444_4444u64);
+    // Decoded SVD bit fields are included by default (CRL.MODE0 = 0x4 of 0x44444444).
+    {
+        let fields = crl["fields"].as_array().expect("registers lack decoded fields");
+        let mode0 = fields.iter().find(|f| f["name"] == "MODE0").unwrap();
+        assert_eq!(mode0["bitOffset"], 0u64);
+        assert_eq!(mode0["bitWidth"], 4u64);
+        assert_eq!(mode0["value"], 4u64);
+    }
 
     // Peripheral filter and unknown-device error path.
     let r = client.call_tool("periph_reg_dump", serde_json::json!({ "session": s, "device": "stm32f103c8", "peripheral": "RCC" }));
     assert!(!r["isError"].as_bool().unwrap());
     assert!(r["structuredContent"]["registers"].as_array().unwrap().iter().all(|x| x["peripheral"] == "RCC"));
+    // `fields: false` returns a compact dump without the decoded arrays.
+    let r = client.call_tool("periph_reg_dump", serde_json::json!({ "session": s, "device": "stm32f103c8", "peripheral": "GPIOA", "fields": false }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_reg_dump fields=false: {}", r);
+    assert!(r["structuredContent"]["registers"].as_array().unwrap().iter().all(|x| x.get("fields").is_none()));
     let r = client.call_tool("periph_reg_dump", serde_json::json!({ "session": s, "device": "nosuch" }));
     assert!(r["isError"].as_bool().unwrap());
     client.close();
@@ -8409,7 +8493,7 @@ fn help_every_param() {
         (&["mem", "copy"], &["--session", "--arch", "--src", "--dst", "--len", "--json"]),
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
-        (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--json"]),
+        (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--fields", "--json"]),
         (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--json"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
         (&["cycle", "set"], &["--session", "--count", "--json"]),

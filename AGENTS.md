@@ -123,7 +123,7 @@ ns-instruction-sim/
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON；`--firmware` 直接加载固件反汇编，无需先建会话，架构从 ELF 推导） | `--firmware --base --arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要；`--mem` 附带指定起始地址的内存快照，人读模式输出 hex dump） | `--session --arch --firmware --base --mem --mem-len --json --fields --summary` | 状态/JSON/摘要 |
-| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费） | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --input --file --device --peripheral --register --field --force --session --json` | 表/JSON |
+| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费）；`reg-dump --fields` 附带每个寄存器的 SVD 位域解码（位偏移/宽度/当前值/描述） | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --input --file --device --peripheral --register --field --fields --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `line` / `addr` | ELF 符号与源行号映射 | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` / `set` | 周期计数/指令周期估算/外设推进/设置周期计数（模拟时间流逝/超时） | `--addr --cycles --count --session --json` | 值/JSON |
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
@@ -193,7 +193,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `mem_read/write/fill/search/load/dump/region/copy`、`bp_set/modify/clear/list/enable/disable/clear_all`
    （`bp_list` 支持 `symbols` 参数）、
    `disasm`、`reset`、`cycle_get/estimate/tick/set`、`interrupt_take/pending/set`、
-   `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`、
+   `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`
+   （`periph_reg_dump` 默认返回 `fields` 位域解码，`fields: false` 省略）、
    `symbol_list/at/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
    `trace`、`coverage`、`profile` 与 CLI 同名子命令一一对应（`analyze_schema` 共享参数），
    返回结构化轨迹/覆盖/直方图 JSON，并支持 `out` 参数把结果写入文件；
@@ -679,8 +680,12 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   `trace` 的 `regs: true` 参数返回每条指令后的寄存器快照。
 - `periph_reg_dump_command`：`periph reg-dump` 转储设备全部命名寄存器的当前值（SVD 复位值
   0x44444444 读回 GPIOA.CRL、`--peripheral` 过滤、未知设备报错）。
+- `periph_reg_dump_decodes_fields`：`periph reg-dump --fields` 解码每个寄存器的 SVD 位域
+  （`fields[{name,bitOffset,bitWidth,value,description}]`，`field-set RCC.CR.HSION=1` 后解码值随之变化；
+  不带 `--fields` 时省略该数组；人读模式打印 `bit 起始:结束` 与当前值）。
 - `mcp_periph_reg_dump_tool`：MCP `periph_reg_dump` 返回 `count`/`registers`（含 `GPIOA.CRL`），
-  `peripheral` 过滤与未知设备错误路径。
+  `peripheral` 过滤与未知设备错误路径；默认附带 `fields` 位域解码（`GPIOA.CRL.MODE0`=0x4），
+  `fields: false` 返回紧凑转储。
 - `disasm_labels_annotate_symbols`：`disasm --labels` 在符号起始地址插入 `名称:` 标签行，
   JSON 项携带 `label`（仅符号首条指令非空）、`--out` 落盘含标签。
 - `mcp_disasm_labels`：MCP `disasm` 的 `labels: true` 在 `instructions[i].label` 标注符号地址，

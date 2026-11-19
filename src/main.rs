@@ -1013,6 +1013,9 @@ enum PeriphSub {
         /// 只转储指定外设（按名称，可选）。
         #[arg(long)]
         peripheral: Option<String>,
+        /// 附带 SVD 位域解码（每个字段的位偏移/宽度/当前值/描述）。
+        #[arg(long)]
+        fields: bool,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -3644,6 +3647,77 @@ pub(crate) fn resolve_reg_field(
     Ok((r.address as u32, f.bit_offset, f.bit_width))
 }
 
+/// Decode a register value into its SVD bit fields, extracting each field's
+/// current value from the register (a zero-width field decodes to 0).
+pub(crate) fn decode_fields(value: u32, fields: &[ns_device::Field]) -> Vec<serde_json::Value> {
+    fields
+        .iter()
+        .map(|f| {
+            let mask = if f.bit_width == 0 || f.bit_width >= 32 {
+                u32::MAX
+            } else {
+                (1u32 << f.bit_width) - 1
+            };
+            let bits = if f.bit_offset < 32 && f.bit_width > 0 {
+                (value >> f.bit_offset) & mask
+            } else {
+                0
+            };
+            serde_json::json!({
+                "name": f.name,
+                "bitOffset": f.bit_offset,
+                "bitWidth": f.bit_width,
+                "value": bits,
+                "description": f.description,
+            })
+        })
+        .collect()
+}
+
+/// Dump every named register of a device (optionally filtered to one
+/// peripheral) with its current value, reset value and decoded bit fields.
+/// Shared by the `periph reg-dump` CLI and the `periph_reg_dump` MCP tool.
+pub(crate) fn device_reg_dump(
+    sim: &Simulator,
+    dev: &ns_device::Device,
+    filter: Option<&str>,
+    with_fields: bool,
+) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for p in dev.sorted_peripherals() {
+        if let Some(f) = filter {
+            if !p.name.eq_ignore_ascii_case(f) {
+                continue;
+            }
+        }
+        for r in &p.registers {
+            let addr = r.address as u32;
+            let value = sim.peripheral_read_reg(addr).unwrap_or_else(|| {
+                let mut v = 0u32;
+                let size = (r.size as usize).max(1);
+                for i in 0..size.min(4) {
+                    v |= (read_mem_byte(sim, addr.wrapping_add(i as u32)) as u32) << (i * 8);
+                }
+                v
+            });
+            let mut entry = serde_json::json!({
+                "peripheral": p.name,
+                "register": r.name,
+                "address": addr,
+                "value": value,
+                "size": r.size,
+                "resetValue": r.reset_value,
+                "description": r.description,
+            });
+            if with_fields {
+                entry["fields"] = serde_json::Value::Array(decode_fields(value, &r.fields));
+            }
+            out.push(entry);
+        }
+    }
+    out
+}
+
 fn cmd_periph(sub: PeriphSub) -> Result<()> {
     match sub {
         PeriphSub::Status { session, json } => {
@@ -3965,38 +4039,11 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             Ok(())
         }
-        PeriphSub::RegDump { session, device, peripheral, json } => {
+        PeriphSub::RegDump { session, device, peripheral, fields, json } => {
             let dev = ns_device::device_for_target(&device)
                 .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {device}"))?;
             let (sim, _, _) = load_or_create(Some(&session), None, None, "0")?;
-            let mut out: Vec<serde_json::Value> = Vec::new();
-            for p in dev.sorted_peripherals() {
-                if let Some(filter) = peripheral.as_deref() {
-                    if !p.name.eq_ignore_ascii_case(filter) {
-                        continue;
-                    }
-                }
-                for r in &p.registers {
-                    let addr = r.address as u32;
-                    let value = sim.peripheral_read_reg(addr).unwrap_or_else(|| {
-                        let mut v = 0u32;
-                        let size = (r.size as usize).max(1);
-                        for i in 0..size.min(4) {
-                            v |= (read_mem_byte(&sim, addr.wrapping_add(i as u32)) as u32) << (i * 8);
-                        }
-                        v
-                    });
-                    out.push(serde_json::json!({
-                        "peripheral": p.name,
-                        "register": r.name,
-                        "address": addr,
-                        "value": value,
-                        "size": r.size,
-                        "resetValue": r.reset_value,
-                        "description": r.description,
-                    }));
-                }
-            }
+            let out = device_reg_dump(&sim, &dev, peripheral.as_deref(), fields);
             if json {
                 print_json(&serde_json::json!({
                     "device": device,
@@ -4020,6 +4067,27 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                         r["value"].as_u64().unwrap_or(0) as u32,
                         r["description"].as_str().unwrap_or("")
                     );
+                    if fields {
+                        let decoded: Vec<&serde_json::Value> = r
+                            .get("fields")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.iter().collect())
+                            .unwrap_or_default();
+                        for f in decoded {
+                            let off = f["bitOffset"].as_u64().unwrap_or(0);
+                            let wid = f["bitWidth"].as_u64().unwrap_or(0);
+                            let end = if wid == 0 { off } else { off + wid - 1 };
+                            let bits = f["value"].as_u64().unwrap_or(0) as u32;
+                            let name = f["name"].as_str().unwrap_or("").to_string();
+                            let desc = f["description"].as_str().unwrap_or("").to_string();
+                            println!(
+                                "    {:<24} bit {}:{}  0x{bits:02x}  {desc}",
+                                name,
+                                off,
+                                end
+                            );
+                        }
+                    }
                 }
             }
             Ok(())
