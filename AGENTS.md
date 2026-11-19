@@ -118,7 +118,7 @@ ns-instruction-sim/
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
 | `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json --trace --source` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
-| `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` / `region` | 内存读/写/填充（含确定性伪随机）/搜索模式/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --name --format --width --out --json` | hex/C/JSON |
+| `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` / `region` / `copy` | 内存读/写/填充（含确定性伪随机）/搜索模式/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验）/复制内存区域（源→目标，重叠范围按 memmove 语义） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --src --dst --name --format --width --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数；`list --symbols` 用 ELF 符号注释断点地址） | `--addr --symbol --line --condition --hit-count --once --symbols --session --json` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON） | `--arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
@@ -187,7 +187,7 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
 5. **工具覆盖**：`arch_list`、`device_list`、`device_info`、`device_svd/linker/startup/init`、
    `session_create/load/save`、
    `state`、`step`、`step_over`、`step_out`、`run`、`continue`、`reg_list/get/set`、
-   `mem_read/write/fill/search/load/dump/region`、`bp_set/modify/clear/list/enable/disable/clear_all`
+   `mem_read/write/fill/search/load/dump/region/copy`、`bp_set/modify/clear/list/enable/disable/clear_all`
    （`bp_list` 支持 `symbols` 参数）、
    `disasm`、`reset`、`cycle_get/estimate/tick`、`interrupt_take/pending/set`、
    `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`、
@@ -292,6 +292,9 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `mem_region_dump`：`mem region --device --region` 按目录内存映射解析命名区域（FLASH/RAM/PERIPHERALS），
   偏移/长度校验、区域基址/字节数组 JSON 输出、写后读回一致；未知区域与越界偏移均报错。
 - `mcp_mem_region`：MCP `mem_region` 返回区域基址/长度/字节，未知区域以 `isError:true` 返回。
+- `mem_copy_roundtrip`：`mem copy --src --dst --len` 复制字节并读回（`--src/--dst` 与位置参数
+  双形式），重叠范围按 memmove 语义（dst 位于 src 之后不破坏源），缺源地址报错。
+- `mcp_mem_copy`：MCP `mem_copy` 复制后 `mem_read` 读回一致。
 - `mem_write_read_roundtrip_persists`：内存写读跨进程往返并持久化。
 - `mem_fill_hex_value`：`mem fill --value` 十六进制值填充并可读回。
 - `mem_read_word_width`：`mem read --width` 按字节/半字/字/双字读取（含非法宽度错误路径）。

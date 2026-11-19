@@ -6417,7 +6417,7 @@ fn mcp_handshake_and_list_tools() {
         "arch_list", "device_list", "device_info", "device_svd", "device_linker", "device_startup",
         "device_init", "session_create", "state", "step", "step_over", "step_out",
         "run", "continue", "reg_list", "reg_get", "reg_set", "mem_read", "mem_write", "mem_fill",
-        "mem_search", "mem_load", "mem_dump", "mem_region", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
+        "mem_search", "mem_load", "mem_dump", "mem_region", "mem_copy", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
         "cycle_get", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "session_info", "session_diff", "device_memory_map", "firmware_info",
@@ -7480,6 +7480,101 @@ fn mcp_state_reports_arm_it() {
 }
 
 #[test]
+fn mem_copy_roundtrip() {
+    let dir = tmpdir();
+    let sess = dir.join("memcopy.json");
+    Command::new(bin())
+        .args(["state", "--arch", "riscv", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    // Seed the source range.
+    Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x80000000", "--bytes", "0xde", "0xad", "0xbe", "0xef"])
+        .output()
+        .unwrap();
+    // `--src/--dst` form.
+    let out = Command::new(bin())
+        .args(["mem", "copy", "--session", sess.to_str().unwrap(),
+               "--src", "0x80000000", "--dst", "0x20000000", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["src"], 0x8000_0000u64);
+    assert_eq!(json["dst"], 0x2000_0000u64);
+    assert_eq!(json["len"], 4u64);
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x20000000", "--len", "4"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("de ad be ef"));
+    // Positional src/dst form.
+    Command::new(bin())
+        .args(["mem", "copy", "--session", sess.to_str().unwrap(), "0x20000000", "0x80000010", "--len", "4"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x80000010", "--len", "4"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("de ad be ef"));
+    // Overlapping ranges behave like memmove (forward copy does not clobber source).
+    Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x80000020", "--bytes", "1", "2", "3", "4", "5", "6", "7", "8"])
+        .output()
+        .unwrap();
+    Command::new(bin())
+        .args(["mem", "copy", "--session", sess.to_str().unwrap(),
+               "--src", "0x80000020", "--dst", "0x80000024", "--len", "8"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x80000020", "--len", "12"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("01 02 03 04 01 02 03 04"), "{text}");
+    assert!(text.contains("05 06 07 08"), "{text}");
+    // Missing source address is an error.
+    let out = Command::new(bin())
+        .args(["mem", "copy", "--session", sess.to_str().unwrap(), "--dst", "0x20000000", "--len", "4"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("缺少源地址"));
+}
+
+#[test]
+fn mcp_mem_copy() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-memcopy-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "arch": "riscv", "addr": 0x8000_0000u64,
+        "bytes": ["0xde", "0xad", "0xbe", "0xef"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write: {}", r);
+    let r = client.call_tool("mem_copy", serde_json::json!({
+        "session": s, "src": "0x80000000", "dst": "0x20000000", "len": 4,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_copy: {}", r);
+    assert_eq!(r["structuredContent"]["src"], 0x8000_0000u64);
+    assert_eq!(r["structuredContent"]["dst"], 0x2000_0000u64);
+    assert_eq!(r["structuredContent"]["len"], 4u64);
+    let r = client.call_tool("mem_read", serde_json::json!({
+        "session": s, "addr": "0x20000000", "len": 4,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_read: {}", r);
+    assert_eq!(r["structuredContent"]["bytes"], serde_json::json!([0xde, 0xad, 0xbe, 0xef]));
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
@@ -7747,7 +7842,7 @@ fn help_every_command() {
         &["run"], &["step"], &["step-over"], &["step-out"], &["continue"],
         &["reg", "list"], &["reg", "get"], &["reg", "set"],
         &["mem", "read"], &["mem", "write"], &["mem", "fill"], &["mem", "search"],
-        &["mem", "load"], &["mem", "dump"], &["mem", "region"],
+        &["mem", "load"], &["mem", "dump"], &["mem", "region"], &["mem", "copy"],
         &["bp", "list"], &["bp", "set"], &["bp", "modify"], &["bp", "clear"], &["bp", "clear-all"],
         &["bp", "enable"], &["bp", "disable"],
         &["disasm"], &["reset"], &["state"],
@@ -7794,6 +7889,7 @@ fn help_every_param() {
         (&["bp", "list"], &["--session", "--symbols", "--json"]),
         (&["mem", "read"], &["--session", "--arch", "--addr", "--len", "--width", "--out", "--json"]),
         (&["mem", "region"], &["--session", "--arch", "--device", "--region", "--offset", "--len", "--json"]),
+        (&["mem", "copy"], &["--session", "--arch", "--src", "--dst", "--len", "--json"]),
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--json"]),

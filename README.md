@@ -36,6 +36,8 @@ ns-instruction-sim mem dump --session s.json --addr 0x20000000 --len 64 --name b
 ns-instruction-sim mem dump --session s.json --addr 0x20000000 --len 64 --format c --json
 ns-instruction-sim mem region --session s.json --device stm32f103c8 --region FLASH --len 16
 ns-instruction-sim mem region --session s.json --device stm32f103c8 --region RAM --offset 0x100 --len 32 --json
+ns-instruction-sim mem copy --session s.json --src 0x08000000 --dst 0x20000000 --len 256
+ns-instruction-sim mem copy --session s.json --src 0x08000000 --dst 0x20000000 --len 256 --json
 ns-instruction-sim bp set --session s.json --addr 0x80000004
 ns-instruction-sim bp set --session s.json --addr 0x80000008 --once
 ns-instruction-sim bp set --session s.json --symbol main

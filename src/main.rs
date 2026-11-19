@@ -592,6 +592,33 @@ enum MemSub {
         #[arg(long)]
         json: bool,
     },
+    /// 复制内存区域（源地址 → 目标地址，重叠范围按 memmove 语义处理）。
+    Copy {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 目标架构（无会话时使用，默认 riscv）。
+        #[arg(short, long)]
+        arch: Option<String>,
+        /// 源起始地址（十六进制或十进制，位置参数或 --src）。
+        #[arg(index = 1)]
+        src: Option<String>,
+        /// 源起始地址（--src 形式）。
+        #[arg(long = "src", conflicts_with = "src")]
+        src_flag: Option<String>,
+        /// 目标起始地址（十六进制或十进制，位置参数或 --dst）。
+        #[arg(index = 2)]
+        dst: Option<String>,
+        /// 目标起始地址（--dst 形式）。
+        #[arg(long = "dst", conflicts_with = "dst")]
+        dst_flag: Option<String>,
+        /// 复制长度（字节）。
+        #[arg(long, default_value = "1")]
+        len: usize,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -2741,6 +2768,30 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                     reg.name, start, reg.name, reg.size, offset
                 );
                 print!("{}", hex_dump(start, &bytes));
+            }
+            Ok(())
+        }
+        MemSub::Copy { session, arch, src, src_flag, dst, dst_flag, len, json } => {
+            let src = src_flag.or(src).ok_or_else(|| anyhow::anyhow!("缺少源地址"))?;
+            let dst = dst_flag.or(dst).ok_or_else(|| anyhow::anyhow!("缺少目标地址"))?;
+            let src = parse_num(&src)?;
+            let dst = parse_num(&dst)?;
+            let (mut sim, fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
+            // Read the whole source range first so overlapping src/dst ranges
+            // behave like `memmove` (no clobber before read).
+            let mut bytes = Vec::with_capacity(len);
+            for i in 0..len {
+                bytes.push(read_mem_byte(&sim, src.wrapping_add(i as u32)));
+            }
+            for (i, b) in bytes.iter().enumerate() {
+                write_mem_byte(&mut sim, dst.wrapping_add(i as u32), *b);
+            }
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({ "src": src, "dst": dst, "len": len }))?;
+            } else {
+                println!("复制 {} 字节 0x{:08x} -> 0x{:08x}", len, src, dst);
             }
             Ok(())
         }

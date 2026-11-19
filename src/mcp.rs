@@ -707,6 +707,21 @@ fn tools() -> Vec<Tool> {
             handler: tool_mem_region,
         },
         Tool {
+            name: "mem_copy",
+            description: "复制内存区域（源地址 → 目标地址，重叠范围按 memmove 语义处理）。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("arch", arch.clone()),
+                    ("src", prop_str("源起始地址（十六进制或十进制）。")),
+                    ("dst", prop_str("目标起始地址（十六进制或十进制）。")),
+                    ("len", prop_num("复制长度（字节）。")),
+                ],
+                &["src", "dst"],
+            ),
+            handler: tool_mem_copy,
+        },
+        Tool {
             name: "bp_set",
             description: "设置断点（按地址/符号/源码行号，支持条件/命中次数/一次性）。",
             schema: obj(
@@ -1739,6 +1754,24 @@ fn tool_mem_region(server: &McpServer, args: &Map<String, Value>) -> Result<Valu
             "len": count,
             "bytes": bytes,
         }))
+    })
+}
+
+/// Copy a memory range within the session (`mem copy`).
+fn tool_mem_copy(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let src = parse_num(&s(args, "src").ok_or_else(|| anyhow::anyhow!("缺少 src"))?)?;
+    let dst = parse_num(&s(args, "dst").ok_or_else(|| anyhow::anyhow!("缺少 dst"))?)?;
+    let len = u(args, "len").unwrap_or(1) as usize;
+    with_sim(server, args, true, |sim, _, _| {
+        // Read the whole source range first (memmove semantics on overlap).
+        let mut bytes = Vec::with_capacity(len);
+        for i in 0..len {
+            bytes.push(read_mem_byte(sim, src.wrapping_add(i as u32)));
+        }
+        for (i, b) in bytes.iter().enumerate() {
+            write_mem_byte(sim, dst.wrapping_add(i as u32), *b);
+        }
+        Ok(json!({ "src": src, "dst": dst, "len": len }))
     })
 }
 
