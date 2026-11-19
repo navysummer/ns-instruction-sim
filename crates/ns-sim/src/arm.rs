@@ -1025,6 +1025,50 @@ impl ArmCore {
             return;
         }
 
+        // MLA/MLS Rd, Rn, Rm, Ra (0xFB00 prefix, second bits 7-5 = 0, Ra != 15).
+        // Bit 4 of the second halfword selects the operation: 0 = MLA
+        // (Rd = Rn*Rm + Ra), 1 = MLS (Rd = Ra - Rn*Rm).
+        if first & 0xFFF0 == 0xFB00 && second & 0x00E0 == 0 && second & 0xF000 != 0xF000 {
+            let rn = (first & 0x0F) as usize;
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let ra = ((second >> 12) & 0x0F) as usize;
+            let product = self.regs[rn].wrapping_mul(self.regs[rm]);
+            if second & 0x0010 != 0 {
+                self.regs[rd] = self.regs[ra].wrapping_sub(product);
+            } else {
+                self.regs[rd] = product.wrapping_add(self.regs[ra]);
+            }
+            return;
+        }
+
+        // UMULL/SMULL/UMLAL/SMLAL RdLo, RdHi, Rn, Rm. The first halfword is
+        // `1111 1011 1s10 Rn` (bits 7-4 = 1010 unsigned / 1100 signed, so bit
+        // 6 selects signed). The second halfword is `RdLo RdHi 000a Rm`, where
+        // bit 4 selects accumulate (UMLAL/SMLAL).
+        if first & 0xFFF0 == 0xFBA0 || first & 0xFFF0 == 0xFBC0 {
+            let rn = (first & 0x0F) as usize;
+            let rdlo = ((second >> 12) & 0x0F) as usize;
+            let rdhi = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let signed = first & 0x0040 != 0; // S bit (bit 6)
+            let accumulate = second & 0x0010 != 0; // A bit
+            let product = if signed {
+                ((self.regs[rn] as i32 as i64).wrapping_mul(self.regs[rm] as i32 as i64)) as u64
+            } else {
+                (self.regs[rn] as u64).wrapping_mul(self.regs[rm] as u64)
+            };
+            let result = if accumulate {
+                let acc = ((self.regs[rdhi] as u64) << 32) | (self.regs[rdlo] as u64);
+                acc.wrapping_add(product)
+            } else {
+                product
+            };
+            self.regs[rdlo] = result as u32;
+            self.regs[rdhi] = (result >> 32) as u32;
+            return;
+        }
+
         // SDIV/UDIV Rd, Rn, Rm (0xFB90/0xFBB0 prefix, second bits 15-12 = 1111,
         // bits 7-4 = 1111). Division by zero yields 0 on Cortex-M.
         if (first & 0xFFF0 == 0xFB90 || first & 0xFFF0 == 0xFBB0)
@@ -1321,6 +1365,47 @@ impl ArmCore {
                 self.regs[rd] = self.read_u16(addr) as u32;
             } else {
                 self.write_u16(addr, self.regs[rd] as u16);
+            }
+            return;
+        }
+
+        // LDR/STR (immediate 8-bit, with optional writeback). The first
+        // halfword is `1111 1000 0 size L Rn` (bits 6-5 select byte/half/word,
+        // bit 4 is load); the second is `Rt 1 P U W imm8`, where bit 10 is
+        // pre-index, bit 9 is add (up), and bit 8 is writeback. Post-index
+        // forms (P = 0) always write back the base register. These overlap the
+        // register-offset encodings in the 0xF800-0xF85F range but are
+        // distinguished by bit 11 of the second halfword being set.
+        if first & 0xFF80 == 0xF800 && second & 0x0800 != 0 {
+            let rn = (first & 0x000F) as usize;
+            let rt = ((second >> 12) & 0x0F) as usize;
+            let imm8 = (second & 0x00FF) as u32;
+            let pre = second & 0x0400 != 0; // P = bit 10
+            let up = second & 0x0200 != 0; // U = bit 9
+            let wb = second & 0x0100 != 0; // W = bit 8
+            let load = first & 0x0010 != 0; // L
+            let width = (first >> 5) & 0x03; // 0=byte, 1=half, 2=word
+            let offset = if up {
+                imm8
+            } else {
+                (imm8 as i32).wrapping_neg() as u32
+            };
+            let base = self.regs[rn];
+            let effective = if pre {
+                base.wrapping_add(offset)
+            } else {
+                base
+            };
+            if (wb || !pre) && rn != PC {
+                self.regs[rn] = base.wrapping_add(offset);
+            }
+            match (width, load) {
+                (0, false) => self.write_u8(effective, self.regs[rt] as u8),
+                (0, true) => self.regs[rt] = self.read_u8(effective) as u32,
+                (1, false) => self.write_u16(effective, self.regs[rt] as u16),
+                (1, true) => self.regs[rt] = self.read_u16(effective) as u32,
+                (_, false) => self.write_u32(effective, self.regs[rt]),
+                (_, true) => self.regs[rt] = self.read_u32(effective),
             }
             return;
         }
@@ -3088,6 +3173,82 @@ mod tests {
     }
 
     #[test]
+    fn thumb2_mla_mls() {
+        // MLA r1, r2, r3, r4 (0xFB024103): r1 = r2*r3 + r4.
+        let mut c = core();
+        c.regs[2] = 3;
+        c.regs[3] = 5;
+        c.regs[4] = 7;
+        run(&mut c, &[0xFB02, 0x4103], 1);
+        assert_eq!(c.regs[1], 22); // 3*5 + 7
+
+        // MLA with a negative accumulator wraps mod 2^32.
+        let mut c = core();
+        c.regs[2] = 0xFFFF_FFFF;
+        c.regs[3] = 2;
+        c.regs[4] = 0xFFFF_FFFF;
+        run(&mut c, &[0xFB02, 0x4103], 1);
+        assert_eq!(c.regs[1], 0xFFFF_FFFD); // -1*2 + (-1) = -3
+
+        // MLS r0, r2, r1, r0 (0xFB020011): r0 = r0 - r2*r1.
+        let mut c = core();
+        c.regs[0] = 100;
+        c.regs[2] = 3;
+        c.regs[1] = 5;
+        run(&mut c, &[0xFB02, 0x0011], 1);
+        assert_eq!(c.regs[0], 85); // 100 - 3*5
+
+        // MLS result is the low 32 bits of a signed product.
+        let mut c = core();
+        c.regs[0] = 0;
+        c.regs[2] = (-7i32) as u32;
+        c.regs[1] = 2;
+        run(&mut c, &[0xFB02, 0x0011], 1);
+        assert_eq!(c.regs[0], 14); // 0 - (-7*2)
+    }
+
+    #[test]
+    fn thumb2_umull_smull() {
+        // UMULL r0, r1, r2, r3 (0xFBA20103): r1:r0 = r2 * r3 (unsigned 64-bit).
+        let mut c = core();
+        c.regs[2] = 0xFFFF_FFFF;
+        c.regs[3] = 0xFFFF_FFFF;
+        run(&mut c, &[0xFBA2, 0x0103], 1);
+        assert_eq!(c.regs[0], 0x0000_0001); // low 32 bits
+        assert_eq!(c.regs[1], 0xFFFF_FFFE); // high 32 bits
+
+        // SMULL r0, r1, r2, r3 (0xFBC20103): r1:r0 = (i32)r2 * (i32)r3.
+        let mut c = core();
+        c.regs[2] = (-7i32) as u32;
+        c.regs[3] = 2;
+        run(&mut c, &[0xFBC2, 0x0103], 1);
+        assert_eq!(c.regs[0], 0xFFFF_FFF2); // -14 low
+        assert_eq!(c.regs[1], 0xFFFF_FFFF); // sign-extended high
+
+        // UMLAL r4, r5, r6, r7 (0xFBA64517): r5:r4 += r6 * r7.
+        let mut c = core();
+        c.regs[4] = 0x1234_5678;
+        c.regs[5] = 0x9ABC_DEF0;
+        c.regs[6] = 0x0000_0003;
+        c.regs[7] = 0x0000_0005;
+        run(&mut c, &[0xFBA6, 0x4517], 1);
+        let expected: u64 = 0x9ABC_DEF0_1234_5678 + 15;
+        assert_eq!(c.regs[4], expected as u32);
+        assert_eq!(c.regs[5], (expected >> 32) as u32);
+
+        // SMLAL r8, r9, r10, r11 (0xFBCA891B): r9:r8 += (i32)r10 * (i32)r11.
+        let mut c = core();
+        c.regs[8] = 0;
+        c.regs[9] = 0;
+        c.regs[10] = (-6i32) as u32;
+        c.regs[11] = 3;
+        run(&mut c, &[0xFBCA, 0x891B], 1);
+        let expected: u64 = (-18i64) as u64;
+        assert_eq!(c.regs[8], expected as u32);
+        assert_eq!(c.regs[9], (expected >> 32) as u32);
+    }
+
+    #[test]
     fn thumb2_sdiv_udiv() {
         // SDIV r0, r1, r2 (0xFB91F0F2): signed division.
         let mut c = core();
@@ -3153,6 +3314,62 @@ mod tests {
         c.write_u16(0x406, 0xCDEF);
         run(&mut c, &[0xF830, 0xC001], 1);
         assert_eq!(c.regs[12], 0xCDEF);
+    }
+
+    #[test]
+    fn thumb2_ldr_str_imm8_writeback() {
+        // STR r1, [r0, #-4] (0xF8401C04): word store at r0 - 4, no writeback.
+        let mut c = core();
+        c.regs[0] = 0x100;
+        c.regs[1] = 0x1234_5678;
+        run(&mut c, &[0xF840, 0x1C04], 1);
+        assert_eq!(c.read_u32(0x0FC), 0x1234_5678);
+        assert_eq!(c.regs[0], 0x100);
+
+        // LDR r0, [r0, #-4] (0xF8500C04): word load at r0 - 4, no writeback.
+        let mut c = core();
+        c.regs[0] = 0x100;
+        c.write_u32(0x0FC, 0xCAFE_BABE);
+        run(&mut c, &[0xF850, 0x0C04], 1);
+        assert_eq!(c.regs[0], 0xCAFE_BABE);
+
+        // STR r11, [sp, #-4]! (0xF84DBD04): pre-index writeback, down.
+        let mut c = core();
+        c.regs[13] = 0x200;
+        c.regs[11] = 0xDEAD_BEEF;
+        run(&mut c, &[0xF84D, 0xBD04], 1);
+        assert_eq!(c.read_u32(0x1FC), 0xDEAD_BEEF);
+        assert_eq!(c.regs[13], 0x1FC);
+
+        // LDR r11, [sp], #4 (0xF85DBB04): post-index writeback, up.
+        let mut c = core();
+        c.regs[13] = 0x200;
+        c.write_u32(0x200, 0x1122_3344);
+        run(&mut c, &[0xF85D, 0xBB04], 1);
+        assert_eq!(c.regs[11], 0x1122_3344);
+        assert_eq!(c.regs[13], 0x204);
+
+        // LDR r0, [sp], #-4 (0xF85D0904): post-index writeback, down.
+        let mut c = core();
+        c.regs[13] = 0x200;
+        c.write_u32(0x200, 0x5566_7788);
+        run(&mut c, &[0xF85D, 0x0904], 1);
+        assert_eq!(c.regs[0], 0x5566_7788);
+        assert_eq!(c.regs[13], 0x1FC);
+
+        // STRB r1, [r0, #-1] (0xF8001C01): byte store at r0 - 1.
+        let mut c = core();
+        c.regs[0] = 0x300;
+        c.regs[1] = 0xAB;
+        run(&mut c, &[0xF800, 0x1C01], 1);
+        assert_eq!(c.read_u8(0x2FF), 0xAB);
+
+        // LDRH r2, [r3, #-2] (0xF8332C02): halfword load at r3 - 2.
+        let mut c = core();
+        c.regs[3] = 0x400;
+        c.write_u16(0x3FE, 0xCDEF);
+        run(&mut c, &[0xF833, 0x2C02], 1);
+        assert_eq!(c.regs[2], 0xCDEF);
     }
 
     #[test]

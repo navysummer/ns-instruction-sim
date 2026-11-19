@@ -2846,6 +2846,224 @@ fn run_arm_thumb2_ldrsb_ldrsh() {
 }
 
 #[test]
+fn run_arm_thumb2_ldr_str_imm8() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-imm8.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: str r1,[r0,#-4]; ldr r11,[sp],#4; strb r3,[r4,#-1];
+    // ldrh r5,[r6,#-2]; str r11,[sp,#-4]!.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x40", "0xF8", "0x04", "0x1C", // str r1, [r0, #-4]
+               "0x5D", "0xF8", "0x04", "0xBB", // ldr r11, [sp], #4
+               "0x04", "0xF8", "0x01", "0x3C", // strb r3, [r4, #-1]
+               "0x36", "0xF8", "0x02", "0x5C", // ldrh r5, [r6, #-2]
+               "0x4D", "0xF8", "0x04", "0xBD"]) // str r11, [sp, #-4]!
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Seed the load targets and the pre-decrement store base.
+    for (addr, bytes) in [
+        (0x2000_0000u64, vec![0x44u8, 0x33, 0x22, 0x11]),   // ldr r11 word
+        (0x2000_000Fu64, vec![0x00u8]),                     // pre-decrement byte target
+        (0x2000_001Eu64, vec![0xEFu8, 0xCD]),               // ldrh r5 halfword
+    ] {
+        let mut args: Vec<String> = vec![
+            "mem".into(), "write".into(), "--session".into(), sess.to_str().unwrap().into(),
+            "--addr".into(), format!("0x{addr:X}"), "--bytes".into(),
+        ];
+        for b in &bytes {
+            args.push(format!("0x{b:02X}"));
+        }
+        let out = Command::new(bin()).args(&args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [
+        ("r13", "0x20000000"), ("r0", "0x20000040"), ("r1", "0xDEADBEEF"),
+        ("r3", "0x000000AB"), ("r4", "0x20000010"), ("r6", "0x20000020"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..5 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0024u64);
+    assert_eq!(json["registers"]["r11"], 0x1122_3344u64); // ldr [sp], #4
+    assert_eq!(json["registers"]["r13"], 0x2000_0000u64);  // post +4 then pre -4
+    assert_eq!(json["registers"]["r5"], 0xCDEFu64);        // ldrh [r6, #-2]
+    // Verify the pre-decrement word store and the byte/half stores persisted.
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"], serde_json::json!([0x44, 0x33, 0x22, 0x11]));
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x2000003C", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"], serde_json::json!([0xEF, 0xBE, 0xAD, 0xDE]));
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x2000000F", "--len", "1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"], serde_json::json!([0xAB]));
+}
+
+#[test]
+fn run_arm_thumb2_mla_mls() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-mla.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: mul r1,r2,r3; mla r4,r5,r6,r7; mls r8,r9,r10,r11.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x02", "0xFB", "0x03", "0xF1", // mul r1, r2, r3
+               "0x05", "0xFB", "0x06", "0x74", // mla r4, r5, r6, r7
+               "0x09", "0xFB", "0x1A", "0xB8"]) // mls r8, r9, r10, r11
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [
+        ("r2", "0x00000003"), ("r3", "0x00000005"),
+        ("r5", "0x00000007"), ("r6", "0x0000000B"), ("r7", "0x0000000D"),
+        ("r9", "0x00000011"), ("r10", "0x00000013"), ("r11", "0x00000017"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..3 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_001Cu64);
+    assert_eq!(json["registers"]["r1"], 15u64);              // 3 * 5
+    assert_eq!(json["registers"]["r4"], 90u64);              // 7*11 + 13
+    assert_eq!(json["registers"]["r8"], 0xFFFF_FED4u64);     // 23 - 17*19
+}
+
+#[test]
+fn run_arm_thumb2_umull_smull() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-umull.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: umull r0,r1,r2,r3; smull r4,r5,r6,r7; umlal r8,r9,r10,r11.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0xA2", "0xFB", "0x03", "0x01", // umull r0, r1, r2, r3
+               "0xC6", "0xFB", "0x07", "0x45", // smull r4, r5, r6, r7
+               "0xAA", "0xFB", "0x1B", "0x89"]) // umlal r8, r9, r10, r11
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [
+        ("r2", "0xFFFFFFFF"), ("r3", "0xFFFFFFFF"),
+        ("r6", "0xFFFFFFF9"), ("r7", "0x00000002"),
+        ("r8", "0x00000000"), ("r9", "0x00000000"),
+        ("r10", "0x00000003"), ("r11", "0x00000005"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..3 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_001Cu64);
+    assert_eq!(json["registers"]["r0"], 1u64);               // low 32 of 0xFFFFFFFF^2
+    assert_eq!(json["registers"]["r1"], 0xFFFF_FFFEu64);     // high 32
+    assert_eq!(json["registers"]["r4"], 0xFFFF_FFF2u64);     // -14 low
+    assert_eq!(json["registers"]["r5"], 0xFFFF_FFFFu64);     // -14 sign-extended high
+    assert_eq!(json["registers"]["r8"], 15u64);              // 0 + 3*5
+    assert_eq!(json["registers"]["r9"], 0u64);
+}
+
+#[test]
 fn run_arm_thumb2_hints() {
     let dir = tmpdir();
     let sess = dir.join("arm-hints.json");

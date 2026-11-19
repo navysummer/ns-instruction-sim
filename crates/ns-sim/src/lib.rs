@@ -3552,6 +3552,17 @@ fn disassemble_thumb1(half: u16, pc: u32) -> String {
 }
 
 /// Decode a 32-bit Thumb-2 instruction, mirroring `ArmCore::execute_wide`.
+/// Canonical register name for a Thumb-2 base address register, matching the
+/// Thumb-1 disassembly convention (`sp`/`lr`/`pc` rather than `r13`/`r14`/`r15`).
+fn thumb2_reg_name(index: usize) -> String {
+    match index {
+        13 => "sp".to_string(),
+        14 => "lr".to_string(),
+        15 => "pc".to_string(),
+        n => format!("r{n}"),
+    }
+}
+
 fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     let first = (insn >> 16) as u16;
     let second = insn as u16;
@@ -3596,6 +3607,34 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let rd = ((second >> 8) & 0x0F) as usize;
         let rm = (second & 0x0F) as usize;
         return format!("mul r{rd}, r{rn}, r{rm}");
+    }
+
+    // MLA/MLS Rd, Rn, Rm, Ra (0xFB00 prefix, second bits 7-5 = 0, Ra != 15).
+    // Bit 4 of the second halfword selects the operation (0 = MLA, 1 = MLS).
+    if first & 0xFFF0 == 0xFB00 && second & 0x00E0 == 0 && second & 0xF000 != 0xF000 {
+        let rn = (first & 0x0F) as usize;
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let ra = ((second >> 12) & 0x0F) as usize;
+        let mnem = if second & 0x0010 != 0 { "mls" } else { "mla" };
+        return format!("{mnem} r{rd}, r{rn}, r{rm}, r{ra}");
+    }
+
+    // UMULL/SMULL/UMLAL/SMLAL RdLo, RdHi, Rn, Rm. The first halfword is
+    // `1111 1011 1s10 Rn` (bit 6 selects signed); the second halfword is
+    // `RdLo RdHi 000a Rm` (bit 4 selects accumulate).
+    if first & 0xFFF0 == 0xFBA0 || first & 0xFFF0 == 0xFBC0 {
+        let rn = (first & 0x0F) as usize;
+        let rdlo = ((second >> 12) & 0x0F) as usize;
+        let rdhi = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let mnem = match (first & 0x0040 != 0, second & 0x0010 != 0) {
+            (false, false) => "umull",
+            (false, true) => "umlal",
+            (true, false) => "smull",
+            (true, true) => "smlal",
+        };
+        return format!("{mnem} r{rdlo}, r{rdhi}, r{rn}, r{rm}");
     }
 
     // SDIV/UDIV Rd, Rn, Rm (0xFB90/0xFBB0 prefix, second bits 7-4 = 1111).
@@ -3757,9 +3796,9 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let rd = ((second >> 12) & 0x0F) as usize;
         let imm12 = (second & 0x0FFF) as u32;
         return if load {
-            format!("ldr r{rd}, [r{rn}, #0x{imm12:x}]")
+            format!("ldr r{rd}, [{}, #0x{imm12:x}]", thumb2_reg_name(rn))
         } else {
-            format!("str r{rd}, [r{rn}, #0x{imm12:x}]")
+            format!("str r{rd}, [{}, #0x{imm12:x}]", thumb2_reg_name(rn))
         };
     }
 
@@ -3777,9 +3816,9 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let rd = ((second >> 12) & 0x0F) as usize;
         let imm12 = (second & 0x0FFF) as u32;
         return if load {
-            format!("ldrb r{rd}, [r{rn}, #0x{imm12:x}]")
+            format!("ldrb r{rd}, [{}, #0x{imm12:x}]", thumb2_reg_name(rn))
         } else {
-            format!("strb r{rd}, [r{rn}, #0x{imm12:x}]")
+            format!("strb r{rd}, [{}, #0x{imm12:x}]", thumb2_reg_name(rn))
         };
     }
 
@@ -3797,10 +3836,49 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let rd = ((second >> 12) & 0x0F) as usize;
         let imm12 = (second & 0x0FFF) as u32;
         return if load {
-            format!("ldrh r{rd}, [r{rn}, #0x{imm12:x}]")
+            format!("ldrh r{rd}, [{}, #0x{imm12:x}]", thumb2_reg_name(rn))
         } else {
-            format!("strh r{rd}, [r{rn}, #0x{imm12:x}]")
+            format!("strh r{rd}, [{}, #0x{imm12:x}]", thumb2_reg_name(rn))
         };
+    }
+
+    // LDR/STR (immediate 8-bit, with optional writeback). First halfword is
+    // `1111 1000 0 size L Rn`; second is `Rt 1 P U W imm8` (bit 10 = pre-index,
+    // bit 9 = add, bit 8 = writeback). Post-index forms (P = 0) always write
+    // back. Distinguished from register-offset encodings by bit 11 of the
+    // second halfword being set.
+    if first & 0xFF80 == 0xF800 && second & 0x0800 != 0 {
+        let rn = (first & 0x000F) as usize;
+        let rt = ((second >> 12) & 0x0F) as usize;
+        let imm8 = (second & 0x00FF) as u32;
+        let pre = second & 0x0400 != 0;
+        let up = second & 0x0200 != 0;
+        let wb = second & 0x0100 != 0;
+        let load = first & 0x0010 != 0;
+        let width = (first >> 5) & 0x03;
+        let mnem = match (width, load) {
+            (0, false) => "strb",
+            (0, true) => "ldrb",
+            (1, false) => "strh",
+            (1, true) => "ldrh",
+            (_, false) => "str",
+            (_, true) => "ldr",
+        };
+        let offset = if up {
+            format!("#0x{imm8:x}")
+        } else {
+            format!("#-0x{imm8:x}")
+        };
+        let suffix = if pre {
+            if wb {
+                format!(", {offset}]!")
+            } else {
+                format!(", {offset}]")
+            }
+        } else {
+            format!("], {offset}")
+        };
+        return format!("{mnem} r{rt}, [{}{suffix}", thumb2_reg_name(rn));
     }
 
     // Register-offset loads/stores (0xF800-0xF85F): [Rn, Rm {, LSL #imm2}].
@@ -3824,7 +3902,7 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         } else {
             format!(", lsl #{shift}")
         };
-        return format!("{mnem} r{rt}, [r{rn}, r{rm}{shift_str}]");
+        return format!("{mnem} r{rt}, [{}, r{rm}{shift_str}]", thumb2_reg_name(rn));
     }
 
     // LDRSB/LDRSH wide forms. Register offset: first = 0xF910|Rn / 0xF930|Rn
@@ -3848,14 +3926,10 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             } else {
                 format!(", lsl #{shift}")
             };
-            return format!("{mnem} r{rt}, [r{rn}, r{rm}{shift_str}]");
+            return format!("{mnem} r{rt}, [{}, r{rm}{shift_str}]", thumb2_reg_name(rn));
         }
         let imm12 = second & 0x0FFF;
-        return if rn == 15 {
-            format!("{mnem} r{rt}, [pc, #0x{imm12:x}]")
-        } else {
-            format!("{mnem} r{rt}, [r{rn}, #0x{imm12:x}]")
-        };
+        return format!("{mnem} r{rt}, [{}, #0x{imm12:x}]", thumb2_reg_name(rn));
     }
 
     // Memory barriers DMB/DSB/ISB (0xF3BF 0x8F5F/8F6F/8F7F).
@@ -6139,6 +6213,15 @@ mod tests {
             (0xF880_0000, "strb r0, [r0, #0x0]"),
             (0xF8B0_0000, "ldrh r0, [r0, #0x0]"),
             (0xF8A0_0000, "strh r0, [r0, #0x0]"),
+            // 8-bit immediate loads/stores with optional writeback.
+            (0xF840_1C04, "str r1, [r0, #-0x4]"),
+            (0xF850_0C04, "ldr r0, [r0, #-0x4]"),
+            (0xF84D_BD04, "str r11, [sp, #-0x4]!"),
+            (0xF85D_BB04, "ldr r11, [sp], #0x4"),
+            (0xF85D_0904, "ldr r0, [sp], #-0x4"),
+            (0xF800_1C01, "strb r1, [r0, #-0x1]"),
+            (0xF833_2C02, "ldrh r2, [r3, #-0x2]"),
+            (0xF88D_1003, "strb r1, [sp, #0x3]"),
             (0xF3BF_8F5F, "dmb sy"),
             (0xF3BF_8F6F, "dsb sy"),
             (0xF3BF_8F7F, "isb sy"),
@@ -6190,6 +6273,16 @@ mod tests {
             (0xF9B3_2008, "ldrsh r2, [r3, #0x8]"),
             (0xF99F_0004, "ldrsb r0, [pc, #0x4]"),
             (0xF9BF_1008, "ldrsh r1, [pc, #0x8]"),
+            // MLA / MLS.
+            (0xFB01_F40E, "mul r4, r1, r14"),
+            (0xFB02_E101, "mla r1, r2, r1, r14"),
+            (0xFB03_1100, "mla r1, r3, r0, r1"),
+            (0xFB02_0011, "mls r0, r2, r1, r0"),
+            // Multiply-long (64-bit).
+            (0xFBA2_0103, "umull r0, r1, r2, r3"),
+            (0xFBC2_0103, "smull r0, r1, r2, r3"),
+            (0xFBA6_4517, "umlal r4, r5, r6, r7"),
+            (0xFBCA_891B, "smlal r8, r9, r10, r11"),
             // Hint instructions.
             (0xF3AF_8000, "nop.w"),
             (0xF3AF_8001, "yield.w"),

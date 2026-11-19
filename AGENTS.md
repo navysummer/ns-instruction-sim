@@ -375,6 +375,23 @@ done
 - `disasm_thumb2_hints`：`disasm --arm-state thumb` 将
   `nop.w`/`yield.w`/`wfe.w`/`wfi.w`/`sev.w` 与 Thumb-1 `yield`/`wfe`/`wfi`/`sev`
   反汇编为真实助记符。
+- `run_arm_thumb2_ldr_str_imm8`：端到端分五次 `step --session` 执行
+  `str r1,[r0,#-4]`（0xF8401C04，写 0x2000003C=0xDEADBEEF）、
+  `ldr r11,[sp],#4`（0xF85DBB04，读 0x20000000=0x11223344、sp=0x20000004）、
+  `strb r3,[r4,#-1]`（0xF8043C01，写 0x2000000F=0xAB）、
+  `ldrh r5,[r6,#-2]`（0xF8365C02，读 0x2000001E=0xCDEF）、
+  `str r11,[sp,#-4]!`（0xF84DBD04，写 0x20000000、sp 回 0x20000000），
+  `state --json` 与 `mem read` 校验寄存器与存储跨会话持久化，锁定
+  Thumb-2 8 位立即 LDR/STR（含前/后索引写回）。
+- `run_arm_thumb2_mla_mls`：端到端分三次 `step --session` 执行
+  `mul r1,r2,r3`（0xFB02F103，3×5=15）、`mla r4,r5,r6,r7`（0xFB057406，
+  7×11+13=90）、`mls r8,r9,r10,r11`（0xFB09B81A，23−17×19=0xFFFFFED4），
+  `state --json` 校验，锁定 Thumb-2 MUL/MLA/MLS 执行。
+- `run_arm_thumb2_umull_smull`：端到端分三次 `step --session` 执行
+  `umull r0,r1,r2,r3`（0xFBA20103，0xFFFFFFFF²=0xFFFFFFFE00000001）、
+  `smull r4,r5,r6,r7`（0xFBC64507，−7×2=−14=0xFFFFFFFFFFFFFFF2）、
+  `umlal r8,r9,r10,r11`（0xFBAA891B，0+3×5=15），
+  `state --json` 校验，锁定 Thumb-2 UMULL/SMULL/UMLAL/SMLAL 64 位乘加执行。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。
@@ -482,7 +499,8 @@ done
   ARM Thumb 全家族（Thumb-1/Thumb-2）另由 ns-sim 单测 `disassembles_thumb_full_families`/
   `disassembles_thumb2_wide_forms` 锁定：Thumb-1 覆盖执行内核全部 16 位家族，Thumb-2 覆盖
   BL/BLX、MOVW/MOVT、ADDW/SUBW、LDR/STR/LDRB/STRB/LDRH/STRH 12 位立即与 DMB/DSB/ISB
-  内存屏障、数据处理（寄存器/修正立即）、位域 SBFX/UBFX/BFC/BFI 与 TBB/TBH/LDRD/STRD；`b`（0xE001）与
+  内存屏障、8 位立即（含前/后索引写回）、数据处理（寄存器/修正立即）、
+  MUL/MLA/MLS/UMULL/SMULL/UMLAL/SMLAL、位域 SBFX/UBFX/BFC/BFI 与 TBB/TBH/LDRD/STRD；`b`（0xE001）与
   `bl 0x28`（0xF000D000）分别按 2/4 字节推进。屏障（0xF3BF
   0x8F5F/8F6F/8F7F）在执行内核中为 no-op（原仅 DMB 被识别，DSB/ISB 会误 halt），
   由 ns-sim 单测 `execute_wide_ldrh_strh_and_barriers` 与 CLI `disasm_thumb2_ldrh_strh_barriers` 锁定。
@@ -561,6 +579,20 @@ done
   载入值覆盖）。由 ns-sim 单测 `thumb2_ldr_str_register_offset`/`thumb2_ldr_literal`/
   `thumb2_sdiv_udiv`/`thumb2_ldm_stm_multiple` 与 CLI `run_arm_thumb2_div_load_literal_and_ldm`
   锁定。
+  Thumb-2 8 位立即 LDR/STR（`0xF800-0xF87F`，first 为 `1111 1000 0 size L Rn`、second
+  为 `Rt 1 P U W imm8`，P=bit10/U=bit9/W=bit8）现执行字节/半字/字存取，支持前索引
+  （含写回 `!`）与后索引（P=0 恒写回）寻址，负偏移按 U=0 取补；该类编码与寄存器偏移
+  形式共享 `0xF800-0xF85F` 区间，由 second bit11 区分（寄存器偏移为 0，立即为 1）。
+  由 ns-sim 单测 `thumb2_ldr_str_imm8_writeback` 与 CLI
+  `run_arm_thumb2_ldr_str_imm8` 锁定。
+  Thumb-2 乘加/乘长：`MLA/MLS`（`0xFB00` 前缀、second bits7-5=0、Ra≠15，bit4 选
+  MLA/MLS；Rd=second bits11-8、Rm=second bits3-0、Ra=second bits15-12、Rn=first bits3-0）
+  现执行 `Rd=Rn*Rm+Ra`/`Rd=Ra-Rn*Rm`（低 32 位回绕）；`UMULL/SMULL/UMLAL/SMLAL`
+  （`0xFBA0`/`0xFBC0` 前缀，bit6 选有符号，second bit4 选累加；RdLo=second bits15-12、
+  RdHi=second bits11-8、Rm=second bits3-0、Rn=first bits3-0）现执行 64 位乘与 64 位累加
+  （UMLAL/SMLAL 将既有 `RdHi:RdLo` 作为加数）。由 ns-sim 单测
+  `thumb2_mla_mls`/`thumb2_umull_smull` 与 CLI `run_arm_thumb2_mla_mls`/
+  `run_arm_thumb2_umull_smull` 锁定。
   Thumb-2 数据处理（寄存器，bits15-9 = `1110101`）现按 `op = bit8<<3 | bits7-5` 分发执行
   AND/BIC/ORR/ORN/EOR/ADD/ADC/SBC/SUB/RSB，S=bit4 更新 N/Z/C/V（逻辑运算 C 取自移位器、
   V 不变；加减运算按 ARM 进位/溢出语义）；`Rn=PC` 的 ORR/ORN 即 MOV/MVN，与一般布局
