@@ -6421,6 +6421,7 @@ fn mcp_handshake_and_list_tools() {
         "cycle_get", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "session_info", "session_diff", "device_memory_map", "firmware_info",
+        "periph_reg_dump",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
     }
@@ -6943,6 +6944,80 @@ fn mcp_firmware_info_and_trace_regs() {
 }
 
 #[test]
+fn periph_reg_dump_command() {
+    let dir = tmpdir();
+    let s = dir.join(format!("regdump-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&s);
+    let s = s.to_str().unwrap();
+    let out = Command::new(bin()).args(["state", "--arch", "riscv", "--session", s]).output().unwrap();
+    assert!(out.status.success());
+    let out = Command::new(bin()).args(["periph", "svd-load", "--session", s, "--device", "stm32f103c8"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // Full JSON dump lists every named register with its current value.
+    let out = Command::new(bin()).args(["periph", "reg-dump", "--session", s, "--device", "stm32f103c8", "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["count"].as_u64().unwrap() > 0);
+    let regs = json["registers"].as_array().unwrap();
+    let crl = regs.iter().find(|r| r["register"] == "CRL" && r["peripheral"] == "GPIOA").unwrap();
+    assert_eq!(crl["address"], 0x4001_0800u64);
+    assert_eq!(crl["value"], 0x4444_4444u64); // SVD reset value
+    assert_eq!(crl["size"], 32u64);
+
+    // Human dump annotates the containing register name.
+    let out = Command::new(bin())
+        .args(["periph", "reg-dump", "--session", s, "--device", "stm32f103c8", "--peripheral", "GPIOA"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("GPIOA.CRL") && text.contains("0x44444444"), "{text}");
+
+    // Filtering to a peripheral narrows the JSON list; unknown device errors.
+    let out = Command::new(bin())
+        .args(["periph", "reg-dump", "--session", s, "--device", "stm32f103c8", "--peripheral", "TIM2", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["registers"].as_array().unwrap().iter().all(|r| r["peripheral"] == "TIM2"));
+    let out = Command::new(bin()).args(["periph", "reg-dump", "--session", s, "--device", "nosuch"]).output().unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mcp_periph_reg_dump_tool() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-regdump-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap());
+    let r = client.call_tool("periph_svd_load", serde_json::json!({ "session": s, "device": "stm32f103c8" }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_svd_load: {}", r);
+
+    // Full dump through MCP returns named registers.
+    let r = client.call_tool("periph_reg_dump", serde_json::json!({ "session": s, "device": "stm32f103c8" }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_reg_dump: {}", r);
+    let sc = &r["structuredContent"];
+    assert!(sc["count"].as_u64().unwrap() > 0);
+    let crl = sc["registers"].as_array().unwrap()
+        .iter()
+        .find(|x| x["register"] == "CRL" && x["peripheral"] == "GPIOA")
+        .unwrap();
+    assert_eq!(crl["value"], 0x4444_4444u64);
+
+    // Peripheral filter and unknown-device error path.
+    let r = client.call_tool("periph_reg_dump", serde_json::json!({ "session": s, "device": "stm32f103c8", "peripheral": "RCC" }));
+    assert!(!r["isError"].as_bool().unwrap());
+    assert!(r["structuredContent"]["registers"].as_array().unwrap().iter().all(|x| x["peripheral"] == "RCC"));
+    let r = client.call_tool("periph_reg_dump", serde_json::json!({ "session": s, "device": "nosuch" }));
+    assert!(r["isError"].as_bool().unwrap());
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
@@ -7216,7 +7291,7 @@ fn help_every_command() {
         &["disasm"], &["reset"], &["state"],
         &["periph", "status"], &["periph", "config"], &["periph", "svd-load"],
         &["periph", "uart"], &["periph", "gpio"], &["periph", "timer"],
-        &["periph", "reg-read"], &["periph", "reg-list"], &["periph", "reg-write"],
+        &["periph", "reg-read"], &["periph", "reg-list"], &["periph", "reg-dump"], &["periph", "reg-write"],
         &["periph", "field-get"], &["periph", "field-set"],
         &["symbol", "list"], &["symbol", "at"], &["symbol", "line"], &["symbol", "addr"],
         &["cycle", "get"], &["cycle", "estimate"], &["cycle", "tick"],
@@ -7257,6 +7332,7 @@ fn help_every_param() {
         (&["mem", "read"], &["--session", "--arch", "--addr", "--len", "--width", "--out", "--json"]),
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
+        (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--json"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),

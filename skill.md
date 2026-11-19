@@ -204,6 +204,7 @@ ns-instruction-sim periph svd-load --session s.json --file crates/ns-device/src/
 ns-instruction-sim periph svd-load --session s.json --file chip.svd --peripheral TIM2 --force
 ns-instruction-sim periph svd-load --session s.json --device stm32f103c8 --json
 ns-instruction-sim periph reg-list --session s.json --device stm32f103c8
+ns-instruction-sim periph reg-dump --session s.json --device stm32f103c8 --json
 ```
 
 ## 4.1 MCP 服务器（大模型驱动）

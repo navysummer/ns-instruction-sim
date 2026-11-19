@@ -900,6 +900,21 @@ enum PeriphSub {
         #[arg(long)]
         json: bool,
     },
+    /// 转储设备全部外设寄存器的当前值（命名地址到值；读取 SVD 加载或内存）。
+    RegDump {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 内置设备键（如 stm32f103c8）。
+        #[arg(long)]
+        device: String,
+        /// 只转储指定外设（按名称，可选）。
+        #[arg(long)]
+        peripheral: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
     /// 写入外设内存映射寄存器（触发外设写，如 UART 输出、TIMER 控制）。
     RegWrite {
         /// 会话文件路径（JSON）。
@@ -3411,6 +3426,65 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                     } else {
                         println!("0x{a:08x}  0x{v:08x}");
                     }
+                }
+            }
+            Ok(())
+        }
+        PeriphSub::RegDump { session, device, peripheral, json } => {
+            let dev = ns_device::device_for_target(&device)
+                .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {device}"))?;
+            let (sim, _, _) = load_or_create(Some(&session), None, None, "0")?;
+            let mut out: Vec<serde_json::Value> = Vec::new();
+            for p in dev.sorted_peripherals() {
+                if let Some(filter) = peripheral.as_deref() {
+                    if !p.name.eq_ignore_ascii_case(filter) {
+                        continue;
+                    }
+                }
+                for r in &p.registers {
+                    let addr = r.address as u32;
+                    let value = sim.peripheral_read_reg(addr).unwrap_or_else(|| {
+                        let mut v = 0u32;
+                        let size = (r.size as usize).max(1);
+                        for i in 0..size.min(4) {
+                            v |= (read_mem_byte(&sim, addr.wrapping_add(i as u32)) as u32) << (i * 8);
+                        }
+                        v
+                    });
+                    out.push(serde_json::json!({
+                        "peripheral": p.name,
+                        "register": r.name,
+                        "address": addr,
+                        "value": value,
+                        "size": r.size,
+                        "resetValue": r.reset_value,
+                        "description": r.description,
+                    }));
+                }
+            }
+            if json {
+                print_json(&serde_json::json!({
+                    "device": device,
+                    "count": out.len(),
+                    "registers": out,
+                }))?;
+            } else {
+                if out.is_empty() {
+                    println!("(设备 {device} 无寄存器)");
+                }
+                for r in &out {
+                    let name = format!(
+                        "{}.{}",
+                        r["peripheral"].as_str().unwrap_or(""),
+                        r["register"].as_str().unwrap_or("")
+                    );
+                    println!(
+                        "{:<24} 0x{:08x}  0x{:08x}  {}",
+                        name,
+                        r["address"].as_u64().unwrap_or(0) as u32,
+                        r["value"].as_u64().unwrap_or(0) as u32,
+                        r["description"].as_str().unwrap_or("")
+                    );
                 }
             }
             Ok(())

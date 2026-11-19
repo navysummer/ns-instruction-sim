@@ -123,7 +123,7 @@ ns-instruction-sim/
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/原始字节/JSON） | `--arch --addr --count --arm-state --source --raw --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要） | `--session --arch --firmware --base --json --fields --summary` | 状态/JSON/摘要 |
-| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载 | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --file --device --peripheral --register --field --force --session --json` | 表/JSON |
+| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载 | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --file --device --peripheral --register --field --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `line` / `addr` | ELF 符号与源行号映射 | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` | 周期计数/指令周期估算/外设推进 | `--addr --cycles --session --json` | 值/JSON |
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
@@ -186,7 +186,7 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `state`、`step`、`step_over`、`step_out`、`run`、`continue`、`reg_list/get/set`、
    `mem_read/write/fill/search/load/dump`、`bp_set/modify/clear/list/enable/disable/clear_all`、
    `disasm`、`reset`、`cycle_get/estimate/tick`、`interrupt_take/pending/set`、
-   `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/field_get/field_set/svd_load`、
+   `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`、
    `symbol_list/at/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
    `trace`、`coverage`、`profile` 与 CLI 同名子命令一一对应（`analyze_schema` 共享参数），
    返回结构化轨迹/覆盖/直方图 JSON，并支持 `out` 参数把结果写入文件；
@@ -632,6 +632,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   `addi sp,ra,2`→sp=3），不带 `--regs` 时 `regs` 为空（向后兼容）。
 - `mcp_firmware_info_and_trace_regs`：MCP `firmware_info` 返回同等元信息（含缺失文件错误路径），
   `trace` 的 `regs: true` 参数返回每条指令后的寄存器快照。
+- `periph_reg_dump_command`：`periph reg-dump` 转储设备全部命名寄存器的当前值（SVD 复位值
+  0x44444444 读回 GPIOA.CRL、`--peripheral` 过滤、未知设备报错）。
+- `mcp_periph_reg_dump_tool`：MCP `periph_reg_dump` 返回 `count`/`registers`（含 `GPIOA.CRL`），
+  `peripheral` 过滤与未知设备错误路径。
 - `mcp_session_and_memory_map_tools`：MCP `session_info` / `session_diff` / `device_memory_map`
   工具端到端（含未知设备错误路径）与 `trace` 的 `out` 参数把轨迹写入文件并回报 `file`/`bytes`。
 - `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff`、`device memory-map`）的
