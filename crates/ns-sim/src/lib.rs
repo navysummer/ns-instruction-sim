@@ -4024,15 +4024,20 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     // `1111 Rd 10op2 Rm`, where bits 7-4 select the operation and Rm is
     // duplicated in both halfwords' low nibble.
     if first & 0xFFF0 == 0xFA90 && second & 0xF000 == 0xF000 {
-        let rd = ((second >> 8) & 0x0F) as usize;
-        let rm = (first & 0x0F) as usize;
-        let mnem = match (second >> 4) & 0x0F {
-            0x8 => "rev.w",
-            0x9 => "rev16.w",
-            0xA => "rbit",
-            _ => "revsh.w",
-        };
-        return format!("{mnem} r{rd}, r{rm}");
+        let op = (second >> 4) & 0x0F;
+        // Only ops 0x8-0xB are REV/REV16/RBIT/REVSH; the rest of the 0xFA9x
+        // space belongs to the parallel add/sub family.
+        if op >= 0x8 && op <= 0xB {
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (first & 0x0F) as usize;
+            let mnem = match op {
+                0x8 => "rev.w",
+                0x9 => "rev16.w",
+                0xA => "rbit",
+                _ => "revsh.w",
+            };
+            return format!("{mnem} r{rd}, r{rm}");
+        }
     }
 
     // SXTH/UXTH/SXTB/UXTB wide forms (with optional ROR #(8*RR)). First
@@ -4063,16 +4068,21 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     // `1111 Rd op Rm`; bits 7-4 select QADD=1000 / QDADD=1001 / QSUB=1010 /
     // QDSUB=1011. Checked before SXTAB (which shares `first & 0xFF0F == 0xFA00`).
     if first & 0xFFF0 == 0xFA80 {
-        let rd = ((second >> 8) & 0x0F) as usize;
-        let rm = (second & 0x0F) as usize;
-        let rn = (first & 0x0F) as usize;
-        let mnem = match (second >> 4) & 0x0F {
-            0x8 => "qadd",
-            0x9 => "qdadd",
-            0xA => "qsub",
-            _ => "qdsub",
-        };
-        return format!("{mnem} r{rd}, r{rm}, r{rn}");
+        let op = (second >> 4) & 0x0F;
+        // Only ops 0x8-0xB are QADD/QDADD/QSUB/QDSUB; the rest of the 0xFA8x
+        // space belongs to the parallel add/sub family.
+        if op >= 0x8 && op <= 0xB {
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let rn = (first & 0x0F) as usize;
+            let mnem = match op {
+                0x8 => "qadd",
+                0x9 => "qdadd",
+                0xA => "qsub",
+                _ => "qdsub",
+            };
+            return format!("{mnem} r{rd}, r{rm}, r{rn}");
+        }
     }
 
     // SEL Rd, Rn, Rm (`0xFAA0|Rn`, second `1111 Rd 1000 Rm`). Checked before
@@ -4190,6 +4200,60 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             "smlald"
         };
         return format!("{mnem} r{rdlo}, r{rdhi}, r{rn}, r{rm}");
+    }
+
+    // SMLALBB/SMLALBT/SMLALTB/SMLALTT RdLo, RdHi, Rn, Rm (signed 16x16
+    // multiply-accumulate into a 64-bit accumulator, `0xFBC0|Rn`, second
+    // bits 7-6 = 10). Second `RdLo RdHi 10xy Rm`: bit 5 = Rn half (B/T),
+    // bit 4 = Rm half (B/T); distinct from SMLALD/SMLSLD (bits 7-6 = 11).
+    if first & 0xFFF0 == 0xFBC0 && second & 0x00C0 == 0x0080 {
+        let rn = (first & 0x0F) as usize;
+        let rdlo = ((second >> 12) & 0x0F) as usize;
+        let rdhi = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let x = if second & 0x0020 != 0 { 't' } else { 'b' };
+        let y = if second & 0x0010 != 0 { 't' } else { 'b' };
+        return format!("smlal{x}{y} r{rdlo}, r{rdhi}, r{rn}, r{rm}");
+    }
+
+    // UMAAL RdLo, RdHi, Rn, Rm (unsigned 32x32 multiply-accumulate with both
+    // destination halves added, `0xFBE0|Rn`, second bits 7-4 = 0110).
+    if first & 0xFFF0 == 0xFBE0 && second & 0x00F0 == 0x0060 {
+        let rn = (first & 0x0F) as usize;
+        let rdlo = ((second >> 12) & 0x0F) as usize;
+        let rdhi = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        return format!("umaal r{rdlo}, r{rdhi}, r{rn}, r{rm}");
+    }
+
+    // USAD8/USADA8 Rd, Rn, Rm {, Ra} (unsigned sum of absolute differences,
+    // `0xFB70|Rn`). Second `Ra Rd 0000 Rm`: Ra = F (USAD8) or accumulator.
+    if first & 0xFFF0 == 0xFB70 {
+        let rn = (first & 0x0F) as usize;
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let ra = (second >> 12) & 0x0F;
+        return if ra == 0xF {
+            format!("usad8 r{rd}, r{rn}, r{rm}")
+        } else {
+            format!("usada8 r{rd}, r{rn}, r{rm}, r{ra}")
+        };
+    }
+
+    // SMULWB/SMULWT/SMLAWB/SMLAWT Rd, Rn, Rm {, Ra} (signed word by 16-bit
+    // halfword multiply, `0xFB30|Rn`). Second `Ra Rd 0 0 x Rm`: Ra = F (no
+    // accumulate), bit 4 = Rm half (B/T); result = (Rn * half) >> 16.
+    if first & 0xFFF0 == 0xFB30 {
+        let rn = (first & 0x0F) as usize;
+        let rd = ((second >> 8) & 0x0F) as usize;
+        let rm = (second & 0x0F) as usize;
+        let ra = (second >> 12) & 0x0F;
+        let y = if second & 0x0010 != 0 { 't' } else { 'b' };
+        return if ra == 0xF {
+            format!("smulw{y} r{rd}, r{rn}, r{rm}")
+        } else {
+            format!("smlaw{y} r{rd}, r{rn}, r{rm}, r{ra}")
+        };
     }
 
     // Bit-field extract/insert/clear: SBFX (0xF340), BFI (0xF360 with

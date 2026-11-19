@@ -6129,3 +6129,195 @@ fn disasm_thumb2_mul_wide() {
         ],
     );
 }
+
+// ARM Thumb-2 signed word-by-halfword multiply and long halfword multiply
+// families: SMULWB/SMULWT/SMLAWB/SMLAWT, SMLALBB/SMLALBT/SMLALTB/SMLALTT,
+// UMAAL and USAD8/USADA8.
+#[test]
+fn run_arm_thumb2_mul_word() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-mulword.json");
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: smulwb r0,r1,r2; smulwt r3,r4,r5; smlawb r6,r7,r8,r9;
+    // smlawt r10,r11,r12,r0; smlalbb r1,r2,r3,r4; smlalbt r5,r6,r7,r8;
+    // smlaltb r9,r10,r11,r12; smlaltt r0,r1,r2,r3; umaal r4,r5,r6,r7;
+    // usad8 r8,r9,r10; usada8 r11,r12,r0,r1.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x31", "0xFB", "0x02", "0xF0", // smulwb r0, r1, r2
+               "0x34", "0xFB", "0x15", "0xF3", // smulwt r3, r4, r5
+               "0x37", "0xFB", "0x08", "0x96", // smlawb r6, r7, r8, r9
+               "0x3B", "0xFB", "0x1C", "0x0A", // smlawt r10, r11, r12, r0
+               "0xC3", "0xFB", "0x84", "0x12", // smlalbb r1, r2, r3, r4
+               "0xC7", "0xFB", "0x98", "0x56", // smlalbt r5, r6, r7, r8
+               "0xCB", "0xFB", "0xAC", "0x9A", // smlaltb r9, r10, r11, r12
+               "0xC2", "0xFB", "0xB3", "0x01", // smlaltt r0, r1, r2, r3
+               "0xE6", "0xFB", "0x67", "0x45", // umaal r4, r5, r6, r7
+               "0x79", "0xFB", "0x0A", "0xF8", // usad8 r8, r9, r10
+               "0x7C", "0xFB", "0x00", "0x1B"]) // usada8 r11, r12, r0, r1
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Group 1: word-by-halfword multiply. SMULWB/SMULWT = (Rn * half) >> 16;
+    // SMLAWB/SMLAWT accumulate after the shift.
+    for (name, value) in [
+        ("r1", "0x00010000"), ("r2", "0x00000003"),
+        ("r4", "0x00020000"), ("r5", "0x00010000"),
+        ("r7", "0x00030000"), ("r8", "0x00000004"), ("r9", "0x0000000A"),
+        ("r11", "0x00010000"), ("r12", "0x00020000"), ("r0", "0x00000005"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..4 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["registers"]["r0"], 0x3u64);            // smulwb: 0x10000*3 >> 16
+    assert_eq!(json["registers"]["r3"], 0x2u64);            // smulwt: 0x20000*1 >> 16
+    assert_eq!(json["registers"]["r6"], 0x16u64);           // smlawb: 0xC + 0xA
+    assert_eq!(json["registers"]["r10"], 0x5u64);           // smlawt: 2 + r0(=3)
+    // Group 2: SMLALBB/SMLALBT/SMLALTB (16x16 accumulate into 64-bit).
+    for (name, value) in [
+        ("r1", "0x00000000"), ("r2", "0x00000000"),
+        ("r3", "0x00000005"), ("r4", "0x00000006"),
+        ("r5", "0x00000000"), ("r6", "0x00000000"),
+        ("r7", "0x00000007"), ("r8", "0x00080000"),
+        ("r9", "0x00000000"), ("r10", "0x00000000"),
+        ("r11", "0x00090000"), ("r12", "0x0000000A"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..3 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["registers"]["r1"], 0x1Eu64);  // smlalbb: 5*6
+    assert_eq!(json["registers"]["r2"], 0x0u64);
+    assert_eq!(json["registers"]["r5"], 0x38u64);  // smlalbt: 7*8
+    assert_eq!(json["registers"]["r9"], 0x5Au64);  // smlaltb: 9*10
+    // SMLALTT separately (reads r2/r3 top halves, which SMLALBB overwrote).
+    for (name, value) in [
+        ("r0", "0x00000000"), ("r1", "0x00000000"),
+        ("r2", "0x000B0000"), ("r3", "0x000C0000"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["registers"]["r0"], 0x84u64); // smlaltt: 11*12
+    // Group 3: UMAAL/USAD8/USADA8.
+    for (name, value) in [
+        ("r4", "0x00000001"), ("r5", "0x00000002"),
+        ("r6", "0x00000003"), ("r7", "0x00000004"),
+        ("r8", "0x00000000"), ("r9", "0x01020304"), ("r10", "0x05060708"),
+        ("r11", "0x00000000"), ("r12", "0x01020304"),
+        ("r0", "0x05060708"), ("r1", "0x00000005"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..3 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["registers"]["r4"], 0xFu64);          // umaal: 3*4 + 1 + 2
+    assert_eq!(json["registers"]["r5"], 0x0u64);
+    assert_eq!(json["registers"]["r8"], 0x10u64);         // usad8: 4*|1-5|
+    assert_eq!(json["registers"]["r11"], 0x15u64);        // usada8: 16 + 5
+}
+
+#[test]
+fn disasm_thumb2_mul_word() {
+    assert_thumb2_disasm(
+        &[
+            0x31, 0xFB, 0x02, 0xF0, // smulwb r0, r1, r2
+            0x34, 0xFB, 0x15, 0xF3, // smulwt r3, r4, r5
+            0x37, 0xFB, 0x08, 0x96, // smlawb r6, r7, r8, r9
+            0x3B, 0xFB, 0x1C, 0x0A, // smlawt r10, r11, r12, r0
+            0xC3, 0xFB, 0x84, 0x12, // smlalbb r1, r2, r3, r4
+            0xC7, 0xFB, 0x98, 0x56, // smlalbt r5, r6, r7, r8
+            0xCB, 0xFB, 0xAC, 0x9A, // smlaltb r9, r10, r11, r12
+            0xC2, 0xFB, 0xB3, 0x01, // smlaltt r0, r1, r2, r3
+            0xE6, 0xFB, 0x67, 0x45, // umaal r4, r5, r6, r7
+            0x79, 0xFB, 0x0A, 0xF8, // usad8 r8, r9, r10
+            0x7C, 0xFB, 0x00, 0x1B, // usada8 r11, r12, r0, r1
+        ],
+        11,
+        &[
+            "0x00000000: smulwb r0, r1, r2",
+            "0x00000004: smulwt r3, r4, r5",
+            "0x00000008: smlawb r6, r7, r8, r9",
+            "0x0000000c: smlawt r10, r11, r12, r0",
+            "0x00000010: smlalbb r1, r2, r3, r4",
+            "0x00000014: smlalbt r5, r6, r7, r8",
+            "0x00000018: smlaltb r9, r10, r11, r12",
+            "0x0000001c: smlaltt r0, r1, r2, r3",
+            "0x00000020: umaal r4, r5, r6, r7",
+            "0x00000024: usad8 r8, r9, r10",
+            "0x00000028: usada8 r11, r12, r0, r1",
+        ],
+    );
+}

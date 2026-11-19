@@ -449,6 +449,24 @@ done
   `smulbb`/`smulbt`/`smlabb`/`smmul`/`smmla`/`smmls`/`smlald`/`smlsld`
   反汇编为真实助记符（UMULL/SMULL 家族按第二半字 bits 7-5=000 与
   SMLALD/SMLSLD bits 7-5=110 区分）。
+- `run_arm_thumb2_mul_word`：端到端分十一次 `step --session` 执行
+  `smulwb r0,r1,r2`（0xFB3102F0，0x10000×3&gt;&gt;16=3）、
+  `smulwt r3,r4,r5`（0xFB3415F3，0x20000×1&gt;&gt;16=2）、
+  `smlawb r6,r7,r8,r9`（0xFB370896，0xC+0xA=0x16）、
+  `smlawt r10,r11,r12,r0`（0xFB3B1C0A，2+r0=5）、
+  `smlalbb r1,r2,r3,r4`（0xFBC38412，5×6=30）、
+  `smlalbt r5,r6,r7,r8`（0xFBC79856，7×8=56）、
+  `smlaltb r9,r10,r11,r12`（0xFBCBAC9A，9×10=90）、
+  `smlaltt r0,r1,r2,r3`（0xFBC2B301，11×12=132）、
+  `umaal r4,r5,r6,r7`（0xFBE66745，3×4+1+2=15）、
+  `usad8 r8,r9,r10`（0xFB790AF8，Σ|Δbyte|=16）、
+  `usada8 r11,r12,r0,r1`（0xFB7C001B，16+5=21），`state --json` 校验，
+  锁定 Thumb-2 字×半字乘加（SMULWB/SMULWT/SMLAWB/SMLAWT）、长半字乘加
+  （SMLALBB/BT/TB/TT）、UMAAL 与 USAD8/USADA8 执行。
+- `disasm_thumb2_mul_word`：`disasm --arm-state thumb` 将
+  `smulwb`/`smulwt`/`smlawb`/`smlawt`/`smlalbb`/`smlalbt`/`smlaltb`/`smlaltt`/
+  `umaal`/`usad8`/`usada8` 反汇编为真实助记符（SMLALxy 按第二半字 bits 7-6=10
+  与 SMLALD bits 7-6=11 区分）。
 - `disasm_source_annotates_lines`：`disasm --source` 标注每行 file:line。
 - `disasm_raw_shows_bytes`：`disasm --raw` 显示每条指令的原始字节。
 - `disasm_json`：`disasm --json` 输出地址/反汇编/字节/来源 JSON 数组。

@@ -1542,24 +1542,29 @@ impl ArmCore {
         // `1111 Rd 10op2 Rm`, where bits 7-4 select the operation and Rm is
         // duplicated in both halfwords' low nibble.
         if first & 0xFFF0 == 0xFA90 && second & 0xF000 == 0xF000 {
-            let rd = ((second >> 8) & 0x0F) as usize;
-            let rm = (first & 0x0F) as usize;
-            let v = self.regs[rm];
-            let r = match (second >> 4) & 0x0F {
-                0x8 => v.swap_bytes(), // REV
-                0x9 => {
-                    // REV16: swap the bytes of each halfword.
-                    (v & 0x00FF_00FF).rotate_left(8) | ((v & 0xFF00_FF00) >> 8)
-                }
-                0xA => v.reverse_bits(), // RBIT
-                _ => {
-                    // REVSH: reverse the low halfword bytes, sign-extend.
-                    let low = (v as u16).swap_bytes();
-                    low as i16 as i32 as u32
-                }
-            };
-            self.regs[rd] = r;
-            return;
+            let op = (second >> 4) & 0x0F;
+            // Only ops 0x8-0xB are REV/REV16/RBIT/REVSH; the rest of the
+            // 0xFA9x space belongs to the parallel add/sub family.
+            if op >= 0x8 && op <= 0xB {
+                let rd = ((second >> 8) & 0x0F) as usize;
+                let rm = (first & 0x0F) as usize;
+                let v = self.regs[rm];
+                let r = match op {
+                    0x8 => v.swap_bytes(), // REV
+                    0x9 => {
+                        // REV16: swap the bytes of each halfword.
+                        (v & 0x00FF_00FF).rotate_left(8) | ((v & 0xFF00_FF00) >> 8)
+                    }
+                    0xA => v.reverse_bits(), // RBIT
+                    _ => {
+                        // REVSH: reverse the low halfword bytes, sign-extend.
+                        let low = (v as u16).swap_bytes();
+                        low as i16 as i32 as u32
+                    }
+                };
+                self.regs[rd] = r;
+                return;
+            }
         }
 
         // SXTH/UXTH/SXTB/UXTB wide forms (with optional ROR #(8*RR)). First
@@ -1588,19 +1593,24 @@ impl ArmCore {
         // Second halfword `1111 Rd op Rm`; bits 7-4 select QADD=1000 /
         // QDADD=1001 / QSUB=1010 / QDSUB=1011.
         if first & 0xFFF0 == 0xFA80 {
-            let rd = ((second >> 8) & 0x0F) as usize;
-            let rm = (second & 0x0F) as usize;
-            let rn = (first & 0x0F) as usize;
-            let rn_v = self.regs[rn] as i32;
-            let rm_v = self.regs[rm] as i32;
-            let r = match (second >> 4) & 0x0F {
-                0x8 => sat_q(rn_v as i64 + rm_v as i64),                       // QADD
-                0x9 => sat_q(rn_v as i64 + sat_q(rm_v as i64 * 2) as i64),     // QDADD
-                0xA => sat_q(rn_v as i64 - rm_v as i64),                       // QSUB
-                _ => sat_q(rn_v as i64 - sat_q(rm_v as i64 * 2) as i64),       // QDSUB
-            };
-            self.regs[rd] = r as u32;
-            return;
+            let op = (second >> 4) & 0x0F;
+            // Only ops 0x8-0xB are QADD/QDADD/QSUB/QDSUB; the rest of the
+            // 0xFA8x space belongs to the parallel add/sub family.
+            if op >= 0x8 && op <= 0xB {
+                let rd = ((second >> 8) & 0x0F) as usize;
+                let rm = (second & 0x0F) as usize;
+                let rn = (first & 0x0F) as usize;
+                let rn_v = self.regs[rn] as i32;
+                let rm_v = self.regs[rm] as i32;
+                let r = match op {
+                    0x8 => sat_q(rn_v as i64 + rm_v as i64),                   // QADD
+                    0x9 => sat_q(rn_v as i64 + sat_q(rm_v as i64 * 2) as i64), // QDADD
+                    0xA => sat_q(rn_v as i64 - rm_v as i64),                   // QSUB
+                    _ => sat_q(rn_v as i64 - sat_q(rm_v as i64 * 2) as i64),   // QDSUB
+                };
+                self.regs[rd] = r as u32;
+                return;
+            }
         }
 
         // SEL Rd, Rn, Rm (`0xFAA0|Rn`, second `1111 Rd 1000 Rm`): each byte is
@@ -1753,6 +1763,94 @@ impl ArmCore {
             };
             self.regs[rdlo] = result as u32;
             self.regs[rdhi] = (result >> 32) as u32;
+            return;
+        }
+
+        // SMLALBB/SMLALBT/SMLALTB/SMLALTT RdLo, RdHi, Rn, Rm (signed 16x16
+        // multiply-accumulate into a 64-bit accumulator, `0xFBC0|Rn`, second
+        // bits 7-6 = 10). Second `RdLo RdHi 10xy Rm`: bit 5 = Rn half (B/T),
+        // bit 4 = Rm half (B/T); distinct from SMLALD/SMLSLD (bits 7-6 = 11)
+        // and UMULL/SMULL (bits 7-6 = 00).
+        if first & 0xFFF0 == 0xFBC0 && second & 0x00C0 == 0x0080 {
+            let rn = (first & 0x0F) as usize;
+            let rdlo = ((second >> 12) & 0x0F) as usize;
+            let rdhi = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let rn_half = if second & 0x0020 != 0 {
+                (self.regs[rn] >> 16) as u16
+            } else {
+                self.regs[rn] as u16
+            };
+            let rm_half = if second & 0x0010 != 0 {
+                (self.regs[rm] >> 16) as u16
+            } else {
+                self.regs[rm] as u16
+            };
+            let product = (rn_half as i16 as i32 as i64) * (rm_half as i16 as i32 as i64);
+            let acc = ((self.regs[rdhi] as u64) << 32) | (self.regs[rdlo] as u64);
+            let result = (acc as i64).wrapping_add(product);
+            self.regs[rdlo] = result as u32;
+            self.regs[rdhi] = (result >> 32) as u32;
+            return;
+        }
+
+        // UMAAL RdLo, RdHi, Rn, Rm (unsigned 32x32 multiply-accumulate with
+        // both destination halves added, `0xFBE0|Rn`, second bits 7-4 = 0110).
+        if first & 0xFFF0 == 0xFBE0 && second & 0x00F0 == 0x0060 {
+            let rn = (first & 0x0F) as usize;
+            let rdlo = ((second >> 12) & 0x0F) as usize;
+            let rdhi = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let acc = (self.regs[rdhi] as u64).wrapping_add(self.regs[rdlo] as u64);
+            let product = (self.regs[rn] as u64).wrapping_mul(self.regs[rm] as u64);
+            let result = product.wrapping_add(acc);
+            self.regs[rdlo] = result as u32;
+            self.regs[rdhi] = (result >> 32) as u32;
+            return;
+        }
+
+        // USAD8/USADA8 Rd, Rn, Rm {, Ra} (unsigned sum of absolute differences,
+        // `0xFB70|Rn`). Second `Ra Rd 0000 Rm`: Ra = F (USAD8) or accumulator.
+        if first & 0xFFF0 == 0xFB70 {
+            let rn = (first & 0x0F) as usize;
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let ra = (second >> 12) & 0x0F;
+            let mut diff = 0u32;
+            for byte in 0..4 {
+                let a = (self.regs[rn] >> (byte * 8)) & 0xFF;
+                let b = (self.regs[rm] >> (byte * 8)) & 0xFF;
+                diff = diff.wrapping_add(a.abs_diff(b));
+            }
+            let result = if ra == 0xF {
+                diff
+            } else {
+                diff.wrapping_add(self.regs[ra as usize])
+            };
+            self.regs[rd] = result;
+            return;
+        }
+
+        // SMULWB/SMULWT/SMLAWB/SMLAWT Rd, Rn, Rm {, Ra} (signed word by 16-bit
+        // halfword multiply, `0xFB30|Rn`). Second `Ra Rd 0 0 x Rm`: Ra = F
+        // (no accumulate), bit 4 = Rm half (B/T); result = (Rn * half) >> 16.
+        if first & 0xFFF0 == 0xFB30 {
+            let rn = (first & 0x0F) as usize;
+            let rd = ((second >> 8) & 0x0F) as usize;
+            let rm = (second & 0x0F) as usize;
+            let ra = (second >> 12) & 0x0F;
+            let rm_half = if second & 0x0010 != 0 {
+                (self.regs[rm] >> 16) as u16 as i16
+            } else {
+                self.regs[rm] as u16 as i16
+            };
+            let product = ((self.regs[rn] as i32 as i64) * (rm_half as i64)) >> 16;
+            let result = if ra == 0xF {
+                product as i32
+            } else {
+                (product as i32).wrapping_add(self.regs[ra as usize] as i32)
+            };
+            self.regs[rd] = result as u32;
             return;
         }
 
