@@ -111,6 +111,7 @@ ns-instruction-sim/
 | `version` | — | 显示版本号 | `--json` | 文本/JSON |
 | `arch` | `list` | 列出支持的架构与示例设备 | `--json` | 表/JSON |
 | `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析（文件或内置）/链接脚本/启动文件/外设初始化 C 骨架 | `--file --device --peripheral --register --out --json` | 表/文本/JSON |
+| `device` | `memory-map` | 列出设备内存区域（FLASH/RAM/PERIPHERALS），可用 `--addr` 查询地址所属区域 | `device [--addr] [--json]` | 表/JSON |
 | `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址（可指定会话保留外设/SVD 寄存器） | `--firmware --session --arch --base --max-steps --steps --until --cycle-accurate --save-session --json --trace --source` | 状态 |
 | `step` | — | 单步一条指令 | `--session --arch --firmware --base --json --source` | 状态 |
 | `step-over` | — | 步过（跳过调用） | 同上 | 状态 |
@@ -128,10 +129,14 @@ ns-instruction-sim/
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
 | `watchdog` | `status` / `feed` / `config` / `reset` | 看门狗查询/喂狗/配置/强制复位 | `--enabled --timeout --base --entry --session --json` | 表/JSON |
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
+| `session` | `info` / `diff` | 会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）或比较两个会话的全部差异 | `--file` / `--a --b --limit [--json]` | 文本/JSON |
 | `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期） | `--session --arch --firmware --base --steps --max-steps --until --json` | 轨迹/JSON |
 | `coverage` | — | 运行并统计执行覆盖（各 PC 执行次数、唯一 PC 数） | `--session --arch --firmware --base --steps --max-steps --until --json` | 覆盖表/JSON |
 | `profile` | — | 运行并统计指令助记符直方图 | `--session --arch --firmware --base --steps --max-steps --until --json` | 直方图/JSON |
 | `mcp` | — | 启动 MCP（Model Context Protocol）stdio 服务器，供大模型通过工具调用完整驱动仿真 | `--session`（默认会话文件） | JSON-RPC 2.0 / 工具结果 |
+
+> `trace` / `coverage` / `profile` / `disasm` 均支持 `--out FILE`，把 JSON 或文本结果直接写入文件
+> （stdout 仅打印一行确认），便于把仿真产物落到磁盘供后续工具消费。
 
 ### 3.2 输出格式约定
 
@@ -183,7 +188,9 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/field_get/field_set/svd_load`、
    `symbol_list/at/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
    `trace`、`coverage`、`profile` 与 CLI 同名子命令一一对应（`analyze_schema` 共享参数），
-   返回结构化轨迹/覆盖/直方图 JSON。
+   返回结构化轨迹/覆盖/直方图 JSON，并支持 `out` 参数把结果写入文件；
+   `device_memory_map`（设备内存区域与地址所属区域）、`session_info`（会话元信息）、
+   `session_diff`（两个会话文件的完整差异：标量/寄存器/断点/内存）补齐设备与会话维度的工具。
 
 ---
 
@@ -605,7 +612,17 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   各 PC 命中次数；`profile` 统计助记符直方图（同一 NOP 计 2 次）；人读轨迹含 PC 列。
 - `mcp_trace_coverage_profile`：MCP `trace`/`coverage`/`profile` 工具返回同等结构化结果，
   且 `until` 越界（16 位 PC 架构 mcs51 的 `0x10000`）以 `isError:true` 返回。
-- `help_every_command`：每个命令与子命令（含 `mcp`）的 `--help` 与 `-h` 均退出 0 且含 `Usage:`。
+- `session_info_and_diff`：`session info`（人读 + `--json`：arch/pc/cycleCount/breakpoints/
+  memoryOverlayBytes/peripherals.uartBase）与 `session diff --a/--b`（`same`、`summary` 各类计数、
+  含 scalar/register/breakpoint/memory 四类差异、`--limit 1` 截断计数、缺失会话报错）。
+- `device_memory_map_and_address_lookup`：`device memory-map` 列出 FLASH/RAM/PERIPHERALS 区域
+  （`access`/`start`/`end`/`size`），`--addr` 解析所属区域；越界地址与未知设备报错。
+- `disasm_and_trace_write_files`：`disasm --out` 写出汇编清单、`trace --json --out` 写出结构化
+  轨迹、`profile --out` 写出文本直方图，文件内容均可被重新解析校验。
+- `mcp_session_and_memory_map_tools`：MCP `session_info` / `session_diff` / `device_memory_map`
+  工具端到端（含未知设备错误路径）与 `trace` 的 `out` 参数把轨迹写入文件并回报 `file`/`bytes`。
+- `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff`、`device memory-map`）的
+  `--help` 与 `-h` 均退出 0 且含 `Usage:`。
 - `help_every_param`：`run`/`bp set`/`mem read`/`reg set`/`periph reg-write`/`watchdog config`/
   `trace`/`coverage`/`profile`/`mcp` 的 `--help` 包含每个参数的帮助文本
   （`--session`、`--firmware`、`--arch`、`--addr`、`--condition`、`--once`、`--steps`、`--until` 等）。

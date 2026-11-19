@@ -6699,6 +6699,264 @@ fn mcp_trace_coverage_profile() {
 }
 
 #[test]
+fn session_info_and_diff() {
+    let dir = tmpdir();
+    let a = dir.join(format!("diff-a-{}.json", std::process::id()));
+    let b = dir.join(format!("diff-b-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&a);
+    let _ = std::fs::remove_file(&b);
+    let a = a.to_str().unwrap();
+    let b = b.to_str().unwrap();
+
+    // Two diverging RISC-V sessions: B runs one instruction, changes a
+    // register, writes memory and installs a breakpoint.
+    let out = Command::new(bin()).args(["state", "--arch", "riscv", "--session", a]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    std::fs::copy(a, b).unwrap();
+    let diverge = |args: &[&str]| {
+        let out = Command::new(bin()).args(args).output().unwrap();
+        assert!(out.status.success(), "{}: {}", args[0], String::from_utf8_lossy(&out.stderr));
+    };
+    diverge(&[
+        "mem", "write", "--session", b, "--addr", "0x80000000",
+        "--bytes", "0x13", "0x00", "0x00", "0x00",
+    ]);
+    diverge(&["reg", "set", "--session", b, "x1", "0x2222"]);
+    diverge(&["step", "--session", b]);
+    diverge(&["bp", "set", "--session", b, "--addr", "0x8000000c"]);
+
+    // Human-readable `session info`.
+    let out = Command::new(bin()).args(["session", "info", "--file", b]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("0x80000004"), "{text}");
+    assert!(text.contains("寄存器"), "{text}");
+
+    // `session info --json` reports stable metadata fields.
+    let out = Command::new(bin()).args(["session", "info", "--file", b, "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["arch"], "riscv");
+    assert_eq!(json["pc"], 0x8000_0004u64);
+    assert_eq!(json["cycleCount"], 1u64);
+    assert_eq!(json["breakpoints"], 1u64);
+    assert_eq!(json["memoryOverlayBytes"], 4u64);
+    assert_eq!(json["peripherals"]["uartBase"], 0x4000_0000u64);
+
+    // `session diff --json` reports every diverging field.
+    let out = Command::new(bin()).args(["session", "diff", "--a", a, "--b", b, "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["same"], false);
+    let kinds: std::collections::BTreeSet<String> = json["differences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["kind"].as_str().map(String::from))
+        .collect();
+    for kind in ["scalar", "register", "breakpoint", "memory"] {
+        assert!(kinds.contains(kind), "missing {kind}: {kinds:?}");
+        assert!(json["summary"][kind].as_u64().unwrap() >= 1);
+    }
+    assert_eq!(json["a"]["arch"], "riscv");
+    assert_eq!(json["b"]["pc"], 0x8000_0004u64);
+
+    // Identical sessions compare clean.
+    let out = Command::new(bin()).args(["session", "diff", "--a", a, "--b", a, "--json"]).output().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["same"], true);
+    assert!(json["differences"].as_array().unwrap().is_empty());
+
+    // `--limit 1` caps the listing and records the truncation.
+    let out = Command::new(bin())
+        .args(["session", "diff", "--a", a, "--b", b, "--limit", "1", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["differences"].as_array().unwrap().len(), 1);
+    assert!(json["summary"]["truncated"].as_u64().unwrap() > 0);
+
+    // A missing session file is a real error.
+    let out = Command::new(bin())
+        .args(["session", "diff", "--a", a, "--b", "/tmp/nsim-does-not-exist.json"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin()).args(["session", "info", "--file", "/tmp/nsim-does-not-exist.json"]).output().unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn device_memory_map_and_address_lookup() {
+    // JSON view with an address lookup.
+    let out = Command::new(bin())
+        .args(["device", "memory-map", "stm32f103c8", "--addr", "0x40010000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["device"], "stm32f103c8");
+    assert_eq!(json["lookupRegion"], "PERIPHERALS");
+    let regions = json["regions"].as_array().unwrap();
+    assert!(regions.len() >= 2);
+    let flash = regions.iter().find(|r| r["name"] == "FLASH").unwrap();
+    assert_eq!(flash["access"], "rx");
+    assert_eq!(flash["start"], 0x0800_0000u64);
+
+    // Human view names the containing region.
+    let out = Command::new(bin())
+        .args(["device", "memory-map", "stm32f103c8", "--addr", "0x08000000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("区域 FLASH"));
+
+    // An address outside every region and an unknown device are errors.
+    let out = Command::new(bin())
+        .args(["device", "memory-map", "stm32f103c8", "--addr", "0x70000000"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin()).args(["device", "memory-map", "nosuch"]).output().unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn disasm_and_trace_write_files() {
+    let dir = tmpdir();
+    let sess = dir.join(format!("outfile-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let sess = sess.to_str().unwrap();
+    let out = Command::new(bin()).args(["state", "--arch", "riscv", "--session", sess]).output().unwrap();
+    assert!(out.status.success());
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess, "--addr", "0x80000000", "--bytes", "0x13", "0x00", "0x00", "0x00"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // `disasm --out` writes a listing to disk instead of stdout.
+    let lst = dir.join(format!("outfile-{}.lst", std::process::id()));
+    let lst = lst.to_str().unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess, "--addr", "0x80000000", "--count", "2", "--out", lst])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("已写出反汇编"));
+    let text = std::fs::read_to_string(&lst).unwrap();
+    assert!(text.contains("0x80000000: addi zero, zero, 0"), "{text}");
+
+    // `trace --out --json` writes the same payload the tool would return.
+    let trace = dir.join(format!("outfile-{}.trace.json", std::process::id()));
+    let trace = trace.to_str().unwrap();
+    let out = Command::new(bin())
+        .args(["trace", "--session", sess, "--steps", "1", "--json", "--out", trace])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("已写出"));
+    let text = std::fs::read_to_string(trace).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(json["steps"], 1u64);
+    assert_eq!(json["trace"][0]["pc"], 0x8000_0000u64);
+
+    // `profile --out` writes the human-readable histogram (back at entry).
+    let out = Command::new(bin()).args(["reset", "--session", sess]).output().unwrap();
+    assert!(out.status.success());
+    let prof = dir.join(format!("outfile-{}.profile.txt", std::process::id()));
+    let prof = prof.to_str().unwrap();
+    let out = Command::new(bin())
+        .args(["profile", "--session", sess, "--steps", "1", "--out", prof])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(std::fs::read_to_string(prof).unwrap().contains("addi zero, zero, 0"));
+}
+
+#[test]
+fn mcp_session_and_memory_map_tools() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let a = dir.join(format!("mcp-diff-a-{}.json", std::process::id()));
+    let b = dir.join(format!("mcp-diff-b-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&a);
+    let _ = std::fs::remove_file(&b);
+    let a = a.to_str().unwrap();
+    let b = b.to_str().unwrap();
+
+    // Two diverging sessions created through MCP.
+    let r = client.call_tool("session_create", serde_json::json!({ "session": a, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create a: {}", r);
+    let r = client.call_tool("session_create", serde_json::json!({ "session": b, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create b: {}", r);
+    // A NOP so the zero-filled image has something to execute.
+    let r = client.call_tool(
+        "mem_write",
+        serde_json::json!({ "session": b, "addr": "0x80000000", "bytes": ["0x13", "0x00", "0x00", "0x00"] }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write: {}", r);
+    let r = client.call_tool(
+        "reg_set",
+        serde_json::json!({ "session": b, "name": "x1", "value": "0x2222" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "reg_set: {}", r);
+    let r = client.call_tool("step", serde_json::json!({ "session": b }));
+    assert!(!r["isError"].as_bool().unwrap(), "step: {}", r);
+    let r = client.call_tool("bp_set", serde_json::json!({ "session": b, "addr": "0x8000000c" }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_set: {}", r);
+
+    // `session_info` mirrors the CLI metadata view.
+    let r = client.call_tool("session_info", serde_json::json!({ "session": b }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_info: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["arch"], "riscv");
+    assert_eq!(sc["pc"], 0x8000_0004u64);
+    assert_eq!(sc["breakpoints"], 1u64);
+
+    // `session_diff` compares the two session files.
+    let r = client.call_tool("session_diff", serde_json::json!({ "a": a, "b": b }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_diff: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["same"], false);
+    let kinds: std::collections::BTreeSet<&str> = sc["differences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["kind"].as_str())
+        .collect();
+    assert!(kinds.contains("register"), "{kinds:?}");
+    assert!(kinds.contains("breakpoint"), "{kinds:?}");
+
+    // `device_memory_map` lists regions and resolves an address.
+    let r = client.call_tool(
+        "device_memory_map",
+        serde_json::json!({ "device": "stm32f103c8", "addr": "0x40010000" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "device_memory_map: {}", r);
+    assert_eq!(r["structuredContent"]["lookupRegion"], "PERIPHERALS");
+    assert!(r["structuredContent"]["regions"].as_array().unwrap().len() >= 2);
+    // Unknown device is an error.
+    let r = client.call_tool("device_memory_map", serde_json::json!({ "device": "nosuch" }));
+    assert!(r["isError"].as_bool().unwrap());
+
+    // `trace` with `out` writes the payload to a file.
+    let trace = dir.join(format!("mcp-out-{}.trace.json", std::process::id()));
+    let trace = trace.to_str().unwrap();
+    let r = client.call_tool(
+        "trace",
+        serde_json::json!({ "session": b, "steps": 1, "out": trace }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "trace out: {}", r);
+    assert_eq!(r["structuredContent"]["file"], trace);
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(trace).unwrap()).unwrap();
+    assert_eq!(json["steps"], 1u64);
+    assert_eq!(json["trace"][0]["pc"], 0x8000_0004u64);
+    client.close();
+}
+
+#[test]
 fn help_every_command() {
     let commands: &[&[&str]] = &[
         &["version"],
@@ -6723,6 +6981,7 @@ fn help_every_command() {
         &["watchdog", "reset"],
         &["csr", "list"], &["csr", "get"], &["csr", "set"],
         &["trace"], &["coverage"], &["profile"],
+        &["session", "info"], &["session", "diff"], &["device", "memory-map"],
         &["mcp"],
     ];
     for flag in ["--help", "-h"] {

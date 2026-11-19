@@ -101,6 +101,8 @@ enum Command {
     Coverage(AnalyzeArgs),
     /// 运行并统计指令助记符直方图。
     Profile(AnalyzeArgs),
+    /// 查询持久化会话的元信息或比较两个会话的差异。
+    Session(SessionArgs),
     /// 启动 MCP（Model Context Protocol）stdio 服务器，供大模型通过工具调用操作仿真器。
     Mcp {
         /// 默认会话文件路径（JSON）；MCP 工具未显式传入 `session` 时使用。
@@ -191,6 +193,31 @@ enum DeviceSub {
         #[arg(long)]
         json: bool,
     },
+    /// 列出设备内存映射（FLASH / RAM / PERIPHERALS 等区域）。
+    MemoryMap {
+        /// 目标设备键（如 stm32f103c8）。
+        device: String,
+        /// 查询地址落在哪个区域（可选；十六进制或十进制）。
+        #[arg(short, long)]
+        addr: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Args)]
+struct SessionArgs {
+    #[command(subcommand)]
+    sub: SessionSub,
+}
+
+#[derive(Subcommand)]
+enum SessionSub {
+    /// 显示会话元信息（架构/PC/周期/寄存器数/断点数/内存/外设/固件）。
+    Info(SessionInfoArgs),
+    /// 比较两个会话文件，列出全部差异（标量/寄存器/断点/内存）。
+    Diff(SessionDiffArgs),
 }
 
 #[derive(Args)]
@@ -642,6 +669,9 @@ struct DisasmArgs {
     /// 同时显示每条指令的原始字节（十六进制）。
     #[arg(long)]
     raw: bool,
+    /// 写出文件路径（缺省打印到 stdout；文本或 JSON 均可）。
+    #[arg(short, long)]
+    out: Option<PathBuf>,
     /// 输出 JSON 数组（地址/反汇编/原始字节/来源）。
     #[arg(long)]
     json: bool,
@@ -1191,6 +1221,37 @@ struct AnalyzeArgs {
     /// 运行到指定地址（临时断点，不持久化）。
     #[arg(long)]
     until: Option<String>,
+    /// 写出文件路径（缺省打印到 stdout；文本或 JSON 均可）。
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+    /// 输出 JSON。
+    #[arg(long)]
+    json: bool,
+}
+
+/// Session arguments for the `session info` subcommand.
+#[derive(Args)]
+struct SessionInfoArgs {
+    /// 会话文件（JSON）。
+    #[arg(short = 'f', long)]
+    file: PathBuf,
+    /// 输出 JSON。
+    #[arg(long)]
+    json: bool,
+}
+
+/// Session arguments for the `session diff` subcommand.
+#[derive(Args)]
+struct SessionDiffArgs {
+    /// 会话文件 A（基准）。
+    #[arg(short, long)]
+    a: PathBuf,
+    /// 会话文件 B（比较对象）。
+    #[arg(short, long)]
+    b: PathBuf,
+    /// 最多列出的差异条数（默认 400）。
+    #[arg(long, default_value = "400")]
+    limit: usize,
     /// 输出 JSON。
     #[arg(long)]
     json: bool,
@@ -1238,6 +1299,9 @@ fn real_main() -> Result<()> {
                 json,
             )
         }
+        Command::Device { sub: DeviceSub::MemoryMap { device, addr, json } } => {
+            cmd_device_memory_map(&device, addr.as_deref(), json)
+        }
         Command::Run(args) => cmd_run(args),
         Command::Step(args) => cmd_step(args, StepKind::Step),
         Command::StepOver(args) => cmd_step(args, StepKind::StepOver),
@@ -1255,6 +1319,8 @@ fn real_main() -> Result<()> {
         Command::Interrupt(InterruptArgs { sub }) => cmd_interrupt(sub),
         Command::Watchdog(WatchdogArgs { sub }) => cmd_watchdog(sub),
         Command::Csr(CsrArgs { sub }) => cmd_csr(sub),
+        Command::Session(SessionArgs { sub: SessionSub::Info(args) }) => cmd_session_info(args),
+        Command::Session(SessionArgs { sub: SessionSub::Diff(args) }) => cmd_session_diff(args),
         Command::Trace(args) => cmd_analyze(args, AnalyzeKind::Trace),
         Command::Coverage(args) => cmd_analyze(args, AnalyzeKind::Coverage),
         Command::Profile(args) => cmd_analyze(args, AnalyzeKind::Profile),
@@ -1922,6 +1988,65 @@ fn cmd_device_svd(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Print the memory map of a device (`device memory-map`), optionally
+/// locating `--addr` inside one of the regions.
+fn cmd_device_memory_map(device: &str, addr: Option<&str>, json: bool) -> Result<()> {
+    if ns_device::catalog_entry(device).is_none() {
+        bail!("未知设备: {device}");
+    }
+    let regions = ns_device::memory_map(device);
+    let target = addr.map(parse_num).transpose()?;
+    if let Some(a) = target {
+        if !regions.iter().any(|r| {
+            (a as u64) >= r.start && (a as u64) < r.start.saturating_add(r.size)
+        }) {
+            bail!("地址 0x{a:08x} 不在 {device} 的任何内存区域中");
+        }
+    }
+    if json {
+        let items: Vec<_> = regions
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "name": r.name,
+                    "start": r.start,
+                    "size": r.size,
+                    "end": r.start.saturating_add(r.size) - 1,
+                    "access": r.access,
+                })
+            })
+            .collect();
+        print_json(&serde_json::json!({
+            "device": device,
+            "regions": items,
+            "lookup": target,
+            "lookupRegion": target.and_then(|a| regions
+                .iter()
+                .find(|r| (a as u64) >= r.start && (a as u64) < r.start.saturating_add(r.size))
+                .map(|r| r.name.clone())),
+        }))?;
+        return Ok(());
+    }
+    println!("设备 {device} 内存映射:");
+    println!("  {:<14} {:>12} {:>12} {:>12}  {}", "区域", "起始", "结束", "大小", "访问");
+    for r in &regions {
+        let end = r.start.saturating_add(r.size) - 1;
+        println!(
+            "  {:<14} 0x{:08x} 0x{:08x} {:>10}  {}",
+            r.name, r.start, end, r.size, r.access
+        );
+    }
+    if let Some(a) = target {
+        let name = regions
+            .iter()
+            .find(|r| (a as u64) >= r.start && (a as u64) < r.start.saturating_add(r.size))
+            .map(|r| r.name.clone())
+            .unwrap_or_default();
+        println!("地址 0x{a:08x} → 区域 {name}");
     }
     Ok(())
 }
@@ -2669,6 +2794,7 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
     };
     let read = |addr: u32| -> u8 { read_code_byte(&sim, addr) };
     let mut items = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
     for _ in 0..args.count {
         let width = ns_sim::instruction_size(arch, pc, &read, arm_state);
         let text = ns_sim::disassemble_one_state(arch, pc, &read, arm_state);
@@ -2694,6 +2820,13 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
                 "source": source_annotation(&sim, pc).trim().to_string(),
                 "armState": arm_state,
             }));
+        } else if args.out.is_some() {
+            let line = if args.source {
+                format!("0x{pc:08x}: {text}{raw}  {}", source_annotation(&sim, pc))
+            } else {
+                format!("0x{pc:08x}: {text}{raw}")
+            };
+            lines.push(line);
         } else if args.source {
             let src = source_annotation(&sim, pc);
             println!("0x{pc:08x}: {text}{raw}  {src}");
@@ -2703,7 +2836,11 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
         pc = pc.wrapping_add(width);
     }
     if args.json {
-        print_json(&items)?;
+        emit_out(args.out.as_deref(), &serde_json::to_string_pretty(&items)?)?;
+    } else if let Some(path) = &args.out {
+        std::fs::write(path, format!("{}\n", lines.join("\n")))
+            .with_context(|| format!("写入 {} 失败", path.display()))?;
+        println!("已写出反汇编 -> {}（{} 条指令）", path.display(), lines.len());
     }
     Ok(())
 }
@@ -3673,6 +3810,100 @@ fn cmd_csr(sub: CsrSub) -> Result<()> {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// `session info`: show persisted-session metadata in a compact table.
+fn cmd_session_info(args: SessionInfoArgs) -> Result<()> {
+    let value = Session::load(&args.file)?.info_value(Some(&args.file));
+    if args.json {
+        print_json(&value)?;
+        return Ok(());
+    }
+    let periph = &value["peripherals"];
+    let fw = value["firmware"].as_object();
+    println!("会话: {}", args.file.display());
+    println!(
+        "  架构 {}  PC 0x{:08x}  周期 {}  停机 {}",
+        value["arch"],
+        value["pc"].as_u64().unwrap_or(0) as u32,
+        value["cycleCount"].as_u64().unwrap_or(0),
+        value["halted"].as_bool().unwrap_or(false)
+    );
+    println!(
+        "  寄存器 {} 个  断点 {} 个（启用 {}）  内存字节 {}  覆盖写字节 {}",
+        value["registers"].as_u64().unwrap_or(0),
+        value["breakpoints"].as_u64().unwrap_or(0),
+        value["enabledBreakpoints"].as_u64().unwrap_or(0),
+        value["memoryBytes"].as_u64().unwrap_or(0),
+        value["memoryOverlayBytes"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  UART 基址 0x{:08x}  GPIO 基址 0x{:08x}  定时器 {}  外部寄存器 {}  看门狗 {}",
+        periph["uartBase"].as_u64().unwrap_or(0) as u32,
+        periph["gpioBase"].as_u64().unwrap_or(0) as u32,
+        periph["timers"].as_u64().unwrap_or(0),
+        periph["externalRegs"].as_u64().unwrap_or(0),
+        if periph["watchdog"].as_bool().unwrap_or(false) {
+            "已启用"
+        } else {
+            "未启用"
+        }
+    );
+    if let Some(f) = fw {
+        println!(
+            "  固件 {} @ 0x{:08x} ({})",
+            f.get("path").and_then(|v| v.as_str()).unwrap_or(""),
+            f.get("base").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            f.get("format").and_then(|v| v.as_str()).unwrap_or("")
+        );
+    }
+    Ok(())
+}
+
+/// `session diff`: list every difference between two session files.
+fn cmd_session_diff(args: SessionDiffArgs) -> Result<()> {
+    let value = session::session_diff(&args.a, &args.b, args.limit)?;
+    if args.json {
+        print_json(&value)?;
+        return Ok(());
+    }
+    let summary = &value["summary"];
+    println!(
+        "A = {} ({})",
+        args.a.display(),
+        value["a"]["arch"].as_str().unwrap_or("?")
+    );
+    println!(
+        "B = {} ({})",
+        args.b.display(),
+        value["b"]["arch"].as_str().unwrap_or("?")
+    );
+    println!(
+        "差异: 标量 {}  寄存器 {}  断点 {}  内存 {}{}",
+        summary["scalar"].as_u64().unwrap_or(0),
+        summary["register"].as_u64().unwrap_or(0),
+        summary["breakpoint"].as_u64().unwrap_or(0),
+        summary["memory"].as_u64().unwrap_or(0),
+        if summary["truncated"].as_u64().unwrap_or(0) > 0 {
+            format!("（截断 {} 条，仅显示前 {} 条）", summary["truncated"].as_u64().unwrap_or(0), args.limit)
+        } else {
+            String::new()
+        }
+    );
+    if value["same"].as_bool().unwrap_or(false) {
+        println!("两个会话完全一致。");
+        return Ok(());
+    }
+    for d in value["differences"].as_array().unwrap() {
+        println!(
+            "  [{:<10}] {:<20} A={}  B={}",
+            d["kind"].as_str().unwrap_or(""),
+            d["name"].as_str().unwrap_or(""),
+            d["a"],
+            d["b"]
+        );
+    }
+    Ok(())
+}
+
 /// The requested analysis output mode.
 enum AnalyzeKind {
     Trace,
@@ -3709,94 +3940,105 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
         Session::capture(&sim, fw).save(sp)?;
     }
     let arch_name = session::arch_name(sim.arch);
+    let payload: serde_json::Value = match kind {
+        AnalyzeKind::Trace => serde_json::json!({
+            "arch": arch_name,
+            "steps": analysis.steps,
+            "cycleCount": analysis.cycle_count,
+            "result": analysis.result,
+            "trace": &analysis.trace,
+        }),
+        AnalyzeKind::Coverage => {
+            let items: Vec<_> = analysis
+                .coverage
+                .iter()
+                .map(|(pc, hits)| serde_json::json!({ "pc": pc, "hits": hits }))
+                .collect();
+            serde_json::json!({
+                "arch": arch_name,
+                "steps": analysis.steps,
+                "cycleCount": analysis.cycle_count,
+                "result": analysis.result,
+                "uniquePcs": items.len(),
+                "coverage": items,
+            })
+        }
+        AnalyzeKind::Profile => {
+            let items: Vec<_> = analysis
+                .histogram
+                .iter()
+                .map(|(mnemonic, count)| serde_json::json!({ "mnemonic": mnemonic, "count": count }))
+                .collect();
+            serde_json::json!({
+                "arch": arch_name,
+                "steps": analysis.steps,
+                "cycleCount": analysis.cycle_count,
+                "result": analysis.result,
+                "uniqueMnemonics": items.len(),
+                "histogram": items,
+            })
+        }
+    };
+    if args.json {
+        emit_out(args.out.as_deref(), &serde_json::to_string_pretty(&payload)?)?;
+        return Ok(());
+    }
+    let mut text = String::new();
     match kind {
         AnalyzeKind::Trace => {
-            if args.json {
-                print_json(&serde_json::json!({
-                    "arch": arch_name,
-                    "steps": analysis.steps,
-                    "cycleCount": analysis.cycle_count,
-                    "result": analysis.result,
-                    "trace": analysis.trace,
-                }))?;
-            } else {
-                for e in &analysis.trace {
-                    let bytes: String = e
-                        .bytes
-                        .iter()
-                        .map(|b| format!("{b:02x} "))
-                        .collect();
-                    let src = if e.source.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" ; {}", e.source)
-                    };
-                    println!("0x{:08x}: {:<40} ; {}{src}", e.pc, e.text, bytes);
-                }
-                println!(
-                    "停止: {}（{} 条指令，周期 {}）",
-                    analysis.result, analysis.steps, analysis.cycle_count
-                );
+            for e in &analysis.trace {
+                let bytes: String =
+                    e.bytes.iter().map(|b| format!("{b:02x} ")).collect();
+                let src = if e.source.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ; {}", e.source)
+                };
+                text.push_str(&format!("0x{:08x}: {:<40} ; {}{src}\n", e.pc, e.text, bytes));
             }
+            text.push_str(&format!(
+                "停止: {}（{} 条指令，周期 {}）\n",
+                analysis.result, analysis.steps, analysis.cycle_count
+            ));
         }
         AnalyzeKind::Coverage => {
-            if args.json {
-                let items: Vec<_> = analysis
-                    .coverage
-                    .iter()
-                    .map(|(pc, hits)| serde_json::json!({ "pc": pc, "hits": hits }))
-                    .collect();
-                print_json(&serde_json::json!({
-                    "arch": arch_name,
-                    "steps": analysis.steps,
-                    "cycleCount": analysis.cycle_count,
-                    "result": analysis.result,
-                    "uniquePcs": items.len(),
-                    "coverage": items,
-                }))?;
-            } else {
-                println!(
-                    "已执行 {} 条指令，覆盖 {} 个唯一 PC，停止: {}，周期 {}:",
-                    analysis.steps,
-                    analysis.coverage.len(),
-                    analysis.result,
-                    analysis.cycle_count
-                );
-                for (pc, hits) in &analysis.coverage {
-                    println!("  0x{pc:08x} x{hits}");
-                }
+            text.push_str(&format!(
+                "已执行 {} 条指令，覆盖 {} 个唯一 PC，停止: {}，周期 {}:\n",
+                analysis.steps,
+                analysis.coverage.len(),
+                analysis.result,
+                analysis.cycle_count
+            ));
+            for (pc, hits) in &analysis.coverage {
+                text.push_str(&format!("  0x{pc:08x} x{hits}\n"));
             }
         }
         AnalyzeKind::Profile => {
-            if args.json {
-                let items: Vec<_> = analysis
-                    .histogram
-                    .iter()
-                    .map(|(mnemonic, count)| {
-                        serde_json::json!({ "mnemonic": mnemonic, "count": count })
-                    })
-                    .collect();
-                print_json(&serde_json::json!({
-                    "arch": arch_name,
-                    "steps": analysis.steps,
-                    "cycleCount": analysis.cycle_count,
-                    "result": analysis.result,
-                    "uniqueMnemonics": items.len(),
-                    "histogram": items,
-                }))?;
-            } else {
-                println!(
-                    "已执行 {} 条指令，{} 种助记符，停止: {}，周期 {}:",
-                    analysis.steps,
-                    analysis.histogram.len(),
-                    analysis.result,
-                    analysis.cycle_count
-                );
-                for (mnemonic, count) in &analysis.histogram {
-                    println!("  {mnemonic:<40} x{count}");
-                }
+            text.push_str(&format!(
+                "已执行 {} 条指令，{} 种助记符，停止: {}，周期 {}:\n",
+                analysis.steps,
+                analysis.histogram.len(),
+                analysis.result,
+                analysis.cycle_count
+            ));
+            for (mnemonic, count) in &analysis.histogram {
+                text.push_str(&format!("  {mnemonic:<40} x{count}\n"));
             }
         }
+    }
+    emit_out(args.out.as_deref(), &text)?;
+    Ok(())
+}
+
+/// Write `text` to `out` (printing a confirmation line) or to stdout.
+fn emit_out(out: Option<&Path>, text: &str) -> Result<()> {
+    match out {
+        Some(path) => {
+            std::fs::write(path, text)
+                .with_context(|| format!("写入 {} 失败", path.display()))?;
+            println!("已写出 -> {}（{} 字节）", path.display(), text.len());
+        }
+        None => print!("{text}"),
     }
     Ok(())
 }

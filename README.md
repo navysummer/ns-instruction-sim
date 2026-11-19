@@ -62,8 +62,18 @@ ns-instruction-sim periph field-get --session s.json --device stm32f103c8 --peri
 ns-instruction-sim periph timer --session s.json --index 1 --enabled true
 ns-instruction-sim periph config --session s.json --uart-base 0x50000000
 
+# 执行轨迹 / 覆盖 / 助记符直方图 / 会话对比
+ns-instruction-sim trace --session s.json --steps 200 --json
+ns-instruction-sim trace --session s.json --steps 200 --out trace.json
+ns-instruction-sim coverage --session s.json --steps 2000 --json
+ns-instruction-sim profile --session s.json --steps 2000
+ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 64 --out listing.lst
+ns-instruction-sim session info --file s.json --json
+ns-instruction-sim session diff --a s.json --b s2.json --json
+
 # 设备 / SVD 文件解析
 ns-instruction-sim device list
+ns-instruction-sim device memory-map stm32f103c8 --addr 0x40010000 --json
 ns-instruction-sim device svd --file chip.svd --json
 ns-instruction-sim device svd --file chip.svd --peripheral USART1 --register DR
 ns-instruction-sim device svd --device stm32f103c8 --json
@@ -85,7 +95,8 @@ RX、RL78。详见 [AGENTS.md](AGENTS.md)（开发规范）与 [skill.md](skill.
 
 `ns-instruction-sim mcp [--session s.json]` 启动 MCP stdio 服务器（JSON-RPC 2.0 +
 `Content-Length` 帧）。大模型或任何 MCP 客户端可 `tools/list` 获得 ≥50 个工具（架构/设备/会话/
-状态/步进/寄存器/内存/断点/反汇编/周期/中断/外设/符号/看门狗/CSR），再 `tools/call` 驱动
+状态/步进/寄存器/内存/断点/反汇编/周期/中断/外设/符号/看门狗/CSR/执行轨迹/覆盖/直方图/
+会话对比/设备内存映射），再 `tools/call` 驱动
 指令级仿真；状态通过会话文件跨工具调用持久化。详见 `AGENTS.md` §3.4 与 `skill.md` §4.1。
 
 ```bash

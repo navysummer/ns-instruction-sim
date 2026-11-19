@@ -340,8 +340,32 @@ fn analyze_schema() -> Value {
             ("steps", prop_num("精确执行 N 条指令。")),
             ("max_steps", prop_num("最大执行步数（默认 100000）。")),
             ("until", prop_str("运行到指定地址（临时断点）。")),
+            ("out", prop_str("把结果写入文件（JSON）；缺省直接返回结果。")),
         ],
         &[],
+    )
+}
+
+/// Input schema of the `session_diff` tool (compare two session files).
+fn session_diff_schema() -> Value {
+    obj(
+        &[
+            ("a", prop_str("会话文件 A（基准）。")),
+            ("b", prop_str("会话文件 B（比较对象）。")),
+            ("limit", prop_num("最多列出的差异条数（默认 400）。")),
+        ],
+        &["a", "b"],
+    )
+}
+
+/// Input schema of the `device_memory_map` tool.
+fn memory_map_schema() -> Value {
+    obj(
+        &[
+            ("device", prop_str("目标设备键（如 stm32f103c8）。")),
+            ("addr", prop_str("查询地址落在哪个区域（可选；十六进制或十进制）。")),
+        ],
+        &["device"],
     )
 }
 
@@ -1037,6 +1061,27 @@ fn tools() -> Vec<Tool> {
             description: "运行并统计指令助记符直方图。",
             schema: analyze_schema(),
             handler: tool_profile,
+        },
+        Tool {
+            name: "device_memory_map",
+            description: "列出设备内存映射（FLASH / RAM / PERIPHERALS 区域），并可查询地址所属区域。",
+            schema: memory_map_schema(),
+            handler: tool_device_memory_map,
+        },
+        Tool {
+            name: "session_info",
+            description: "显示会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）。",
+            schema: obj(
+                &[("session", prop_str("会话文件路径（JSON）；缺省使用 MCP 服务器默认会话。"))],
+                &[],
+            ),
+            handler: tool_session_info,
+        },
+        Tool {
+            name: "session_diff",
+            description: "比较两个会话文件，列出全部差异（标量/寄存器/断点/内存）。",
+            schema: session_diff_schema(),
+            handler: tool_session_diff,
         },
     ]
 }
@@ -2372,7 +2417,7 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
             }
         }
         let arch_name = arch_name(sim.arch);
-        Ok(match kind {
+        let value = match kind {
             AnalyzeTool::Trace => json!({
                 "arch": arch_name,
                 "steps": analysis.steps,
@@ -2412,7 +2457,25 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
                     "histogram": items,
                 })
             }
-        })
+        };
+        // Optional `out` writes the same payload to a file and reports it.
+        if let Some(out) = s(args, "out") {
+            let text = serde_json::to_string_pretty(&value)?;
+            std::fs::write(&out, &text)
+                .with_context(|| format!("写入 {out} 失败"))?;
+            let mut map = match value {
+                Value::Object(m) => m,
+                other => {
+                    let mut m = Map::new();
+                    m.insert("result".to_string(), other);
+                    m
+                }
+            };
+            map.insert("file".to_string(), Value::String(out));
+            map.insert("bytes".to_string(), Value::from(text.len()));
+            return Ok(Value::Object(map));
+        }
+        Ok(value)
     })
 }
 
@@ -2427,6 +2490,52 @@ fn tool_coverage(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
 fn tool_profile(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     analyze_tool(server, args, AnalyzeTool::Profile)
 }
+/// List the memory regions of a device (`device memory-map`), locating
+/// `addr` inside one of them when supplied.
+fn tool_device_memory_map(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let device = s(args, "device").ok_or_else(|| anyhow::anyhow!("缺少 device"))?;
+    if ns_device::catalog_entry(&device).is_none() {
+        bail!("未知设备: {device}");
+    }
+    let regions = ns_device::memory_map(&device);
+    let target = s(args, "addr").map(|a| parse_num(&a)).transpose()?;
+    let lookup_region = target.and_then(|a| {
+        regions
+            .iter()
+            .find(|r| (a as u64) >= r.start && (a as u64) < r.start.saturating_add(r.size))
+            .map(|r| r.name.clone())
+    });
+    Ok(json!({
+        "device": device,
+        "regions": regions
+            .iter()
+            .map(|r| json!({
+                "name": r.name,
+                "start": r.start,
+                "size": r.size,
+                "end": r.start.saturating_add(r.size) - 1,
+                "access": r.access,
+            }))
+            .collect::<Vec<_>>(),
+        "lookup": target,
+        "lookupRegion": lookup_region,
+    }))
+}
+
+/// Show the metadata of one session file (`session info`).
+fn tool_session_info(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let path = server.resolve_session(args).ok_or_else(|| anyhow::anyhow!("缺少 session"))?;
+    Ok(Session::load(&path)?.info_value(Some(&path)))
+}
+
+/// Compare two session files (`session diff`).
+fn tool_session_diff(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let a = s(args, "a").ok_or_else(|| anyhow::anyhow!("缺少 a"))?;
+    let b = s(args, "b").ok_or_else(|| anyhow::anyhow!("缺少 b"))?;
+    let limit = usize::try_from(u64(args, "limit").unwrap_or(400)).unwrap_or(400);
+    crate::session::session_diff(Path::new(&a), Path::new(&b), limit)
+}
+
 
 #[cfg(test)]
 mod tests {

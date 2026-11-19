@@ -14,6 +14,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use ns_sim::{Arch, Simulator};
 
@@ -361,9 +362,54 @@ impl Session {
         }
         // Replay re-records each entry into the fresh simulator; overwrite with
         // the canonical loaded overlay so the list never duplicates on reload.
-        sim.memory_overlay = self.memory_overlay.clone();
-        Ok(sim)
+    sim.memory_overlay = self.memory_overlay.clone();
+    Ok(sim)
     }
+
+    /// Machine-readable session summary (path, sizes, counts and key fields).
+    pub fn info_value(&self, path: Option<&Path>) -> serde_json::Value {
+        let peripherals = &self.peripherals;
+        let watchdog = peripherals.watchdog.as_ref();
+        let firmware = self.firmware.as_ref();
+        serde_json::json!({
+            "path": path.map(|p| p.display().to_string()),
+            "arch": self.arch,
+            "pc": self.pc,
+            "cycleCount": self.cycle_count,
+            "halted": self.halted,
+            "registers": self.registers.len(),
+            "armXpsr": self.arm_xpsr,
+            "armState": self.arm_arm_state.map(|arm| if arm { "a32" } else { "thumb" }),
+            "breakpoints": self.breakpoints.len(),
+            "enabledBreakpoints": self.breakpoints.iter().filter(|b| b.enabled).count(),
+            "memoryBytes": self.memory.len(),
+            "memoryOverlayBytes": self.memory_overlay.len(),
+            "uartBytes": self.uart_output.len(),
+            "firmware": firmware.map(|f| serde_json::json!({
+                "path": f.path,
+                "base": f.base,
+                "format": f.format,
+            })),
+            "peripherals": serde_json::json!({
+                "uartBase": peripherals.uart_base,
+                "gpioBase": peripherals.gpio_base,
+                "timers": peripherals.timers.len(),
+                "watchdog": watchdog.is_some(),
+                "watchdogBase": watchdog.map(|w| w.0),
+                "watchdogEnabled": watchdog.map(|w| w.1),
+                "irqPending": peripherals.irq_pending.clone(),
+                "externalRegs": peripherals.external_regs.len(),
+                "csr": serde_json::json!({
+                    "mstatus": self.csr.mstatus,
+                    "mtvec": self.csr.mtvec,
+                    "mepc": self.csr.mepc,
+                    "mcause": self.csr.mcause,
+                    "mie": self.csr.mie,
+                    "mhartid": self.csr.mhartid,
+                }),
+            }),
+        })
+}
 }
 
 /// Machine-readable name for an architecture (used in JSON / state files).
@@ -425,4 +471,138 @@ pub fn register_index_by_name(arch: Arch) -> BTreeMap<String, usize> {
         }
     }
     map
+}
+
+/// Compare two session files and describe every difference between them.
+///
+/// Returns `{a, b, same, summary, differences}`. Each difference carries a
+/// `kind` (`scalar` / `register` / `breakpoint` / `memory`) plus the two
+/// values; the list is ordered (scalars, registers, breakpoints, memory) and
+/// capped at `limit` entries so huge sessions stay printable.
+pub fn session_diff(a_path: &Path, b_path: &Path, limit: usize) -> Result<serde_json::Value> {
+    let a = Session::load(a_path)?;
+    let b = Session::load(b_path)?;
+    let a_arch = parse_arch(&a.arch).unwrap_or(Arch::RiscV);
+    let b_arch = parse_arch(&b.arch).unwrap_or(Arch::RiscV);
+    let mut ordered: Vec<serde_json::Value> = Vec::new();
+    let mut counts = serde_json::json!({
+        "scalar": 0, "register": 0, "breakpoint": 0, "memory": 0, "truncated": 0
+    });
+    let mut truncated: u64 = 0;
+    let mut push = |kind: &str, name: String, av: serde_json::Value, bv: serde_json::Value| {
+        if ordered.len() >= limit {
+            truncated += 1;
+            return;
+        }
+        counts[kind] = Value::from(
+            counts.get(kind).and_then(|v| v.as_u64()).unwrap_or(0) + 1,
+        );
+        ordered.push(serde_json::json!({ "kind": kind, "name": name, "a": av, "b": bv }));
+    };
+
+    // Scalar fields (architecture, PC, cycle count, halt flag, ARM state).
+    for (field, av, bv) in [
+        ("arch", a.arch.clone(), b.arch.clone()),
+        ("pc", format!("{:#010x}", a.pc), format!("{:#010x}", b.pc)),
+        ("cycleCount", a.cycle_count.to_string(), b.cycle_count.to_string()),
+        ("halted", a.halted.to_string(), b.halted.to_string()),
+        ("armXpsr", a.arm_xpsr.map(|v| format!("{v:#010x}")).unwrap_or_default(),
+         b.arm_xpsr.map(|v| format!("{v:#010x}")).unwrap_or_default()),
+        ("armState", a.arm_arm_state.map(|s| if s { "a32" } else { "thumb" }).unwrap_or_default().to_string(),
+         b.arm_arm_state.map(|s| if s { "a32" } else { "thumb" }).unwrap_or_default().to_string()),
+    ] {
+        if av != bv {
+            push("scalar", field.to_string(), av.into(), bv.into());
+        }
+    }
+
+    // Registers, aligned by (index, name) so differing architectures still
+    // diff field-wise instead of one opaque block.
+    let a_regs: BTreeMap<usize, (String, u32)> = a
+        .registers
+        .iter()
+        .map(|(i, v)| (*i, (ns_sim::reg_label_for(a_arch, *i), *v)))
+        .collect();
+    let b_regs: BTreeMap<usize, (String, u32)> = b
+        .registers
+        .iter()
+        .map(|(i, v)| (*i, (ns_sim::reg_label_for(b_arch, *i), *v)))
+        .collect();
+    let mut keys: Vec<usize> = a_regs.keys().chain(b_regs.keys()).copied().collect();
+    keys.sort();
+    keys.dedup();
+    for key in keys {
+        let av = a_regs.get(&key).map(|(_, v)| *v);
+        let bv = b_regs.get(&key).map(|(_, v)| *v);
+        if av != bv {
+            let name = b_regs
+                .get(&key)
+                .or_else(|| a_regs.get(&key))
+                .map(|(n, _)| n.clone())
+                .unwrap_or_else(|| format!("r{key}"));
+            push(
+                "register",
+                name,
+                av.map(|v| format!("{v:#010x}")).map(Value::from).unwrap_or(Value::Null),
+                bv.map(|v| format!("{v:#010x}")).map(Value::from).unwrap_or(Value::Null),
+            );
+        }
+    }
+
+    // Breakpoints, keyed by address with every persisted attribute compared.
+    let a_bp: BTreeMap<u32, serde_json::Value> =
+        a.breakpoints.iter().map(|x| (x.address, bp_json(x))).collect();
+    let b_bp: BTreeMap<u32, serde_json::Value> =
+        b.breakpoints.iter().map(|x| (x.address, bp_json(x))).collect();
+    let mut bp_keys: Vec<u32> = a_bp.keys().chain(b_bp.keys()).copied().collect();
+    bp_keys.sort();
+    bp_keys.dedup();
+    for addr in bp_keys {
+        if a_bp.get(&addr) != b_bp.get(&addr) {
+            push(
+                "breakpoint",
+                format!("0x{addr:08x}"),
+                a_bp.get(&addr).cloned().unwrap_or(serde_json::Value::Null),
+                b_bp.get(&addr).cloned().unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
+
+    // Memory overlay, keyed by address (byte value).
+    let a_mem: BTreeMap<u32, u8> = a.memory_overlay.iter().map(|(k, v)| (*k, *v)).collect();
+    let b_mem: BTreeMap<u32, u8> = b.memory_overlay.iter().map(|(k, v)| (*k, *v)).collect();
+    let mut mem_keys: Vec<u32> = a_mem.keys().chain(b_mem.keys()).copied().collect();
+    mem_keys.sort();
+    mem_keys.dedup();
+    for addr in mem_keys {
+        if a_mem.get(&addr) != b_mem.get(&addr) {
+            push(
+                "memory",
+                format!("0x{addr:08x}"),
+                a_mem.get(&addr).map(|v| Value::from(format!("{v:02x}"))).unwrap_or(Value::Null),
+                b_mem.get(&addr).map(|v| Value::from(format!("{v:02x}"))).unwrap_or(Value::Null),
+            );
+        }
+    }
+
+    let same = ordered.is_empty() && truncated == 0;
+    counts["truncated"] = Value::from(truncated);
+    Ok(serde_json::json!({
+        "a": a.info_value(Some(a_path)),
+        "b": b.info_value(Some(b_path)),
+        "same": same,
+        "summary": counts,
+        "differences": ordered,
+    }))
+}
+
+/// Serialize one persisted breakpoint for the diff view.
+fn bp_json(bp: &BpState) -> serde_json::Value {
+    serde_json::json!({
+        "condition": bp.condition,
+        "hitCount": bp.hit_count,
+        "once": bp.once,
+        "enabled": bp.enabled,
+        "hits": bp.hits,
+    })
 }
