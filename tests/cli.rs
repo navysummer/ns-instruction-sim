@@ -6417,7 +6417,7 @@ fn mcp_handshake_and_list_tools() {
         "arch_list", "device_list", "device_info", "device_svd", "device_linker", "device_startup",
         "device_init", "session_create", "state", "step", "step_over", "step_out",
         "run", "continue", "reg_list", "reg_get", "reg_set", "mem_read", "mem_write", "mem_fill",
-        "mem_search", "mem_load", "mem_dump", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
+        "mem_search", "mem_load", "mem_dump", "mem_region", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
         "cycle_get", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "session_info", "session_diff", "device_memory_map", "firmware_info",
@@ -7230,6 +7230,157 @@ fn mcp_disasm_from_symbol() {
 }
 
 #[test]
+fn bp_list_symbols() {
+    let dir = tmpdir();
+    let sess = dir.join("bp_syms.json");
+    let elf = dir.join("bp_syms.elf");
+    write_riscv_elf_with_symbol(&elf, &[0x93, 0x00, 0x10, 0x00], "main");
+    let out = Command::new(bin())
+        .args(["state", "--arch", "riscv", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(), "--addr", "0x80000000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // Without --symbols the JSON symbol field stays null.
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json[0]["symbol"].is_null(), "{}", json);
+
+    // With --symbols the breakpoint is annotated with the ELF symbol.
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", sess.to_str().unwrap(), "--symbols", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["symbol"], "main", "{}", json);
+
+    // Human listing also carries the symbol suffix.
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", sess.to_str().unwrap(), "--symbols"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("main"));
+}
+
+#[test]
+fn mcp_bp_list_symbols() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-bpsyms-{}.elf", std::process::id()));
+    write_riscv_elf_with_symbol(&elf, &[0x93, 0x00, 0x10, 0x00], "main");
+    let sess = dir.join(format!("mcp-bpsyms-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv", "firmware": elf.to_str().unwrap() }));
+    assert!(!r["isError"].as_bool().unwrap());
+    let r = client.call_tool("bp_set", serde_json::json!({ "session": s, "addr": 0x8000_0000u64 }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_set: {}", r);
+
+    let r = client.call_tool("bp_list", serde_json::json!({ "session": s, "symbols": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_list symbols: {}", r);
+    assert_eq!(r["structuredContent"]["breakpoints"][0]["symbol"], "main", "{}", r);
+
+    let r = client.call_tool("bp_list", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_list: {}", r);
+    assert!(r["structuredContent"]["breakpoints"][0]["symbol"].is_null(), "{}", r);
+    client.close();
+}
+
+#[test]
+fn mem_region_dump() {
+    let dir = tmpdir();
+    let sess = dir.join("memregion.json");
+    let out = Command::new(bin())
+        .args(["state", "--arch", "riscv", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // Named region resolves to the catalog base (FLASH @ 0x08000000).
+    let out = Command::new(bin())
+        .args(["mem", "region", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--region", "FLASH", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["start"], 0x0800_0000u64);
+    assert_eq!(json["len"], 4u64);
+    assert_eq!(json["bytes"].as_array().unwrap().len(), 4);
+
+    // A written byte is reflected in the region dump (overlay persists).
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000000", "--bytes", "0xde"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["mem", "region", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--region", "flash", "--len", "1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["bytes"][0], 0xdeu64);
+
+    // Unknown region is an error.
+    let out = Command::new(bin())
+        .args(["mem", "region", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--region", "NOSUCH"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("未知区域"));
+
+    // Offset past the region end is an error.
+    let out = Command::new(bin())
+        .args(["mem", "region", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--region", "FLASH", "--offset", "65536", "--len", "4"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("超出区域"));
+}
+
+#[test]
+fn mcp_mem_region() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-memregion-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap());
+
+    let r = client.call_tool("mem_region", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "region": "FLASH", "len": 4,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_region: {}", r);
+    assert_eq!(r["structuredContent"]["start"], 0x0800_0000u64);
+    assert_eq!(r["structuredContent"]["len"], 4u64);
+
+    let r = client.call_tool("mem_region", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "region": "NOSUCH",
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "expected error: {}", r);
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
@@ -7497,7 +7648,7 @@ fn help_every_command() {
         &["run"], &["step"], &["step-over"], &["step-out"], &["continue"],
         &["reg", "list"], &["reg", "get"], &["reg", "set"],
         &["mem", "read"], &["mem", "write"], &["mem", "fill"], &["mem", "search"],
-        &["mem", "load"], &["mem", "dump"],
+        &["mem", "load"], &["mem", "dump"], &["mem", "region"],
         &["bp", "list"], &["bp", "set"], &["bp", "modify"], &["bp", "clear"], &["bp", "clear-all"],
         &["bp", "enable"], &["bp", "disable"],
         &["disasm"], &["reset"], &["state"],
@@ -7541,7 +7692,9 @@ fn help_every_param() {
         (&["run"], &["--session", "--firmware", "--arch", "--base", "--max-steps", "--steps", "--until", "--save-session", "--cycle-accurate", "--json", "--trace", "--source"]),
         (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
         (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
+        (&["bp", "list"], &["--session", "--symbols", "--json"]),
         (&["mem", "read"], &["--session", "--arch", "--addr", "--len", "--width", "--out", "--json"]),
+        (&["mem", "region"], &["--session", "--arch", "--device", "--region", "--offset", "--len", "--json"]),
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--json"]),

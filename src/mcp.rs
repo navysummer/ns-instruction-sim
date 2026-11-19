@@ -691,6 +691,22 @@ fn tools() -> Vec<Tool> {
             handler: tool_mem_dump,
         },
         Tool {
+            name: "mem_region",
+            description: "转储设备命名内存区域（FLASH/RAM/PERIPHERALS），起始地址从目录解析。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("arch", arch.clone()),
+                    ("device", prop_str("内置设备键，如 stm32f103c8。")),
+                    ("region", prop_str("区域名（FLASH/RAM/PERIPHERALS）。")),
+                    ("offset", prop_num("区域起始偏移（字节）。")),
+                    ("len", prop_num("读取长度（字节；默认整个区域，上限 64 KiB）。")),
+                ],
+                &["device", "region"],
+            ),
+            handler: tool_mem_region,
+        },
+        Tool {
             name: "bp_set",
             description: "设置断点（按地址/符号/源码行号，支持条件/命中次数/一次性）。",
             schema: obj(
@@ -730,8 +746,14 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "bp_list",
-            description: "列出全部断点（地址/条件/命中次数/一次性/启用/实际命中）。",
-            schema: obj(&[("session", session.clone())], &["session"]),
+            description: "列出全部断点（地址/条件/命中次数/一次性/启用/实际命中，可选符号注释）。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("symbols", prop_bool("用 ELF 符号表注释断点地址。")),
+                ],
+                &["session"],
+            ),
             handler: tool_bp_list,
         },
         Tool {
@@ -1684,6 +1706,42 @@ fn tool_mem_load(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
     })
 }
 
+/// Dump a named device memory region (`mem region`).
+fn tool_mem_region(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let device = s(args, "device").ok_or_else(|| anyhow::anyhow!("缺少 device"))?;
+    let region = s(args, "region").ok_or_else(|| anyhow::anyhow!("缺少 region"))?;
+    let regions = ns_device::memory_map(&device);
+    let reg = regions
+        .iter()
+        .find(|r| r.name.eq_ignore_ascii_case(&region))
+        .ok_or_else(|| {
+            let names: Vec<&str> = regions.iter().map(|r| r.name.as_str()).collect();
+            anyhow::anyhow!("未知区域 {region}（可用: {}）", names.join("/"))
+        })?;
+    let offset = u(args, "offset").unwrap_or(0) as usize;
+    if offset as u64 >= reg.size {
+        bail!("偏移 {offset} 超出区域 {} 大小 {}", reg.name, reg.size);
+    }
+    let max = (reg.size - offset as u64) as usize;
+    let count = u(args, "len").map(|v| v as usize).unwrap_or(max).min(max).min(64 * 1024);
+    let start = (reg.start as u32).wrapping_add(offset as u32);
+    with_sim(server, args, false, |sim, _, _| {
+        let mut bytes = Vec::with_capacity(count);
+        for i in 0..count {
+            bytes.push(read_mem_byte(sim, start.wrapping_add(i as u32)));
+        }
+        Ok(json!({
+            "device": device,
+            "region": reg.name,
+            "start": start,
+            "size": reg.size,
+            "offset": offset,
+            "len": count,
+            "bytes": bytes,
+        }))
+    })
+}
+
 fn tool_mem_dump(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let addr_num = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
     let len = u(args, "len").unwrap_or(64) as usize;
@@ -1840,10 +1898,19 @@ fn tool_bp_clear(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
 
 fn tool_bp_list(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     with_sim(server, args, false, |sim, _, _| {
+        let annotate = b(args, "symbols").unwrap_or(false);
         let items: Vec<_> = sim
             .breakpoints
             .iter()
             .map(|bp| {
+                let symbol = if annotate {
+                    sim.symbols
+                        .iter()
+                        .find(|x| x.address == bp.address)
+                        .map(|x| x.name.clone())
+                } else {
+                    None
+                };
                 json!({
                     "address": bp.address,
                     "condition": bp.condition,
@@ -1851,6 +1918,7 @@ fn tool_bp_list(server: &McpServer, args: &Map<String, Value>) -> Result<Value> 
                     "once": bp.once,
                     "enabled": bp.enabled,
                     "hits": bp.hits(),
+                    "symbol": symbol,
                 })
             })
             .collect();

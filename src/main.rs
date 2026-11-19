@@ -568,6 +568,30 @@ enum MemSub {
         #[arg(long)]
         json: bool,
     },
+    /// 转储设备命名内存区域（FLASH/RAM/PERIPHERALS），起始地址从目录解析。
+    Region {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 目标架构（无会话时使用）。
+        #[arg(short, long)]
+        arch: Option<String>,
+        /// 内置设备键（如 stm32f103c8）。
+        #[arg(long)]
+        device: String,
+        /// 区域名（FLASH/RAM/PERIPHERALS，大小写不敏感）。
+        #[arg(long)]
+        region: String,
+        /// 区域起始偏移（字节）。
+        #[arg(long, default_value = "0")]
+        offset: usize,
+        /// 读取长度（字节；默认整个区域，上限 64 KiB）。
+        #[arg(long)]
+        len: Option<usize>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -583,6 +607,9 @@ enum BpSub {
         /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 用 ELF 符号表注释断点地址（找到时追加符号名）。
+        #[arg(long)]
+        symbols: bool,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -2662,14 +2689,64 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
+        MemSub::Region { session, arch, device, region, offset, len, json } => {
+            let regions = ns_device::memory_map(&device);
+            let reg = regions
+                .iter()
+                .find(|r| r.name.eq_ignore_ascii_case(&region))
+                .ok_or_else(|| {
+                    let names: Vec<&str> = regions.iter().map(|r| r.name.as_str()).collect();
+                    anyhow::anyhow!("未知区域 {region}（可用: {}）", names.join("/"))
+                })?;
+            if offset as u64 >= reg.size {
+                bail!("偏移 {offset} 超出区域 {} 大小 {}", reg.name, reg.size);
+            }
+            let max = (reg.size - offset as u64) as usize;
+            let count = len.unwrap_or(max).min(max).min(64 * 1024);
+            let (sim, _, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
+            let start = (reg.start as u32).wrapping_add(offset as u32);
+            let mut bytes = Vec::with_capacity(count);
+            for i in 0..count {
+                bytes.push(read_mem_byte(&sim, start.wrapping_add(i as u32)));
+            }
+            if json {
+                print_json(&serde_json::json!({
+                    "device": device,
+                    "region": reg.name,
+                    "start": start,
+                    "size": reg.size,
+                    "offset": offset,
+                    "len": count,
+                    "bytes": bytes,
+                }))?;
+            } else {
+                println!(
+                    "{} @ 0x{:08x}（区域 {}，大小 {} 字节，偏移 {}）",
+                    reg.name, start, reg.name, reg.size, offset
+                );
+                print!("{}", hex_dump(start, &bytes));
+            }
+            Ok(())
+        }
+
     }
 }
 
 fn cmd_bp(sub: BpSub) -> Result<()> {
     match sub {
-        BpSub::List { session, json } => {
+        BpSub::List { session, symbols, json } => {
             let s = Session::load(&session)?;
             let sim = s.apply(None).ok();
+            let sym_for = |addr: u32| -> Option<String> {
+                if !symbols {
+                    return None;
+                }
+                sim.as_ref()?
+                    .symbols
+                    .iter()
+                    .find(|x| x.address == addr)
+                    .map(|x| x.name.clone())
+            };
             if json {
                 let items: Vec<_> = s
                     .breakpoints
@@ -2682,6 +2759,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                             "once": bp.once,
                             "enabled": bp.enabled,
                             "hits": sim.as_ref().map(|sim| sim.breakpoint_hits(bp.address)).unwrap_or(0),
+                            "symbol": sym_for(bp.address),
                         })
                     })
                     .collect();
@@ -2713,7 +2791,10 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                         .as_ref()
                         .map(|sim| sim.breakpoint_hits(bp.address))
                         .unwrap_or(0);
-                    println!("0x{:08x}{extra}  hits={hits}", bp.address);
+                    let sym = sym_for(bp.address)
+                        .map(|n| format!("  {n}"))
+                        .unwrap_or_default();
+                    println!("0x{:08x}{extra}  hits={hits}{sym}", bp.address);
                 }
             }
             Ok(())

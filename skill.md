@@ -116,6 +116,8 @@ ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pa
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad --json --out search.json
 ns-instruction-sim mem dump --session s.json --addr 0x20000000 --len 64 --name bootloader --format c
 ns-instruction-sim mem dump --session s.json --addr 0x20000000 --len 64 --format c --json
+ns-instruction-sim mem region --session s.json --device stm32f103c8 --region FLASH --len 16
+ns-instruction-sim mem region --session s.json --device stm32f103c8 --region RAM --offset 0x100 --len 32 --json
 
 # 断点
 ns-instruction-sim bp set --session s.json --addr 0x80000004
@@ -126,6 +128,8 @@ ns-instruction-sim bp set --session s.json --line main.c:10
 ns-instruction-sim bp set --session s.json --addr 0x80000004 --json
 ns-instruction-sim bp modify --session s.json --addr 0x80000004 --condition "x1 == 5" --hit-count 3
 ns-instruction-sim bp list --session s.json
+ns-instruction-sim bp list --session s.json --symbols
+ns-instruction-sim bp list --session s.json --symbols --json
 ns-instruction-sim bp clear --session s.json --addr 0x80000004
 ns-instruction-sim bp disable --session s.json --addr 0x80000004
 ns-instruction-sim bp enable --session s.json --addr 0x80000004
