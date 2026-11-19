@@ -15,6 +15,7 @@
 //! ns-instruction-sim disasm --arch riscv --addr 0x80000000 --count 8
 //! ```
 
+mod mcp;
 mod session;
 mod sim;
 
@@ -94,12 +95,19 @@ enum Command {
     Watchdog(WatchdogArgs),
     /// 读写 RISC-V 控制状态寄存器（CSR）。
     Csr(CsrArgs),
+    /// 启动 MCP（Model Context Protocol）stdio 服务器，供大模型通过工具调用操作仿真器。
+    Mcp {
+        /// 默认会话文件路径（JSON）；MCP 工具未显式传入 `session` 时使用。
+        #[arg(short, long)]
+        session: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
 enum ArchSub {
     /// 列出所有支持的架构与设备映射。
     List {
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -109,12 +117,14 @@ enum ArchSub {
 enum DeviceSub {
     /// 列出内置设备目录。
     List {
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 显示设备信息（内存映射、核心）。
     Info {
         device: String,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -125,6 +135,7 @@ enum DeviceSub {
         /// 写入文件路径（缺省打印到 stdout）。
         #[arg(short, long)]
         out: Option<PathBuf>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -135,6 +146,7 @@ enum DeviceSub {
         /// 写入文件路径（缺省打印到 stdout）。
         #[arg(short, long)]
         out: Option<PathBuf>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -151,6 +163,7 @@ enum DeviceSub {
         /// 写入文件路径（缺省打印到 stdout）。
         #[arg(short, long)]
         out: Option<PathBuf>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -168,6 +181,7 @@ enum DeviceSub {
         /// 只看指定寄存器（按名称，需配合 --peripheral）。
         #[arg(long)]
         register: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -240,6 +254,7 @@ struct StepArgs {
 
 #[derive(Args)]
 struct ContinueArgs {
+    /// 会话文件路径（JSON）。
     #[arg(short, long)]
     session: PathBuf,
     /// 运行到指定地址（临时断点，不持久化）。
@@ -272,20 +287,25 @@ struct RegArgs {
 enum RegSub {
     /// 列出所有寄存器。
     List {
+        /// 会话文件路径（JSON；不存在则新建临时会话）。
         #[arg(short, long)]
         session: Option<PathBuf>,
+        /// 目标架构（如 riscv/arm/mcs51/...；无会话时使用）。
         #[arg(short, long)]
         arch: Option<String>,
         /// 按名称子串筛选（大小写不敏感，如 `s` 或 `x1`）。
         #[arg(long)]
         filter: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 读取单个寄存器。
     Get {
+        /// 会话文件路径（JSON；不存在则新建临时会话）。
         #[arg(short, long)]
         session: Option<PathBuf>,
+        /// 目标架构（如 riscv/arm/mcs51/...；无会话时使用）。
         #[arg(short, long)]
         arch: Option<String>,
         /// 寄存器名（如 x1、a0、R3、SP）。位置参数或 --name。
@@ -294,11 +314,13 @@ enum RegSub {
         /// 寄存器名（--name 形式）。
         #[arg(long = "name", conflicts_with = "name")]
         name_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 写单个寄存器。
     Set {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 寄存器名（位置参数或 --name）。
@@ -313,6 +335,7 @@ enum RegSub {
         /// 值（--value 形式）。
         #[arg(long = "value", conflicts_with = "value")]
         value_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -328,6 +351,7 @@ struct MemArgs {
 enum MemSub {
     /// 读取内存（hex dump 或原始字节）。
     Read {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 目标架构（无会话时使用，默认 riscv）。
@@ -354,6 +378,7 @@ enum MemSub {
     },
     /// 写内存（字节或从文件）。
     Write {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 目标架构（无会话时使用，默认 riscv）。
@@ -377,11 +402,13 @@ enum MemSub {
         /// 从二进制文件读取字节写入。
         #[arg(long)]
         file: Option<PathBuf>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 填充内存区域。
     Fill {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 目标架构（无会话时使用，默认 riscv）。
@@ -402,11 +429,13 @@ enum MemSub {
         /// 填充字节（--value 形式）。
         #[arg(long = "value", conflicts_with = "value")]
         value_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 在内存区域搜索字节模式（找到所有偏移）。
     Search {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 目标架构（无会话时使用，默认 riscv）。
@@ -427,24 +456,31 @@ enum MemSub {
         /// 将搜索结果写入文件（缺省打印到 stdout）。
         #[arg(long)]
         out: Option<PathBuf>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 加载固件到内存（等价于 run 的加载步骤，不执行）。
     Load {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 固件文件（ELF / Intel HEX / BIN）。
         #[arg(short, long)]
         firmware: PathBuf,
+        /// 目标架构（如 riscv/arm/mcs51/...；无会话时使用）。
         #[arg(short, long)]
         arch: Option<String>,
+        /// 加载基址（十六进制或十进制）。
         #[arg(long, default_value = "0")]
         base: String,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 导出内存区域（C 数组或十六进制文本）。
     Dump {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 目标架构（无会话时使用，默认 riscv）。
@@ -484,13 +520,16 @@ struct BpArgs {
 enum BpSub {
     /// 列出断点。
     List {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 设置断点。
     Set {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 地址（位置参数或 --addr）。
@@ -514,11 +553,13 @@ enum BpSub {
         /// 一次性断点：命中后自动清除。
         #[arg(long)]
         once: bool,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 清除断点。
     Clear {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 地址（位置参数或 --addr）。
@@ -527,18 +568,22 @@ enum BpSub {
         /// 地址（--addr 形式）。
         #[arg(long = "addr", conflicts_with = "addr")]
         addr_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 清除全部断点。
     ClearAll {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 启用断点。
     Enable {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 地址（位置参数或 --addr）。
@@ -547,11 +592,13 @@ enum BpSub {
         /// 地址（--addr 形式）。
         #[arg(long = "addr", conflicts_with = "addr")]
         addr_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 禁用断点（保留在列表中但不再暂停）。
     Disable {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 地址（位置参数或 --addr）。
@@ -560,6 +607,7 @@ enum BpSub {
         /// 地址（--addr 形式）。
         #[arg(long = "addr", conflicts_with = "addr")]
         addr_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -567,8 +615,10 @@ enum BpSub {
 
 #[derive(Args)]
 struct DisasmArgs {
+    /// 会话文件路径（JSON；不存在则新建临时会话）。
     #[arg(short, long)]
     session: Option<PathBuf>,
+    /// 目标架构（如 riscv/arm/mcs51/...；无会话时使用）。
     #[arg(short, long)]
     arch: Option<String>,
     /// 起始地址（默认当前 PC）。
@@ -593,6 +643,7 @@ struct DisasmArgs {
 
 #[derive(Args)]
 struct ResetArgs {
+    /// 会话文件路径（JSON）。
     #[arg(short, long)]
     session: PathBuf,
     /// 重置 PC 到入口/基址。
@@ -605,12 +656,16 @@ struct ResetArgs {
 
 #[derive(Args)]
 struct StateArgs {
+    /// 会话文件路径（JSON；不存在则新建临时会话）。
     #[arg(short, long)]
     session: Option<PathBuf>,
+    /// 目标架构（如 riscv/arm/mcs51/...；无会话时使用）。
     #[arg(short, long)]
     arch: Option<String>,
+    /// 固件文件（ELF / Intel HEX / BIN）。
     #[arg(long)]
     firmware: Option<PathBuf>,
+    /// 加载基址（十六进制或十进制）。
     #[arg(long, default_value = "0")]
     base: String,
     /// 输出 JSON（默认）。
@@ -634,13 +689,16 @@ struct PeriphArgs {
 enum PeriphSub {
     /// 显示虚拟外设状态（UART 输出、GPIO、定时器、看门狗）。
     Status {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 配置虚拟外设基址（UART/GPIO，可选）。
     Config {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// UART 寄存器基址（默认 0x4000_0000）。
@@ -649,11 +707,13 @@ enum PeriphSub {
         /// GPIO 寄存器基址（默认 0x4000_2000）。
         #[arg(long)]
         gpio_base: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 从 SVD 文件或内置设备加载芯片寄存器（地址 -> 复位值）到仿真器。
     SvdLoad {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// SVD 文件路径（与 --device 二选一）。
@@ -668,21 +728,25 @@ enum PeriphSub {
         /// 覆盖既有寄存器值（默认 false：只写入缺失的）。
         #[arg(long)]
         force: bool,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 读取 UART 输出字节数 / 清空。
     Uart {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 清空输出缓冲。
         #[arg(long)]
         clear: bool,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 设置 GPIO 输入引脚值。
     Gpio {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 引脚号 0-31（位置参数或 --pin）。
@@ -697,11 +761,13 @@ enum PeriphSub {
         /// 引脚值（--value 形式）。
         #[arg(long = "value", conflicts_with = "value")]
         value_flag: Option<u32>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 查询/配置虚拟定时器。
     Timer {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 定时器索引（0..8）。
@@ -716,11 +782,13 @@ enum PeriphSub {
         /// 自动重载值（可选，仅配置时使用）。
         #[arg(long)]
         auto_reload: Option<u32>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 读取外设内存映射寄存器（触发外设读）。
     RegRead {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 外设寄存器地址（与 --name 二选一）。
@@ -735,21 +803,25 @@ enum PeriphSub {
         /// 读取字节数（默认 4）。
         #[arg(long, default_value = "4")]
         len: usize,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 列出会话中已加载（SVD）的外设寄存器。
     RegList {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 用内置设备键注释寄存器名（如 stm32f103c8，可选）。
         #[arg(long)]
         device: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 写入外设内存映射寄存器（触发外设写，如 UART 输出、TIMER 控制）。
     RegWrite {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 外设寄存器地址（与 --name 二选一）。
@@ -764,11 +836,13 @@ enum PeriphSub {
         /// 要写入的字节（空格分隔，支持 0xNN）。
         #[arg(long, value_delimiter = ' ', num_args = 1..)]
         bytes: Vec<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 读取外设寄存器的命名位域（SVD field）。
     FieldGet {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 内置设备键（如 stm32f103c8）。
@@ -783,11 +857,13 @@ enum PeriphSub {
         /// 位域名（如 CEN）。
         #[arg(long)]
         field: String,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 写外设寄存器的命名位域（SVD field），保留其他位。
     FieldSet {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 内置设备键（如 stm32f103c8）。
@@ -805,6 +881,7 @@ enum PeriphSub {
         /// 字段值（十进制/十六进制）。
         #[arg(long)]
         value: String,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -820,40 +897,49 @@ struct SymbolArgs {
 enum SymbolSub {
     /// 列出 ELF 符号表（名称/地址/大小）。
     List {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 按名称子串过滤（大小写不敏感）。
         #[arg(long)]
         filter: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 查询地址处最接近的符号。
     At {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 地址（位置参数或 --addr）。
         #[arg(index = 1)]
         addr: Option<String>,
+        /// 地址（--addr 形式，十六进制或十进制）。
         #[arg(long = "addr", conflicts_with = "addr")]
         addr_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 地址 → (源文件, 行号) 映射。
     Line {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 地址（位置参数或 --addr）。
         #[arg(index = 1)]
         addr: Option<String>,
+        /// 地址（--addr 形式，十六进制或十进制）。
         #[arg(long = "addr", conflicts_with = "addr")]
         addr_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// (源文件, 行号) → 地址 映射。
     Addr {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 源文件索引（0 基）。
@@ -862,6 +948,7 @@ enum SymbolSub {
         /// 源行号（1 基）。
         #[arg(long)]
         line: u32,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -877,30 +964,37 @@ struct CycleArgs {
 enum CycleSub {
     /// 读取当前周期计数。
     Get {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 估算指定地址的指令周期数。
     Estimate {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 指令地址（位置参数或 --addr）。
         #[arg(index = 1)]
         addr: Option<String>,
+        /// 地址（--addr 形式，十六进制或十进制）。
         #[arg(long = "addr", conflicts_with = "addr")]
         addr_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 推进外设 N 个核心周期（不执行指令）。
     Tick {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 周期数（默认 1）。
         #[arg(long, default_value = "1")]
         cycles: u64,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -916,32 +1010,40 @@ struct InterruptArgs {
 enum InterruptSub {
     /// 触发一次中断（需要 mstatus.MIE 且 mie 对应位使能）。
     Take {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 查询当前挂起/使能的中断。
     Pending {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 设置/清除外设中断线。
     Set {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 中断线 0..15（位置参数或 --line）。
         #[arg(index = 1)]
         line: Option<usize>,
+        /// 中断线（--line 形式）。
         #[arg(long = "line", conflicts_with = "line")]
         line_flag: Option<usize>,
         /// 置位/清除（位置参数或 --value，默认 1）。
         #[arg(index = 2)]
         value: Option<u32>,
+        /// 值（--value 形式，十六进制或十进制）。
         #[arg(long = "value", conflicts_with = "value")]
         value_flag: Option<u32>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -957,22 +1059,28 @@ struct WatchdogArgs {
 enum WatchdogSub {
     /// 查询看门狗状态。
     Status {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 喂狗（写 0xAA55 重载超时）。
     Feed {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 配置看门狗（启用/禁用、超时周期、基址）。
     Config {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 启用/禁用（true/false）。
         #[arg(long)]
         enabled: Option<bool>,
         /// 超时周期数（0 = 禁用）。
@@ -981,16 +1089,19 @@ enum WatchdogSub {
         /// 寄存器基址（默认 0x4000_0000）。
         #[arg(long)]
         base: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 强制触发看门狗复位（记录复位事件并复位核心）。
     Reset {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// 复位后 PC（默认当前 PC）。
         #[arg(long)]
         entry: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -1006,35 +1117,46 @@ struct CsrArgs {
 enum CsrSub {
     /// 列出全部 CSR（RISC-V）。
     List {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 读取单个 CSR。
     Get {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
         /// CSR 名（mstatus/mtvec/mepc/mcause/mie/mhartid）。
         #[arg(index = 1)]
         name: Option<String>,
+        /// 名称（--name 形式）。
         #[arg(long = "name", conflicts_with = "name")]
         name_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
     /// 写入单个 CSR。
     Set {
+        /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 名称（位置参数或 --name）。
         #[arg(index = 1)]
         name: Option<String>,
+        /// 值（位置参数或 --value，十六进制或十进制）。
         #[arg(index = 2)]
         value: Option<String>,
+        /// 名称（--name 形式）。
         #[arg(long = "name", conflicts_with = "name")]
         name_flag: Option<String>,
+        /// 值（--value 形式，十六进制或十进制）。
         #[arg(long = "value", conflicts_with = "value")]
         value_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
     },
@@ -1099,6 +1221,7 @@ fn real_main() -> Result<()> {
         Command::Interrupt(InterruptArgs { sub }) => cmd_interrupt(sub),
         Command::Watchdog(WatchdogArgs { sub }) => cmd_watchdog(sub),
         Command::Csr(CsrArgs { sub }) => cmd_csr(sub),
+        Command::Mcp { session } => mcp::run(session),
     }
 }
 
@@ -1171,7 +1294,7 @@ fn fmt_step_result(result: StepResult) -> &'static str {
 
 /// Ensure a session exists, creating it from the given simulator.
 /// Load an existing session into a simulator, or create a fresh one.
-fn load_or_create(
+pub(crate) fn load_or_create(
     session_path: Option<&Path>,
     arch_arg: Option<&str>,
     firmware: Option<&Path>,
@@ -1208,7 +1331,7 @@ fn load_or_create(
 
 /// Common state output for `run`/`step`/`continue`.
 #[derive(serde::Serialize)]
-struct StateOutput {
+pub(crate) struct StateOutput {
     arch: String,
     pc: u32,
     #[serde(rename = "cycleCount")]
@@ -1326,7 +1449,7 @@ fn csr_json(sim: &Simulator) -> serde_json::Value {
     })
 }
 
-fn state_output(sim: &Simulator, result: StepResult, firmware: Option<&FirmwareState>) -> StateOutput {
+pub(crate) fn state_output(sim: &Simulator, result: StepResult, firmware: Option<&FirmwareState>) -> StateOutput {
     let mut registers = BTreeMap::new();
     let count = ns_sim::reg_count_for(sim.arch);
     for i in 0..count {
@@ -2467,7 +2590,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
 
 /// Format a `; file:line` source annotation for `address`, using the DWARF
 /// line table and source files attached to the simulator (empty when none).
-fn source_annotation(sim: &Simulator, address: u32) -> String {
+pub(crate) fn source_annotation(sim: &Simulator, address: u32) -> String {
     sim.line_for_address(address)
         .and_then(|(file, line)| sim.source_files.get(file).map(|f| (f, line)))
         .map(|(f, line)| format!("  ; {f}:{line}"))
@@ -2657,7 +2780,7 @@ fn select_json_fields(
 
 /// Resolve a peripheral-register address from either `--addr` or
 /// `--name PERIPH.REG` (with `--device` selecting the built-in SVD).
-fn resolve_reg_address(
+pub(crate) fn resolve_reg_address(
     addr: Option<&str>,
     name: Option<&str>,
     device: Option<&str>,
@@ -2688,7 +2811,7 @@ fn resolve_reg_address(
 }
 
 /// Resolve a named SVD field to its register address, bit offset and width.
-fn resolve_reg_field(
+pub(crate) fn resolve_reg_field(
     device: &str,
     peripheral: &str,
     register: &str,

@@ -81,6 +81,29 @@ ns-instruction-sim periph reg-list --session s.json --device stm32f103c8
 支持 12 种架构：RISC-V、ARM Cortex-M、MCS-51、MCS-251、C166、Xtensa、AVR、MSP430、V850、STM8、
 RX、RL78。详见 [AGENTS.md](AGENTS.md)（开发规范）与 [skill.md](skill.md)（操作指南）。
 
+## MCP（大模型操作仿真）
+
+`ns-instruction-sim mcp [--session s.json]` 启动 MCP stdio 服务器（JSON-RPC 2.0 +
+`Content-Length` 帧）。大模型或任何 MCP 客户端可 `tools/list` 获得 ≥50 个工具（架构/设备/会话/
+状态/步进/寄存器/内存/断点/反汇编/周期/中断/外设/符号/看门狗/CSR），再 `tools/call` 驱动
+指令级仿真；状态通过会话文件跨工具调用持久化。详见 `AGENTS.md` §3.4 与 `skill.md` §4.1。
+
+```bash
+# 启动（默认会话文件可选）
+ns-instruction-sim mcp --session s.json
+```
+
+## 帮助
+
+每个命令与子命令、每个参数都有 `--help` / `-h` 帮助文本，任何层级均可查看用法：
+
+```bash
+ns-instruction-sim --help
+ns-instruction-sim run --help
+ns-instruction-sim bp set --help
+ns-instruction-sim mcp --help
+```
+
 ## 构建与测试
 
 ```bash

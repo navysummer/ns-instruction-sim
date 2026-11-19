@@ -6321,3 +6321,233 @@ fn disasm_thumb2_mul_word() {
         ],
     );
 }
+
+// ---------------------------------------------------------------------------
+// MCP (Model Context Protocol) stdio server tests
+// ---------------------------------------------------------------------------
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+
+/// A tiny MCP client that speaks JSON-RPC 2.0 over stdio with the
+/// `Content-Length` framing the server expects.
+struct McpClient {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl McpClient {
+    fn start() -> McpClient {
+        let mut child = Command::new(bin())
+            .arg("mcp")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn mcp");
+        let stdin = child.stdin.take().unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        McpClient { child, stdin, stdout }
+    }
+
+    fn send(&mut self, value: serde_json::Value) {
+        let data = serde_json::to_vec(&value).unwrap();
+        write!(self.stdin, "Content-Length: {}\r\n\r\n", data.len()).unwrap();
+        self.stdin.write_all(&data).unwrap();
+        self.stdin.flush().unwrap();
+    }
+
+    fn recv(&mut self) -> serde_json::Value {
+        let mut content_length: Option<usize> = None;
+        loop {
+            let mut line = String::new();
+            let n = self.stdout.read_line(&mut line).unwrap();
+            assert!(n > 0, "MCP server closed stdout");
+            let trimmed = line.trim_end();
+            if trimmed.is_empty() {
+                break;
+            }
+            if let Some(v) = trimmed.strip_prefix("Content-Length:") {
+                content_length = Some(v.trim().parse().unwrap());
+            }
+        }
+        let len = content_length.expect("missing Content-Length");
+        let mut buf = vec![0u8; len];
+        self.stdout.read_exact(&mut buf).unwrap();
+        serde_json::from_slice(&buf).unwrap()
+    }
+
+    fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(100);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.send(serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
+        self.recv()
+    }
+
+    fn call_tool(&mut self, name: &str, args: serde_json::Value) -> serde_json::Value {
+        let resp = self.request("tools/call", serde_json::json!({ "name": name, "arguments": args }));
+        resp["result"].clone()
+    }
+
+    fn close(self) {
+        let McpClient { mut child, mut stdin, stdout } = self;
+        let _ = stdin.flush();
+        drop(stdin);
+        drop(stdout);
+        child.wait().expect("wait mcp");
+    }
+}
+
+#[test]
+fn mcp_handshake_and_list_tools() {
+    let mut client = McpClient::start();
+    let init = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    assert_eq!(init["result"]["serverInfo"]["name"], "ns-instruction-sim");
+    assert_eq!(init["result"]["capabilities"]["tools"], serde_json::json!({}));
+
+    let tools = client.request("tools/list", serde_json::json!({}));
+    let list = tools["result"]["tools"].as_array().unwrap();
+    assert!(list.len() >= 50, "expected >= 50 tools, got {}", list.len());
+    let names: Vec<&str> = list
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    for expected in [
+        "arch_list", "device_list", "session_create", "state", "step", "step_over", "step_out",
+        "run", "continue", "reg_list", "reg_get", "reg_set", "mem_read", "mem_write", "mem_fill",
+        "mem_search", "mem_load", "mem_dump", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
+        "cycle_get", "interrupt_take", "periph_status", "periph_reg_read", "periph_reg_write",
+        "symbol_list", "watchdog_status", "csr_list",
+    ] {
+        assert!(names.contains(&expected), "missing MCP tool: {expected}");
+    }
+    // Every tool must expose an inputSchema object (help surfaced to the LLM).
+    for t in list {
+        assert!(t["inputSchema"].is_object(), "tool {} missing inputSchema", t["name"]);
+        assert!(t["description"].as_str().is_some(), "tool {} missing description", t["name"]);
+    }
+    client.close();
+}
+
+#[test]
+fn mcp_call_step_and_state() {
+    let sess = tmpdir().join(format!("mcp-step-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    client.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+
+    // Create a RISC-V session.
+    let r = client.call_tool("session_create", serde_json::json!({ "session": sess, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create failed: {}", r);
+    assert_eq!(r["structuredContent"]["arch"], "riscv");
+
+    // Write a NOP (addi x0, x0, 0) at the entry address.
+    let r = client.call_tool(
+        "mem_write",
+        serde_json::json!({ "session": sess, "addr": "0x80000000", "bytes": ["0x13", "0x00", "0x00", "0x00"] }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write failed: {}", r);
+
+    // Single step and verify the PC advanced by 4.
+    let r = client.call_tool("step", serde_json::json!({ "session": sess }));
+    assert!(!r["isError"].as_bool().unwrap(), "step failed: {}", r);
+    assert_eq!(r["structuredContent"]["pc"], 0x8000_0004u64);
+    assert_eq!(r["structuredContent"]["cycleCount"], 1u64);
+
+    // Full state read-back.
+    let r = client.call_tool("state", serde_json::json!({ "session": sess }));
+    assert!(!r["isError"].as_bool().unwrap(), "state failed: {}", r);
+    assert_eq!(r["structuredContent"]["pc"], 0x8000_0004u64);
+    assert!(r["structuredContent"]["registers"].is_object());
+
+    // Register write/read round-trip.
+    let r = client.call_tool("reg_set", serde_json::json!({ "session": sess, "name": "x1", "value": "0x1234" }));
+    assert!(!r["isError"].as_bool().unwrap(), "reg_set failed: {}", r);
+    let r = client.call_tool("reg_get", serde_json::json!({ "session": sess, "name": "x1" }));
+    assert_eq!(r["structuredContent"]["value"], 0x1234u64);
+
+    // Breakpoint management.
+    let r = client.call_tool("bp_set", serde_json::json!({ "session": sess, "addr": "0x80000008" }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_set failed: {}", r);
+    let r = client.call_tool("bp_list", serde_json::json!({ "session": sess }));
+    assert_eq!(r["structuredContent"]["breakpoints"].as_array().unwrap().len(), 1);
+
+    // Disassembly.
+    let r = client.call_tool("disasm", serde_json::json!({ "session": sess, "addr": "0x80000000", "count": 2 }));
+    assert!(!r["isError"].as_bool().unwrap(), "disasm failed: {}", r);
+    let insns = r["structuredContent"]["instructions"].as_array().unwrap();
+    assert_eq!(insns.len(), 2);
+
+    // An error tool call surfaces isError, not a JSON-RPC error.
+    let r = client.call_tool("reg_set", serde_json::json!({ "session": sess, "name": "bogus", "value": "1" }));
+    assert!(r["isError"].as_bool().unwrap());
+    client.close();
+}
+
+#[test]
+fn help_every_command() {
+    let commands: &[&[&str]] = &[
+        &["version"],
+        &["arch", "list"],
+        &["device", "list"], &["device", "info"], &["device", "linker"],
+        &["device", "startup"], &["device", "init"], &["device", "svd"],
+        &["run"], &["step"], &["step-over"], &["step-out"], &["continue"],
+        &["reg", "list"], &["reg", "get"], &["reg", "set"],
+        &["mem", "read"], &["mem", "write"], &["mem", "fill"], &["mem", "search"],
+        &["mem", "load"], &["mem", "dump"],
+        &["bp", "list"], &["bp", "set"], &["bp", "clear"], &["bp", "clear-all"],
+        &["bp", "enable"], &["bp", "disable"],
+        &["disasm"], &["reset"], &["state"],
+        &["periph", "status"], &["periph", "config"], &["periph", "svd-load"],
+        &["periph", "uart"], &["periph", "gpio"], &["periph", "timer"],
+        &["periph", "reg-read"], &["periph", "reg-list"], &["periph", "reg-write"],
+        &["periph", "field-get"], &["periph", "field-set"],
+        &["symbol", "list"], &["symbol", "at"], &["symbol", "line"], &["symbol", "addr"],
+        &["cycle", "get"], &["cycle", "estimate"], &["cycle", "tick"],
+        &["interrupt", "take"], &["interrupt", "pending"], &["interrupt", "set"],
+        &["watchdog", "status"], &["watchdog", "feed"], &["watchdog", "config"],
+        &["watchdog", "reset"],
+        &["csr", "list"], &["csr", "get"], &["csr", "set"],
+        &["mcp"],
+    ];
+    for flag in ["--help", "-h"] {
+        let out = Command::new(bin()).arg(flag).output().unwrap();
+        assert!(out.status.success(), "top-level {flag} failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    for args in commands {
+        for flag in ["--help", "-h"] {
+            let out = Command::new(bin()).args(*args).arg(flag).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{flag} failed for {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert!(text.contains("Usage:"), "no Usage for {args:?}");
+        }
+    }
+}
+
+#[test]
+fn help_every_param() {
+    // Every CLI argument must appear (with its help text) in `--help`.
+    let checks: &[(&[&str], &[&str])] = &[
+        (&["run"], &["--session", "--firmware", "--arch", "--base", "--max-steps", "--steps", "--until", "--save-session", "--cycle-accurate", "--json", "--trace", "--source"]),
+        (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
+        (&["mem", "read"], &["--session", "--arch", "--addr", "--len", "--width", "--out", "--json"]),
+        (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
+        (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
+        (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
+        (&["mcp"], &["--session"]),
+    ];
+    for (args, needles) in checks {
+        let out = Command::new(bin()).args(*args).arg("--help").output().unwrap();
+        assert!(out.status.success(), "help failed for {args:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        for needle in *needles {
+            assert!(text.contains(needle), "missing param {needle} in {args:?} help");
+        }
+    }
+}

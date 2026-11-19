@@ -128,6 +128,7 @@ ns-instruction-sim/
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
 | `watchdog` | `status` / `feed` / `config` / `reset` | 看门狗查询/喂狗/配置/强制复位 | `--enabled --timeout --base --entry --session --json` | 表/JSON |
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
+| `mcp` | — | 启动 MCP（Model Context Protocol）stdio 服务器，供大模型通过工具调用完整驱动仿真 | `--session`（默认会话文件） | JSON-RPC 2.0 / 工具结果 |
 
 ### 3.2 输出格式约定
 
@@ -151,6 +152,32 @@ ns-instruction-sim/
 - 无会话时可接受的命令必须提供 `--arch` 或 `--firmware` 以自举；需要既有会话的命令必须校验会话存在。
 - 错误路径必须如实返回错误（不 panic、不静默、不打印成功假象）。
 - 新功能必须在 `tests/cli.rs` 增加端到端用例，驱动真实二进制验证输出。
+
+### 3.4 MCP（Model Context Protocol）服务器
+
+`ns-instruction-sim mcp [--session default.json]` 在 stdin/stdout 上实现 JSON-RPC 2.0 的
+MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP 客户端）能通过工具调用
+完整驱动指令级仿真，无需逐个生成 CLI 进程。工具参数与结果复用 CLI 的 `--json` 字段约定。
+
+1. **握手**：客户端发送 `initialize`（`protocolVersion`），服务器返回
+   `protocolVersion`（`2024-11-05`）、`capabilities.tools` 与 `serverInfo`；随后客户端发送
+   `notifications/initialized`（无响应）。`ping` 返回空。
+2. **`tools/list`**：返回全部工具（≥50），每个工具含 `name`、`description`、`inputSchema`
+   （JSON Schema），`inputSchema` 为参数提供机器可读的帮助。
+3. **`tools/call`**：`{name, arguments}` → 成功返回
+   `{content:[{type:"text",text}], structuredContent, isError:false}`；工具内部错误返回
+   `{content:[{type:"text",text:"错误: ..."}], isError:true}`（不是 JSON-RPC 错误）。未知方法
+   返回 JSON-RPC `-32000` 错误。通知（无 `id`）不返回响应。
+4. **会话模型**：大多数工具以 `session` 参数指向 JSON 会话文件；未传时使用
+   `mcp --session` 的默认会话。每个修改状态的工具（step/run/mem/bp/periph/watchdog/csr/...）
+   在返回前将会话保存回磁盘，因此跨工具调用状态持续。`session_create`、`session_load`、
+   `session_save` 显式管理会话；`state` 读取完整快照。
+5. **工具覆盖**：`arch_list`、`device_list`、`device_info`、`session_create/load/save`、
+   `state`、`step`、`step_over`、`step_out`、`run`、`continue`、`reg_list/get/set`、
+   `mem_read/write/fill/search/load/dump`、`bp_set/clear/list/enable/disable/clear_all`、
+   `disasm`、`reset`、`cycle_get/estimate/tick`、`interrupt_take/pending/set`、
+   `periph_status/uart/gpio/timer/reg_read/reg_write/reg_list/field_get/field_set/svd_load`、
+   `symbol_list/at/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
 
 ---
 
@@ -554,6 +581,13 @@ done
 - `byte_opcode_disasm_matches_core`/`word_opcode_disasm_matches_core`：逐操作码枚举校验
   “反汇编占位符 ⟺ 核心停机”，确保执行内核支持的操作码族都有真实反汇编（MCS-51/80251/
   C166/STM8/RL78/AVR/MSP430/RX）。
+- `mcp_handshake_and_list_tools`：MCP stdio 握手（initialize）+ `tools/list` 返回 ≥50 个工具，
+  每个工具含 `name`/`description`/`inputSchema`，覆盖架构/设备/会话/状态/步进/寄存器/内存/断点/反汇编/周期/中断/外设/符号/看门狗/CSR。
+- `mcp_call_step_and_state`：MCP `session_create` → `mem_write` → `step`（PC+4、周期+1）→
+  `state`/`reg_set`/`reg_get`/`bp_set`/`bp_list`/`disasm` 完整往返，工具错误以 `isError:true` 返回。
+- `help_every_command`：每个命令与子命令（含 `mcp`）的 `--help` 与 `-h` 均退出 0 且含 `Usage:`。
+- `help_every_param`：`run`/`bp set`/`mem read`/`reg set`/`periph reg-write`/`watchdog config`/`mcp`
+  的 `--help` 包含每个参数的帮助文本（`--session`、`--firmware`、`--arch`、`--addr`、`--condition`、`--once` 等）。
 
 ### 5.2 反汇编宽度
 

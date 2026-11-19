@@ -187,6 +187,34 @@ ns-instruction-sim periph svd-load --session s.json --device stm32f103c8 --json
 ns-instruction-sim periph reg-list --session s.json --device stm32f103c8
 ```
 
+## 4.1 MCP 服务器（大模型驱动）
+
+`ns-instruction-sim mcp [--session default.json]` 在 stdin/stdout 上实现 MCP stdio 传输
+（JSON-RPC 2.0 + `Content-Length` 帧）。MCP 客户端 `initialize` → `tools/list` → `tools/call`
+驱动仿真；工具参数/结果复用 CLI 的 `--json` 字段约定，每个修改状态的工具会自动将会话保存回磁盘，
+因此跨工具调用状态持续。
+
+```python
+# Python 示例：创建 RISC-V 会话并单步一次
+import subprocess, json
+p = subprocess.Popen(["ns-instruction-sim", "mcp", "--session", "s.json"],
+                     stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+def rpc(method, params, i=[0]):
+    i[0] += 1
+    b = json.dumps({"jsonrpc": "2.0", "id": i[0], "method": method, "params": params}).encode()
+    p.stdin.write(b"Content-Length: %d\r\n\r\n" % len(b) + b); p.stdin.flush()
+    n = int(p.stdout.readline().strip().split(b":")[1]); p.stdout.readline()
+    return json.loads(p.stdout.read(n))
+rpc("initialize", {"protocolVersion": "2024-11-05"})
+rpc("tools/call", {"name": "session_create", "arguments": {"session": "s.json", "arch": "riscv"}})
+rpc("tools/call", {"name": "mem_write", "arguments": {"session": "s.json", "addr": "0x80000000", "bytes": ["0x13","0x00","0x00","0x00"]}})
+print(rpc("tools/call", {"name": "step", "arguments": {"session": "s.json"}})["result"]["structuredContent"]["pc"])
+```
+
+实现要点：`src/mcp.rs` 是独立模块；复用 `crate::load_or_create`/`state_output`/`resolve_reg_address`
+等 `pub(crate)` 助手，不复制核心逻辑。新增 MCP 工具时在 `tools()` 列表添加 `Tool { name, description,
+schema, handler }`，并在 `tests/cli.rs` 增加 `mcp_*` 端到端用例。
+
 ## 5. 新增子命令流程（必须遵循）
 
 1. **确认能力来源**：目标能力是否在 `crates/ns-sim`/`crates/ns-device` 已有 API。若无，先在
@@ -212,6 +240,6 @@ ns-instruction-sim periph reg-list --session s.json --device stm32f103c8
 
 1. `cargo build` 0 警告 0 错误；
 2. `cargo test` 全绿；
-3. 新增命令/功能有 `tests/cli.rs` 覆盖；
+3. 新增命令/功能有 `tests/cli.rs` 覆盖（含 `mcp_*`/`help_*` 端到端用例）；
 4. `AGENTS.md`、`README.md`、`skill.md` 与代码同步；
 5. 用真实二进制实测关键路径并确认输出符合契约。
