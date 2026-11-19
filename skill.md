@@ -198,6 +198,7 @@ ns-instruction-sim device memory-map stm32f103c8 --addr 0x40010000 --json
 
 # 反汇编落盘（清单文件）
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 64 --out listing.lst
+ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 64 --labels --json
 
 # 从 SVD 文件加载芯片寄存器（地址 -> 复位值）到仿真器，支持直读写与持久化
 ns-instruction-sim periph svd-load --session s.json --file crates/ns-device/src/svd/stm32f103c8.svd --json

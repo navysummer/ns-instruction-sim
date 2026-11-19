@@ -71,6 +71,7 @@ ns-instruction-sim trace --session s.json --steps 200 --out trace.json
 ns-instruction-sim coverage --session s.json --steps 2000 --json
 ns-instruction-sim profile --session s.json --steps 2000
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 64 --out listing.lst
+ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 64 --labels --json
 ns-instruction-sim session info --file s.json --json
 ns-instruction-sim session diff --a s.json --b s2.json --json
 

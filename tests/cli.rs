@@ -7018,6 +7018,80 @@ fn mcp_periph_reg_dump_tool() {
 }
 
 #[test]
+fn disasm_labels_annotate_symbols() {
+    let dir = tmpdir();
+    let elf = dir.join(format!("labels-{}.elf", std::process::id()));
+    let code = [0x93u8, 0x00, 0x10, 0x00, 0x13, 0x81, 0x20, 0x00]; // addi ra,zero,1; addi sp,ra,2
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    let elf = elf.to_str().unwrap();
+
+    let sess = dir.join(format!("labels-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let out = Command::new(bin())
+        .args(["state", "--arch", "riscv", "--firmware", elf, "--session", s])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // Human listing inserts a `label:` line at the symbol address.
+    let out = Command::new(bin())
+        .args(["disasm", "--session", s, "--addr", "0x80000000", "--count", "2", "--labels"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("main:"), "{text}");
+    assert!(text.contains("0x80000000:"), "{text}");
+
+    // JSON items carry the label only on the symbol's first instruction.
+    let out = Command::new(bin())
+        .args(["disasm", "--session", s, "--addr", "0x80000000", "--count", "2", "--labels", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["label"], "main");
+    assert!(json[1]["label"].is_null());
+
+    // `--out` writes the labelled listing to disk.
+    let lst = dir.join(format!("labels-{}.lst", std::process::id()));
+    let out = Command::new(bin())
+        .args(["disasm", "--session", s, "--addr", "0x80000000", "--count", "1", "--labels", "--out", lst.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(std::fs::read_to_string(&lst).unwrap().contains("main:"));
+}
+
+#[test]
+fn mcp_disasm_labels() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-labels-{}.elf", std::process::id()));
+    write_riscv_elf_with_symbol(&elf, &[0x93, 0x00, 0x10, 0x00, 0x13, 0x81, 0x20, 0x00], "main");
+    let sess = dir.join(format!("mcp-labels-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv", "firmware": elf.to_str().unwrap() }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+
+    // labels:true annotates the symbol address in the disassembly JSON.
+    let r = client.call_tool("disasm", serde_json::json!({ "session": s, "addr": "0x80000000", "count": 2, "labels": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "disasm labels: {}", r);
+    let items = &r["structuredContent"]["instructions"];
+    assert_eq!(items[0]["label"], "main");
+    assert!(items[1]["label"].is_null());
+
+    // Without labels the field is null for every instruction.
+    let r = client.call_tool("disasm", serde_json::json!({ "session": s, "addr": "0x80000000", "count": 2 }));
+    assert!(!r["isError"].as_bool().unwrap());
+    assert!(r["structuredContent"]["instructions"][0]["label"].is_null());
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
@@ -7336,6 +7410,7 @@ fn help_every_param() {
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
+        (&["disasm"], &["--session", "--arch", "--addr", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
         (&["mcp"], &["--session"]),

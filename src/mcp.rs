@@ -762,6 +762,7 @@ fn tools() -> Vec<Tool> {
                     ("arm_state", prop_str("ARM 状态：a32 或 thumb。")),
                     ("raw", prop_bool("是否包含原始字节。")),
                     ("source", prop_bool("是否标注来源 file:line。")),
+                    ("labels", prop_bool("是否在符号起始地址插入 名称: 标签。")),
                 ],
                 &[],
             ),
@@ -1887,16 +1888,31 @@ fn tool_disasm(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let count = u(args, "count").unwrap_or(8) as usize;
     let raw = b(args, "raw").unwrap_or(false);
     let source = b(args, "source").unwrap_or(false);
+    let labels = b(args, "labels").unwrap_or(false);
     let arm_state = match s(args, "arm_state").as_deref() {
         Some("a32") => true,
         Some("thumb") => false,
         _ => sim.arm_state(),
     };
     let read = |addr: u32| -> u8 { read_code_byte(&sim, addr) };
+    let label_map: std::collections::BTreeMap<u32, String> = {
+        let mut map: std::collections::BTreeMap<u32, String> = std::collections::BTreeMap::new();
+        if labels {
+            for s in &sim.symbols {
+                let entry = map.entry(s.address).or_default();
+                if !entry.is_empty() {
+                    entry.push_str(", ");
+                }
+                entry.push_str(&s.name);
+            }
+        }
+        map
+    };
     let mut items = Vec::new();
     for _ in 0..count {
         let width = ns_sim::instruction_size(arch, pc, &read, arm_state);
         let text = ns_sim::disassemble_one_state(arch, pc, &read, arm_state);
+        let label = label_map.get(&pc).cloned();
         let bytes: Vec<u8> = (0..width)
             .map(|i| read_code_byte(&sim, pc.wrapping_add(i as u32)))
             .collect();
@@ -1911,6 +1927,7 @@ fn tool_disasm(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
                 "text": text,
                 "bytes": bytes,
                 "source": src,
+                "label": label,
                 "armState": arm_state,
                 "raw": bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "),
             }));
@@ -1920,6 +1937,7 @@ fn tool_disasm(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
                 "text": text,
                 "bytes": bytes,
                 "source": src,
+                "label": label,
                 "armState": arm_state,
             }));
         }

@@ -120,7 +120,7 @@ ns-instruction-sim/
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` | 内存读/写/填充/搜索模式/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图） | `--addr --len --bytes --values --file --value --pattern --firmware --base --arch --name --format --width --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数） | `--addr --symbol --line --condition --hit-count --once --session --json` | 表/JSON |
-| `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/原始字节/JSON） | `--arch --addr --count --arm-state --source --raw --json --session` | 文本/JSON |
+| `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/原始字节/JSON） | `--arch --addr --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要） | `--session --arch --firmware --base --json --fields --summary` | 状态/JSON/摘要 |
 | `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载 | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --file --device --peripheral --register --field --force --session --json` | 表/JSON |
@@ -636,6 +636,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   0x44444444 读回 GPIOA.CRL、`--peripheral` 过滤、未知设备报错）。
 - `mcp_periph_reg_dump_tool`：MCP `periph_reg_dump` 返回 `count`/`registers`（含 `GPIOA.CRL`），
   `peripheral` 过滤与未知设备错误路径。
+- `disasm_labels_annotate_symbols`：`disasm --labels` 在符号起始地址插入 `名称:` 标签行，
+  JSON 项携带 `label`（仅符号首条指令非空）、`--out` 落盘含标签。
+- `mcp_disasm_labels`：MCP `disasm` 的 `labels: true` 在 `instructions[i].label` 标注符号地址，
+  缺省为 null。
 - `mcp_session_and_memory_map_tools`：MCP `session_info` / `session_diff` / `device_memory_map`
   工具端到端（含未知设备错误路径）与 `trace` 的 `out` 参数把轨迹写入文件并回报 `file`/`bytes`。
 - `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff`、`device memory-map`）的

@@ -711,6 +711,9 @@ struct DisasmArgs {
     /// 标注每行来源（file:line，来自 ELF 行表/符号回退）。
     #[arg(long)]
     source: bool,
+    /// 在符号起始地址处插入 `名称:` 标签行（来自 ELF 符号表）。
+    #[arg(long)]
+    labels: bool,
     /// 同时显示每条指令的原始字节（十六进制）。
     #[arg(long)]
     raw: bool,
@@ -2913,9 +2916,19 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
     let read = |addr: u32| -> u8 { read_code_byte(&sim, addr) };
     let mut items = Vec::new();
     let mut lines: Vec<String> = Vec::new();
+    // Symbol address -> comma-separated label names, for `--labels`.
+    let mut labels: BTreeMap<u32, String> = BTreeMap::new();
+    for s in &sim.symbols {
+        let entry = labels.entry(s.address).or_default();
+        if !entry.is_empty() {
+            entry.push_str(", ");
+        }
+        entry.push_str(&s.name);
+    }
     for _ in 0..args.count {
         let width = ns_sim::instruction_size(arch, pc, &read, arm_state);
         let text = ns_sim::disassemble_one_state(arch, pc, &read, arm_state);
+        let label = labels.get(&pc).cloned();
         let raw = if args.raw {
             let mut s = String::new();
             for i in 0..width {
@@ -2936,9 +2949,15 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
                     .map(|i| read_code_byte(&sim, pc.wrapping_add(i as u32)))
                     .collect::<Vec<_>>(),
                 "source": source_annotation(&sim, pc).trim().to_string(),
+                "label": label,
                 "armState": arm_state,
             }));
         } else if args.out.is_some() {
+            if args.labels {
+                if let Some(l) = &label {
+                    lines.push(format!("{l}:"));
+                }
+            }
             let line = if args.source {
                 format!("0x{pc:08x}: {text}{raw}  {}", source_annotation(&sim, pc))
             } else {
@@ -2946,9 +2965,19 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
             };
             lines.push(line);
         } else if args.source {
+            if args.labels {
+                if let Some(l) = &label {
+                    println!("{l}:");
+                }
+            }
             let src = source_annotation(&sim, pc);
             println!("0x{pc:08x}: {text}{raw}  {src}");
         } else {
+            if args.labels {
+                if let Some(l) = &label {
+                    println!("{l}:");
+                }
+            }
             println!("0x{pc:08x}: {text}{raw}");
         }
         pc = pc.wrapping_add(width);
