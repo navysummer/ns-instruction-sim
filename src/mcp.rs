@@ -630,16 +630,18 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "mem_fill",
-            description: "填充内存区域为指定字节。",
+            description: "填充内存区域为指定字节，或使用确定性伪随机字节（random+seed）。",
             schema: obj(
                 &[
                     ("session", session.clone()),
                     ("arch", arch.clone()),
                     ("addr", addr.clone()),
                     ("len", prop_num("长度（字节）。")),
-                    ("value", prop_str("填充字节（0-255）。")),
+                    ("value", prop_str("填充字节（0-255；与 random 互斥）。")),
+                    ("random", prop_bool("使用确定性伪随机字节填充。")),
+                    ("seed", prop_str("伪随机种子（默认固定常量）。")),
                 ],
-                &["addr", "len", "value"],
+                &["addr", "len"],
             ),
             handler: tool_mem_fill,
         },
@@ -758,6 +760,7 @@ fn tools() -> Vec<Tool> {
                     ("session", session.clone()),
                     ("arch", arch.clone()),
                     ("addr", addr.clone()),
+                    ("symbol", prop_str("按符号名起始（与 addr 互斥）。")),
                     ("count", prop_num("指令条数（默认 8）。")),
                     ("arm_state", prop_str("ARM 状态：a32 或 thumb。")),
                     ("raw", prop_bool("是否包含原始字节。")),
@@ -1593,16 +1596,47 @@ fn tool_mem_write(server: &McpServer, args: &Map<String, Value>) -> Result<Value
 fn tool_mem_fill(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let addr_num = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
     let len = u(args, "len").ok_or_else(|| anyhow::anyhow!("缺少 len"))? as usize;
-    let value = parse_num(&s(args, "value").ok_or_else(|| anyhow::anyhow!("缺少 value"))?)?;
-    if value > 0xff {
-        bail!("填充字节超出 0..=255: {value}");
-    }
-    let value_byte = value as u8;
-    with_sim(server, args, true, |sim, _, _| {
-        for i in 0..len {
-            write_mem_byte(sim, addr_num.wrapping_add(i as u32), value_byte);
+    let random = b(args, "random").unwrap_or(false);
+    let seed: Option<u64> = match s(args, "seed").as_deref() {
+        Some(seed_str) => Some(parse_num(seed_str)? as u64),
+        None => None,
+    };
+    let value_byte = if random {
+        // `--value` is ignored / optional under random; reject it to avoid
+        // ambiguity.
+        if s(args, "value").is_some() {
+            bail!("random 与 value 互斥");
         }
-        Ok(json!({ "address": addr_num, "len": len, "value": value_byte }))
+        0
+    } else {
+        let value = parse_num(&s(args, "value").ok_or_else(|| anyhow::anyhow!("缺少 value"))?)?;
+        if value > 0xff {
+            bail!("填充字节超出 0..=255: {value}");
+        }
+        value as u8
+    };
+    let seed_used = seed.unwrap_or(0x9E37_79B9);
+    with_sim(server, args, true, |sim, _, _| {
+        if random {
+            let mut st = seed_used;
+            for i in 0..len {
+                st ^= st << 13;
+                st ^= st >> 7;
+                st ^= st << 17;
+                write_mem_byte(sim, addr_num.wrapping_add(i as u32), (st >> 24) as u8);
+            }
+        } else {
+            for i in 0..len {
+                write_mem_byte(sim, addr_num.wrapping_add(i as u32), value_byte);
+            }
+        }
+        Ok(json!({
+            "address": addr_num,
+            "len": len,
+            "value": value_byte,
+            "random": random,
+            "seed": if random { Some(seed_used) } else { None },
+        }))
     })
 }
 
@@ -1885,6 +1919,14 @@ fn tool_disasm(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     } else {
         Simulator::for_arch(arch)?
     };
+    if let Some(sym) = s(args, "symbol") {
+        pc = sim
+            .symbols
+            .iter()
+            .find(|x| x.name.eq_ignore_ascii_case(&sym))
+            .ok_or_else(|| anyhow::anyhow!("未找到符号: {sym}"))?
+            .address;
+    }
     let count = u(args, "count").unwrap_or(8) as usize;
     let raw = b(args, "raw").unwrap_or(false);
     let source = b(args, "source").unwrap_or(false);

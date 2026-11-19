@@ -29,6 +29,7 @@ ns-instruction-sim mem read --session s.json --addr 0x20000000 --len 64 --json
 ns-instruction-sim mem write --session arm.json --arch arm --addr 0x20000000 --bytes 0xaa 0xbb
 ns-instruction-sim mem write --session s.json --addr 0x20000000 --width word --values 0xefbeadde
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 0 --json
+ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 4096 --random --seed 0x1234 --json
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad 0xbe 0xef
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad --json --out search.json
 ns-instruction-sim mem dump --session s.json --addr 0x20000000 --len 64 --name bootloader --format c
@@ -72,6 +73,7 @@ ns-instruction-sim coverage --session s.json --steps 2000 --json
 ns-instruction-sim profile --session s.json --steps 2000
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 64 --out listing.lst
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 64 --labels --json
+ns-instruction-sim disasm --session s.json --symbol main --count 16 --json
 ns-instruction-sim session info --file s.json --json
 ns-instruction-sim session diff --a s.json --b s2.json --json
 

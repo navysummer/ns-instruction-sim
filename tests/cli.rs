@@ -7092,6 +7092,144 @@ fn mcp_disasm_labels() {
 }
 
 #[test]
+fn mem_fill_random_deterministic() {
+    let dir = tmpdir();
+    let s = dir.join(format!("randfill-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&s);
+    let s = s.to_str().unwrap();
+    let out = Command::new(bin()).args(["state", "--arch", "riscv", "--session", s]).output().unwrap();
+    assert!(out.status.success());
+
+    // Same seed fills the region identically and reports the seed used.
+    let fill = |sess: &str| {
+        let out = Command::new(bin())
+            .args(["mem", "fill", "--session", sess, "--addr", "0x20000000", "--len", "32", "--random", "--seed", "0x1234", "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(json["random"], true);
+        assert_eq!(json["seed"], 0x1234u64);
+        json
+    };
+    fill(s);
+    let read = |sess: &str| {
+        let out = Command::new(bin())
+            .args(["mem", "read", "--session", sess, "--addr", "0x20000000", "--len", "32", "--json"])
+            .output()
+            .unwrap();
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["bytes"].clone()
+    };
+    let first = read(s);
+    assert!(first.as_array().unwrap().len() == 32);
+    assert!(first.as_array().unwrap().iter().any(|b| b.as_u64().unwrap_or(0) != 0));
+    // A second session with the same seed reproduces the same bytes.
+    let s2 = dir.join(format!("randfill2-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&s2);
+    let s2 = s2.to_str().unwrap();
+    let out = Command::new(bin()).args(["state", "--arch", "riscv", "--session", s2]).output().unwrap();
+    assert!(out.status.success());
+    fill(s2);
+    assert_eq!(first, read(s2));
+
+    // `--random` and `--value` are mutually exclusive.
+    let out = Command::new(bin())
+        .args(["mem", "fill", "--session", s, "--addr", "0x20000000", "--len", "4", "--random", "--value", "0xaa"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mcp_mem_fill_random() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-randfill-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap());
+
+    let r = client.call_tool(
+        "mem_fill",
+        serde_json::json!({ "session": s, "addr": "0x20000000", "len": 16, "random": true, "seed": "0x1234" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "mem_fill random: {}", r);
+    assert_eq!(r["structuredContent"]["random"], true);
+    assert_eq!(r["structuredContent"]["seed"], 0x1234u64);
+    // Deterministic: the same seed produces the same first byte.
+    let r = client.call_tool("mem_read", serde_json::json!({ "session": s, "addr": "0x20000000", "len": 1 }));
+    assert!(!r["isError"].as_bool().unwrap());
+    let first = r["structuredContent"]["bytes"][0].clone();
+    let s2 = tmpdir().join(format!("mcp-randfill2-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&s2);
+    let s2 = s2.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s2, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap());
+    let r = client.call_tool(
+        "mem_fill",
+        serde_json::json!({ "session": s2, "addr": "0x20000000", "len": 16, "random": true, "seed": "0x1234" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap());
+    let r = client.call_tool("mem_read", serde_json::json!({ "session": s2, "addr": "0x20000000", "len": 1 }));
+    assert_eq!(r["structuredContent"]["bytes"][0], first);
+
+    // random conflicts with value.
+    let r = client.call_tool(
+        "mem_fill",
+        serde_json::json!({ "session": s, "addr": "0x20000000", "len": 1, "random": true, "value": "0xaa" }),
+    );
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
+fn disasm_from_symbol() {
+    let dir = tmpdir();
+    let elf = dir.join(format!("symdisasm-{}.elf", std::process::id()));
+    write_riscv_elf_with_symbol(&elf, &[0x93, 0x00, 0x10, 0x00, 0x13, 0x81, 0x20, 0x00], "main");
+    let elf = elf.to_str().unwrap();
+    let sess = dir.join(format!("symdisasm-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let out = Command::new(bin()).args(["state", "--arch", "riscv", "--firmware", elf, "--session", s]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // Disassembly starts at the symbol address (0x80000000).
+    let out = Command::new(bin()).args(["disasm", "--session", s, "--symbol", "main", "--count", "1", "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000_0000u64);
+    assert_eq!(json[0]["text"], "addi ra, zero, 1");
+
+    // An unknown symbol is an error.
+    let out = Command::new(bin()).args(["disasm", "--session", s, "--symbol", "nope"]).output().unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mcp_disasm_from_symbol() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-symdisasm-{}.elf", std::process::id()));
+    write_riscv_elf_with_symbol(&elf, &[0x93, 0x00, 0x10, 0x00], "main");
+    let sess = dir.join(format!("mcp-symdisasm-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv", "firmware": elf.to_str().unwrap() }));
+    assert!(!r["isError"].as_bool().unwrap());
+
+    let r = client.call_tool("disasm", serde_json::json!({ "session": s, "symbol": "main", "count": 1 }));
+    assert!(!r["isError"].as_bool().unwrap(), "disasm symbol: {}", r);
+    assert_eq!(r["structuredContent"]["instructions"][0]["address"], 0x8000_0000u64);
+
+    let r = client.call_tool("disasm", serde_json::json!({ "session": s, "symbol": "nope" }));
+    assert!(r["isError"].as_bool().unwrap());
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
@@ -7410,7 +7548,8 @@ fn help_every_param() {
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
-        (&["disasm"], &["--session", "--arch", "--addr", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
+        (&["disasm"], &["--session", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
+        (&["mem", "fill"], &["--session", "--arch", "--addr", "--len", "--value", "--random", "--seed", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--json"]),
         (&["mcp"], &["--session"]),

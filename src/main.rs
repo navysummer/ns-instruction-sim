@@ -483,6 +483,12 @@ enum MemSub {
         /// 填充字节（--value 形式）。
         #[arg(long = "value", conflicts_with = "value")]
         value_flag: Option<String>,
+        /// 使用确定性伪随机字节填充（与 --value 互斥）。
+        #[arg(long, conflicts_with_all = ["value", "value_flag"])]
+        random: bool,
+        /// 伪随机种子（十进制/十六进制；默认固定常量，可复现）。
+        #[arg(long)]
+        seed: Option<String>,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -702,6 +708,9 @@ struct DisasmArgs {
     /// 起始地址（默认当前 PC）。
     #[arg(short = 'd', long)]
     addr: Option<String>,
+    /// 按符号名起始（如 main；与 --addr 互斥）。
+    #[arg(long, conflicts_with = "addr")]
+    symbol: Option<String>,
     /// 指令条数（默认 8）。
     #[arg(long, default_value = "8")]
     count: usize,
@@ -2470,17 +2479,30 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Fill { session, arch, addr, addr_flag, len, value, value_flag, json } => {
+        MemSub::Fill { session, arch, addr, addr_flag, len, value, value_flag, random, seed, json } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
-            let value = value_flag.or(value).ok_or_else(|| anyhow::anyhow!("缺少填充字节"))?;
             let addr_num = parse_num(&addr)?;
-            let value_num = parse_num(&value)?;
-            if value_num > 0xff {
-                bail!("填充字节超出 0..=255: {}", value);
-            }
-            let value_byte = value_num as u8;
             let (mut sim, fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
-            let bytes = vec![value_byte; len];
+            let (bytes, value_byte, seed_used): (Vec<u8>, u8, Option<u64>) = if random {
+                let seed_input = seed.as_deref().map(parse_num).transpose()?.unwrap_or(0x9E37_79B9) as u64;
+                let mut st = seed_input;
+                let bytes = (0..len)
+                    .map(|_| {
+                        st ^= st << 13;
+                        st ^= st >> 7;
+                        st ^= st << 17;
+                        (st >> 24) as u8
+                    })
+                    .collect();
+                (bytes, 0, Some(seed_input))
+            } else {
+                let value = value_flag.or(value).ok_or_else(|| anyhow::anyhow!("缺少填充字节"))?;
+                let value_num = parse_num(&value)?;
+                if value_num > 0xff {
+                    bail!("填充字节超出 0..=255: {}", value);
+                }
+                (vec![value_num as u8; len], value_num as u8, None)
+            };
             for (i, b) in bytes.iter().enumerate() {
                 let a = addr_num.wrapping_add(i as u32);
                 write_mem_byte(&mut sim, a, *b);
@@ -2492,9 +2514,20 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                     "address": addr_num,
                     "len": len,
                     "value": value_byte,
+                    "random": random,
+                    "seed": seed_used,
                 }))?;
             } else {
-                println!("填充 {} 字节 @ 0x{:08x} = 0x{value_byte:02x}", len, addr_num);
+                if random {
+                    println!(
+                        "填充 {} 字节 @ 0x{:08x}（伪随机，seed {}）",
+                        len,
+                        addr_num,
+                        seed_used.map(|s| format!("{s:#x}")).unwrap_or_default()
+                    );
+                } else {
+                    println!("填充 {} 字节 @ 0x{:08x} = 0x{value_byte:02x}", len, addr_num);
+                }
             }
             Ok(())
         }
@@ -2882,17 +2915,23 @@ pub(crate) fn source_annotation(sim: &Simulator, address: u32) -> String {
 
 fn cmd_disasm(args: DisasmArgs) -> Result<()> {
     let arch = resolve_arch(args.session.as_deref(), args.arch.as_deref())?;
-    let mut pc = match args.addr {
-        Some(a) => parse_num(&a)?,
-        None => {
-            if let Some(sp) = &args.session {
-                if sp.exists() {
-                    Session::load(sp)?.pc
+    let mut pc = if args.symbol.is_some() {
+        // Resolved after the simulator is built (symbols come from the loaded
+        // firmware).
+        default_mem_base(arch)
+    } else {
+        match args.addr {
+            Some(a) => parse_num(&a)?,
+            None => {
+                if let Some(sp) = &args.session {
+                    if sp.exists() {
+                        Session::load(sp)?.pc
+                    } else {
+                        default_mem_base(arch)
+                    }
                 } else {
                     default_mem_base(arch)
                 }
-            } else {
-                default_mem_base(arch)
             }
         }
     };
@@ -2908,6 +2947,14 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
     } else {
         Simulator::for_arch(arch)?
     };
+    if let Some(sym) = &args.symbol {
+        let found = sim
+            .symbols
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(sym))
+            .ok_or_else(|| anyhow::anyhow!("符号未找到: {sym}"))?;
+        pc = found.address;
+    }
     let arm_state = match args.arm_state.as_deref() {
         Some("a32") => true,
         Some("thumb") => false,

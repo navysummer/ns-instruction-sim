@@ -110,6 +110,7 @@ ns-instruction-sim mem write --session s.json --addr 0x20000000 --bytes 0x01 0x0
 ns-instruction-sim mem write --session arm.json --arch arm --addr 0x20000000 --bytes 0xaa 0xbb
 ns-instruction-sim mem write --session s.json --addr 0x20000000 --width word --values 0xefbeadde 0x12345678
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 0 --json
+ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 4096 --random --seed 0x1234 --json
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 0
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad 0xbe 0xef
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad --json --out search.json
@@ -199,6 +200,7 @@ ns-instruction-sim device memory-map stm32f103c8 --addr 0x40010000 --json
 # 反汇编落盘（清单文件）
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 64 --out listing.lst
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 64 --labels --json
+ns-instruction-sim disasm --session s.json --symbol main --count 16 --json
 
 # 从 SVD 文件加载芯片寄存器（地址 -> 复位值）到仿真器，支持直读写与持久化
 ns-instruction-sim periph svd-load --session s.json --file crates/ns-device/src/svd/stm32f103c8.svd --json

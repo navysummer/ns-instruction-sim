@@ -118,9 +118,9 @@ ns-instruction-sim/
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
 | `continue` | — | 连续运行至断点/停止/上限/指定地址（临时断点） | `--session --until --max-steps --save --json --trace --source` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
-| `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` | 内存读/写/填充/搜索模式/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图） | `--addr --len --bytes --values --file --value --pattern --firmware --base --arch --name --format --width --out --json` | hex/C/JSON |
+| `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` | 内存读/写/填充（含确定性伪随机）/搜索模式/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --name --format --width --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数） | `--addr --symbol --line --condition --hit-count --once --session --json` | 表/JSON |
-| `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/原始字节/JSON） | `--arch --addr --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
+| `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON） | `--arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要） | `--session --arch --firmware --base --json --fields --summary` | 状态/JSON/摘要 |
 | `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载 | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --file --device --peripheral --register --field --force --session --json` | 表/JSON |
@@ -640,6 +640,12 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   JSON 项携带 `label`（仅符号首条指令非空）、`--out` 落盘含标签。
 - `mcp_disasm_labels`：MCP `disasm` 的 `labels: true` 在 `instructions[i].label` 标注符号地址，
   缺省为 null。
+- `mem_fill_random_deterministic`：`mem fill --random --seed` 生成确定性伪随机字节（同 seed 复现、
+  `seed` 字段回报输入种子、`--random` 与 `--value` 互斥）。
+- `mcp_mem_fill_random`：MCP `mem_fill` 的 `random`/`seed` 参数确定性复现与 `value` 冲突错误路径。
+- `disasm_from_symbol`：`disasm --symbol main` 从符号地址开始反汇编（JSON 首项地址=符号地址、
+  未知符号报错）。
+- `mcp_disasm_from_symbol`：MCP `disasm` 的 `symbol` 参数从符号地址开始（含未知符号错误路径）。
 - `mcp_session_and_memory_map_tools`：MCP `session_info` / `session_diff` / `device_memory_map`
   工具端到端（含未知设备错误路径）与 `trace` 的 `out` 参数把轨迹写入文件并回报 `file`/`bytes`。
 - `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff`、`device memory-map`）的
