@@ -547,6 +547,8 @@ fn tools() -> Vec<Tool> {
                     ("until", addr.clone()),
                     ("until_condition", prop_str("运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`）。")),
                     ("cycle_accurate", prop_bool("周期精确模式（按指令预估周期推进）。")),
+                    ("trace", prop_bool("返回每条执行指令的轨迹（含 PC/反汇编/来源/寄存器变化）。")),
+                    ("trace_regs", prop_bool("trace 时附带每条指令后发生变化的寄存器。")),
                 ],
                 &["firmware"],
             ),
@@ -561,6 +563,8 @@ fn tools() -> Vec<Tool> {
                     ("until", addr.clone()),
                     ("until_condition", prop_str("运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`）。")),
                     ("max_steps", prop_num("最大执行步数（默认 1000000）。")),
+                    ("trace", prop_bool("返回每条执行指令的轨迹（含 PC/反汇编/来源/寄存器变化）。")),
+                    ("trace_regs", prop_bool("trace 时附带每条指令后发生变化的寄存器。")),
                 ],
                 &["session"],
             ),
@@ -1500,21 +1504,38 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
         }
     }
     let temp_bp = until_addr.map(|a| sim.set_breakpoint(a)).unwrap_or(false);
+    let trace = b(args, "trace").unwrap_or(false) || b(args, "trace_regs").unwrap_or(false);
+    let trace_regs = b(args, "trace_regs").unwrap_or(false);
     let mut cond_met = false;
-    let result = match s(args, "until_condition") {
-        Some(expr) => {
-            let (r, met) = crate::run_until_condition(
-                &mut sim,
-                u64(args, "max_steps").unwrap_or(1_000_000),
-                &expr,
-            );
-            cond_met = met;
-            r
+    let mut trace_lines = Value::Null;
+    let result = if trace {
+        let cond = s(args, "until_condition");
+        let (r, met, lines) = crate::collect_trace_run(
+            &mut sim,
+            u64(args, "steps"),
+            u64(args, "max_steps").unwrap_or(1_000_000),
+            cond.as_deref(),
+            trace_regs,
+        );
+        cond_met = met;
+        trace_lines = serde_json::to_value(&lines)?;
+        r
+    } else {
+        match s(args, "until_condition") {
+            Some(expr) => {
+                let (r, met) = crate::run_until_condition(
+                    &mut sim,
+                    u64(args, "max_steps").unwrap_or(1_000_000),
+                    &expr,
+                );
+                cond_met = met;
+                r
+            }
+            None => match u64(args, "steps") {
+                Some(n) => sim.run(n),
+                None => sim.run(u64(args, "max_steps").unwrap_or(1_000_000)),
+            },
         }
-        None => match u64(args, "steps") {
-            Some(n) => sim.run(n),
-            None => sim.run(u64(args, "max_steps").unwrap_or(1_000_000)),
-        },
     };
     if temp_bp {
         if let Some(addr) = until_addr {
@@ -1524,6 +1545,9 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let mut output = serde_json::to_value(crate::state_output(&sim, result, Some(&fw_state)))?;
     if cond_met {
         output["lastResult"] = Value::String("condition".to_string());
+    }
+    if trace {
+        output["trace"] = trace_lines;
     }
     if let Some(p) = server.resolve_session(args) {
         Session::capture(&sim, Some(fw_state)).save(&p)?;
@@ -1540,15 +1564,32 @@ fn tool_continue(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
             }
         }
         let temp_bp = until_addr.map(|a| sim.set_breakpoint(a)).unwrap_or(false);
+        let trace = b(args, "trace").unwrap_or(false) || b(args, "trace_regs").unwrap_or(false);
+        let trace_regs = b(args, "trace_regs").unwrap_or(false);
         let mut cond_met = false;
-        let result = match s(args, "until_condition") {
-            Some(expr) => {
-                let (r, met) =
-                    crate::run_until_condition(sim, u64(args, "max_steps").unwrap_or(1_000_000), &expr);
-                cond_met = met;
-                r
+        let mut trace_lines = Value::Null;
+        let result = if trace {
+            let cond = s(args, "until_condition");
+            let (r, met, lines) = crate::collect_trace_run(
+                sim,
+                None,
+                u64(args, "max_steps").unwrap_or(1_000_000),
+                cond.as_deref(),
+                trace_regs,
+            );
+            cond_met = met;
+            trace_lines = serde_json::to_value(&lines)?;
+            r
+        } else {
+            match s(args, "until_condition") {
+                Some(expr) => {
+                    let (r, met) =
+                        crate::run_until_condition(sim, u64(args, "max_steps").unwrap_or(1_000_000), &expr);
+                    cond_met = met;
+                    r
+                }
+                None => sim.run(u64(args, "max_steps").unwrap_or(1_000_000)),
             }
-            None => sim.run(u64(args, "max_steps").unwrap_or(1_000_000)),
         };
         if temp_bp {
             if let Some(addr) = until_addr {
@@ -1558,6 +1599,9 @@ fn tool_continue(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
         let mut output = serde_json::to_value(crate::state_output(sim, result, fw))?;
         if cond_met {
             output["lastResult"] = Value::String("condition".to_string());
+        }
+        if trace {
+            output["trace"] = trace_lines;
         }
         Ok(output)
     })

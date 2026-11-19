@@ -13,6 +13,7 @@ ns-instruction-sim run --firmware app.elf --session s.json --json
 ns-instruction-sim run --firmware app.elf --until 0x80000008 --json
 ns-instruction-sim run --firmware app.elf --until-condition "x1 == 5" --json
 ns-instruction-sim run --firmware app.elf --steps 1000 --trace
+ns-instruction-sim run --firmware app.elf --steps 100 --trace --trace-regs
 ns-instruction-sim version
 ns-instruction-sim version --json
 

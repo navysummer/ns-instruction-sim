@@ -7835,6 +7835,70 @@ fn mcp_disasm_firmware() {
 }
 
 #[test]
+fn run_trace_regs_prints_changed_registers() {
+    let dir = tmpdir();
+    let elf = dir.join("trcregs.elf");
+    write_riscv_elf(&elf);
+    let sess = dir.join("trcregs.json");
+    // `--trace-regs` annotates each traced instruction with the registers it
+    // changed (and implies `--trace`).
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(),
+               "--trace-regs", "--steps", "2"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("addi ra, zero, 1"), "{text}");
+    assert!(text.contains("ra=0x00000001"), "{text}");
+    assert!(text.contains("sp=0x00000003"), "{text}");
+    // Combined with `--until-condition`, the stop point reports `condition`.
+    let sess2 = dir.join("trcregs-cond.json");
+    Command::new(bin())
+        .args(["state", "--arch", "riscv", "--firmware", elf.to_str().unwrap(),
+               "--session", sess2.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess2.to_str().unwrap(),
+               "--until-condition", "x1 == 1", "--trace-regs"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("ra=0x00000001"), "{text}");
+    assert!(text.contains("result=condition"), "{text}");
+}
+
+#[test]
+fn mcp_run_trace_regs() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-trcregs-{}.elf", std::process::id()));
+    write_riscv_elf(&elf);
+    let r = client.call_tool("run", serde_json::json!({
+        "firmware": elf.to_str().unwrap(), "arch": "riscv",
+        "trace": true, "trace_regs": true, "steps": 2,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "run trace: {}", r);
+    let trace = &r["structuredContent"]["trace"];
+    assert!(trace.is_array(), "{}", r);
+    assert_eq!(trace[0]["pc"], 0x8000_0000u64, "{}", r);
+    assert_eq!(trace[0]["regs"]["ra"], 1u64, "{}", r);
+    assert_eq!(trace[1]["regs"]["sp"], 3u64, "{}", r);
+    // `trace_regs` without `trace` still enables collection.
+    let r = client.call_tool("run", serde_json::json!({
+        "firmware": elf.to_str().unwrap(), "arch": "riscv",
+        "trace_regs": true, "steps": 1,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "run trace_regs: {}", r);
+    assert!(r["structuredContent"]["trace"].is_array(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn session_info_and_diff() {
     let dir = tmpdir();
     let a = dir.join(format!("diff-a-{}.json", std::process::id()));
@@ -8143,8 +8207,8 @@ fn help_every_command() {
 fn help_every_param() {
     // Every CLI argument must appear (with its help text) in `--help`.
     let checks: &[(&[&str], &[&str])] = &[
-        (&["run"], &["--session", "--firmware", "--arch", "--base", "--max-steps", "--steps", "--until", "--until-condition", "--save-session", "--cycle-accurate", "--json", "--trace", "--source"]),
-        (&["continue"], &["--session", "--until", "--until-condition", "--max-steps", "--save", "--json", "--trace", "--source"]),
+        (&["run"], &["--session", "--firmware", "--arch", "--base", "--max-steps", "--steps", "--until", "--until-condition", "--save-session", "--cycle-accurate", "--json", "--trace", "--trace-regs", "--source"]),
+        (&["continue"], &["--session", "--until", "--until-condition", "--max-steps", "--save", "--json", "--trace", "--trace-regs", "--source"]),
         (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
         (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
         (&["bp", "list"], &["--session", "--symbols", "--json"]),

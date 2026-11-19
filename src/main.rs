@@ -279,6 +279,9 @@ struct RunArgs {
     /// 打印每条执行指令的 PC/反汇编/来源（逐步追踪）。
     #[arg(long)]
     trace: bool,
+    /// 与 --trace 搭配：打印每条执行指令后发生变化的寄存器。
+    #[arg(long)]
+    trace_regs: bool,
     /// 在停止点追加 file:line 来源标注。
     #[arg(long)]
     source: bool,
@@ -332,6 +335,9 @@ struct ContinueArgs {
     /// 打印每条执行指令的 PC/反汇编/来源（逐步追踪）。
     #[arg(long)]
     trace: bool,
+    /// 与 --trace 搭配：打印每条执行指令后发生变化的寄存器。
+    #[arg(long)]
+    trace_regs: bool,
     /// 在停止点追加 file:line 来源标注。
     #[arg(long)]
     source: bool,
@@ -2263,10 +2269,11 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
     // `--steps N` is a bounded "run exactly N instructions" mode; otherwise
     // run to completion with the `--max-steps` upper bound.
+    let tracing = args.trace || args.trace_regs;
     let mut cond_met = false;
     let result = if let Some(expr) = &args.until_condition {
-        if args.trace {
-            let (r, met) = trace_run(&mut sim, args.steps, args.max_steps, Some(expr));
+        if tracing {
+            let (r, met) = trace_run(&mut sim, args.steps, args.max_steps, Some(expr), args.trace_regs);
             cond_met = met;
             r
         } else {
@@ -2274,8 +2281,8 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             cond_met = met;
             r
         }
-    } else if args.trace {
-        trace_run(&mut sim, args.steps, args.max_steps, None).0
+    } else if tracing {
+        trace_run(&mut sim, args.steps, args.max_steps, None, args.trace_regs).0
     } else {
         match args.steps {
             Some(n) => sim.run(n),
@@ -2323,26 +2330,54 @@ fn cmd_run(args: RunArgs) -> Result<()> {
 /// Run with per-instruction tracing: print each executed instruction's
 /// address, disassembly and source line, then the resulting PC/state. Stops
 /// at a breakpoint or halt (or after the step/halt bound).
-fn trace_run(
+fn reg_map(sim: &Simulator) -> BTreeMap<String, u32> {
+    let count = ns_sim::reg_count_for(sim.arch);
+    let mut m = BTreeMap::new();
+    for i in 0..count {
+        m.insert(ns_sim::reg_label_for(sim.arch, i), sim.read_reg(i));
+    }
+    m
+}
+
+/// A single traced instruction, with the registers that changed as a result.
+#[derive(serde::Serialize)]
+pub(crate) struct TraceLine {
+    pc: u32,
+    /// Program counter after executing this instruction.
+    next_pc: u32,
+    /// Step result label for this instruction (`advanced`/`breakpoint`/`halted`).
+    result: String,
+    text: String,
+    source: String,
+    /// Registers whose value changed after executing this instruction.
+    regs: BTreeMap<String, u32>,
+}
+
+/// Run with per-instruction collection, returning the structured trace plus
+/// whether a `--until-condition` expression stopped the run early.
+pub(crate) fn collect_trace_run(
     sim: &mut Simulator,
     steps: Option<u64>,
     max_steps: u64,
     cond: Option<&str>,
-) -> (StepResult, bool) {
+    trace_regs: bool,
+) -> (StepResult, bool, Vec<TraceLine>) {
     let limit = steps.unwrap_or(max_steps);
     let mut count = 0u64;
     let check = |sim: &Simulator| -> bool {
         cond.map(|c| ns_sim::eval_condition(c, &sim.reg_view(), sim.program_counter(), sim.cycle_count))
             .unwrap_or(false)
     };
+    let mut lines = Vec::new();
     if check(sim) {
-        return (StepResult::Advanced, true);
+        return (StepResult::Advanced, true, lines);
     }
     loop {
         if count >= limit {
-            return (StepResult::Advanced, false);
+            return (StepResult::Advanced, false, lines);
         }
         let pc_before = sim.program_counter();
+        let regs_before = if trace_regs { reg_map(sim) } else { BTreeMap::new() };
         let result = sim.step();
         let insn = ns_sim::disassemble_one_state(
             sim.arch,
@@ -2351,19 +2386,58 @@ fn trace_run(
             sim.arm_state(),
         );
         let src = source_annotation(sim, pc_before);
-        println!(
-            "[{count}] 0x{pc_before:08x}: {insn}{src}  -> 0x{:08x} {}",
-            sim.program_counter(),
-            fmt_step_result(result)
-        );
+        let mut changed = BTreeMap::new();
+        if trace_regs {
+            let after = reg_map(sim);
+            for (k, v) in &after {
+                if regs_before.get(k) != Some(v) {
+                    changed.insert(k.clone(), *v);
+                }
+            }
+        }
+        lines.push(TraceLine {
+            pc: pc_before,
+            next_pc: sim.program_counter(),
+            result: fmt_step_result(result).to_string(),
+            text: insn,
+            source: src,
+            regs: changed,
+        });
         count += 1;
         if result != StepResult::Advanced {
-            return (result, false);
+            return (result, false, lines);
         }
         if check(sim) {
-            return (StepResult::Advanced, true);
+            return (StepResult::Advanced, true, lines);
         }
     }
+}
+
+fn trace_run(
+    sim: &mut Simulator,
+    steps: Option<u64>,
+    max_steps: u64,
+    cond: Option<&str>,
+    trace_regs: bool,
+) -> (StepResult, bool) {
+    let (result, met, lines) = collect_trace_run(sim, steps, max_steps, cond, trace_regs);
+    for (i, line) in lines.iter().enumerate() {
+        let regs_changed = line
+            .regs
+            .iter()
+            .map(|(k, v)| format!(" {k}=0x{v:08x}"))
+            .collect::<String>();
+        println!(
+            "[{i}] 0x{:08x}: {}{}  -> 0x{:08x} {}{}",
+            line.pc,
+            line.text,
+            if line.source.is_empty() { String::new() } else { line.source.clone() },
+            line.next_pc,
+            line.result,
+            regs_changed,
+        );
+    }
+    (result, met)
 }
 
 enum StepKind {
@@ -2418,10 +2492,11 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
         }
     }
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
+    let tracing = args.trace || args.trace_regs;
     let mut cond_met = false;
     let result = if let Some(expr) = &args.until_condition {
-        if args.trace {
-            let (r, met) = trace_run(&mut sim, None, args.max_steps, Some(expr));
+        if tracing {
+            let (r, met) = trace_run(&mut sim, None, args.max_steps, Some(expr), args.trace_regs);
             cond_met = met;
             r
         } else {
@@ -2429,8 +2504,8 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
             cond_met = met;
             r
         }
-    } else if args.trace {
-        trace_run(&mut sim, None, args.max_steps, None).0
+    } else if tracing {
+        trace_run(&mut sim, None, args.max_steps, None, args.trace_regs).0
     } else {
         sim.run(args.max_steps)
     };
