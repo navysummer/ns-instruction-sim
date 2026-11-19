@@ -847,6 +847,18 @@ fn tools() -> Vec<Tool> {
             handler: tool_cycle_tick,
         },
         Tool {
+            name: "cycle_set",
+            description: "设置周期计数（不执行指令；用于模拟时间流逝/超时）。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("count", prop_num("目标周期数。")),
+                ],
+                &["session", "count"],
+            ),
+            handler: tool_cycle_set,
+        },
+        Tool {
             name: "interrupt_take",
             description: "触发一次中断（需要 mstatus.MIE 且 mie 对应位使能）。",
             schema: obj(&[("session", session.clone())], &["session"]),
@@ -2215,6 +2227,14 @@ fn tool_cycle_tick(server: &McpServer, args: &Map<String, Value>) -> Result<Valu
     with_sim(server, args, true, |sim, _, _| {
         sim.tick_peripherals_for(cycles);
         Ok(json!({ "cycleCount": sim.cycle_count, "ticked": cycles }))
+    })
+}
+
+fn tool_cycle_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let count = u64(args, "count").ok_or_else(|| anyhow::anyhow!("缺少 count"))?;
+    with_sim(server, args, true, |sim, _, _| {
+        sim.cycle_count = count;
+        Ok(json!({ "cycleCount": sim.cycle_count }))
     })
 }
 

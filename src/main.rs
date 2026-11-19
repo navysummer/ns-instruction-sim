@@ -1184,6 +1184,21 @@ enum CycleSub {
         #[arg(long)]
         json: bool,
     },
+    /// 设置周期计数（不执行指令；用于模拟时间流逝/超时）。
+    Set {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 目标周期数（位置参数或 --count）。
+        #[arg(index = 1)]
+        count: Option<String>,
+        /// 目标周期数（--count 形式，十六进制或十进制）。
+        #[arg(long = "count", conflicts_with = "count")]
+        count_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -4127,6 +4142,20 @@ fn cmd_cycle(sub: CycleSub) -> Result<()> {
                 print_json(&serde_json::json!({ "cycles": cycles, "cycleCount": sim.cycle_count }))?;
             } else {
                 println!("已推进 {cycles} 周期，累计 {}", sim.cycle_count);
+            }
+            Ok(())
+        }
+        CycleSub::Set { session, count, count_flag, json } => {
+            let count = count_flag.or(count).ok_or_else(|| anyhow::anyhow!("缺少周期数"))?;
+            let count = parse_num(&count)?;
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            sim.cycle_count = count as u64;
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({ "cycleCount": sim.cycle_count }))?;
+            } else {
+                println!("周期计数已设为 {}", sim.cycle_count);
             }
             Ok(())
         }

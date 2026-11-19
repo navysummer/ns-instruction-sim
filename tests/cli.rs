@@ -537,6 +537,72 @@ fn cycle_get_and_tick() {
 }
 
 #[test]
+fn cycle_set_roundtrip() {
+    let dir = tmpdir();
+    let sess = dir.join("cycleset.json");
+    bootstrap(&sess);
+    // Set the counter directly and read it back.
+    let out = Command::new(bin())
+        .args(["cycle", "set", "--session", sess.to_str().unwrap(), "--count", "1000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["cycleCount"], 1000u64);
+    let out = Command::new(bin())
+        .args(["cycle", "get", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["cycleCount"], 1000u64);
+    // The value persists in the session (visible in `state --json`).
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["cycleCount"], 1000u64);
+    // Positional form sets a new value.
+    let out = Command::new(bin())
+        .args(["cycle", "set", "--session", sess.to_str().unwrap(), "500"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["cycle", "get", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["cycleCount"], 500u64);
+    // Missing count is an error.
+    let out = Command::new(bin())
+        .args(["cycle", "set", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("缺少周期数"));
+}
+
+#[test]
+fn mcp_cycle_set() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-cycleset-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap());
+    let r = client.call_tool("cycle_set", serde_json::json!({ "session": s, "count": 1000 }));
+    assert!(!r["isError"].as_bool().unwrap(), "cycle_set: {}", r);
+    assert_eq!(r["structuredContent"]["cycleCount"], 1000u64, "{}", r);
+    let r = client.call_tool("cycle_get", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "cycle_get: {}", r);
+    assert_eq!(r["structuredContent"]["cycleCount"], 1000u64, "{}", r);
+    client.close();
+}
+
+#[test]
 fn csr_set_get_roundtrip() {
     let dir = tmpdir();
     let sess = dir.join("csr.json");
@@ -6418,7 +6484,7 @@ fn mcp_handshake_and_list_tools() {
         "device_init", "session_create", "state", "step", "step_over", "step_out",
         "run", "continue", "reg_list", "reg_get", "reg_set", "mem_read", "mem_write", "mem_fill",
         "mem_search", "mem_load", "mem_dump", "mem_region", "mem_copy", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
-        "cycle_get", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
+        "cycle_get", "cycle_set", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "session_info", "session_diff", "device_memory_map", "firmware_info",
         "periph_reg_dump",
@@ -8175,7 +8241,7 @@ fn help_every_command() {
         &["periph", "reg-read"], &["periph", "reg-list"], &["periph", "reg-dump"], &["periph", "reg-write"],
         &["periph", "field-get"], &["periph", "field-set"],
         &["symbol", "list"], &["symbol", "at"], &["symbol", "line"], &["symbol", "addr"],
-        &["cycle", "get"], &["cycle", "estimate"], &["cycle", "tick"],
+        &["cycle", "get"], &["cycle", "estimate"], &["cycle", "tick"], &["cycle", "set"],
         &["interrupt", "take"], &["interrupt", "pending"], &["interrupt", "set"],
         &["watchdog", "status"], &["watchdog", "feed"], &["watchdog", "config"],
         &["watchdog", "reset"],
@@ -8220,6 +8286,7 @@ fn help_every_param() {
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--json"]),
         (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--json"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
+        (&["cycle", "set"], &["--session", "--count", "--json"]),
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--until", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),

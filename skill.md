@@ -172,6 +172,7 @@ ns-instruction-sim symbol addr --session s.json --file 0 --line 1
 ns-instruction-sim cycle get --session s.json
 ns-instruction-sim cycle estimate --session s.json 0x80000000
 ns-instruction-sim cycle tick --session s.json --cycles 100
+ns-instruction-sim cycle set --session s.json --count 1000
 
 # 中断控制器
 ns-instruction-sim interrupt pending --session s.json

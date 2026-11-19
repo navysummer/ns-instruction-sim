@@ -125,7 +125,7 @@ ns-instruction-sim/
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要） | `--session --arch --firmware --base --json --fields --summary` | 状态/JSON/摘要 |
 | `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费） | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --input --file --device --peripheral --register --field --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `line` / `addr` | ELF 符号与源行号映射 | `--filter --addr --file --line --session --json` | 表/JSON |
-| `cycle` | `get` / `estimate` / `tick` | 周期计数/指令周期估算/外设推进 | `--addr --cycles --session --json` | 值/JSON |
+| `cycle` | `get` / `estimate` / `tick` / `set` | 周期计数/指令周期估算/外设推进/设置周期计数（模拟时间流逝/超时） | `--addr --cycles --count --session --json` | 值/JSON |
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
 | `watchdog` | `status` / `feed` / `config` / `reset` | 看门狗查询/喂狗/配置/强制复位 | `--enabled --timeout --base --entry --session --json` | 表/JSON |
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
@@ -191,7 +191,7 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `state`、`step`、`step_over`、`step_out`、`run`、`continue`、`reg_list/get/set`、
    `mem_read/write/fill/search/load/dump/region/copy`、`bp_set/modify/clear/list/enable/disable/clear_all`
    （`bp_list` 支持 `symbols` 参数）、
-   `disasm`、`reset`、`cycle_get/estimate/tick`、`interrupt_take/pending/set`、
+   `disasm`、`reset`、`cycle_get/estimate/tick/set`、`interrupt_take/pending/set`、
    `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`、
    `symbol_list/at/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
    `trace`、`coverage`、`profile` 与 CLI 同名子命令一一对应（`analyze_schema` 共享参数），
@@ -260,6 +260,9 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `all_arch_core_operations`：12 架构寄存器列出/单步/内存写读往返/反汇编均成功。
 - `mem_overlay_persists_across_step`：ARM（私有内存模型核心）显式内存写在单步后仍持久化（memory_overlay 跨调用重放）。
 - `cycle_get_and_tick`：周期计数读取/推进/指令周期估算。
+- `cycle_set_roundtrip`：`cycle set --count` 直接设置周期计数（位置参数/`--count` 双形式），
+  `state --json` 可见持久化；缺周期数报错。
+- `mcp_cycle_set`：MCP `cycle_set` 设置后 `cycle_get` 读回一致。
 - `csr_set_get_roundtrip`：CSR 写读往返与会话持久化。
 - `watchdog_config_feed_status`：看门狗配置/喂狗（复位 elapsed 计数并持久化）/状态。
 - `watchdog_force_reset`：`watchdog reset` 记录复位事件并复位核心（持久化）。
