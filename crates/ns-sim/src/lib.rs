@@ -3818,6 +3818,37 @@ fn disassemble_thumb2(insn: u32, pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         return format!("{mnem} r{rt}, [r{rn}, r{rm}{shift_str}]");
     }
 
+    // LDRSB/LDRSH wide forms. Register offset: first = 0xF910|Rn / 0xF930|Rn
+    // (bit 7 = 0), second = `Rt 0000 00shift Rm`. Immediate and PC-relative
+    // literal (Rn = PC): first = 0xF990|Rn / 0xF9B0|Rn (bit 7 = 1),
+    // second = `Rt imm12`.
+    let ldr_sb_reg = first & 0xFFF0 == 0xF910 && second & 0x0FC0 == 0;
+    let ldr_sh_reg = first & 0xFFF0 == 0xF930 && second & 0x0FC0 == 0;
+    let ldr_sb_imm = first & 0xFFF0 == 0xF990;
+    let ldr_sh_imm = first & 0xFFF0 == 0xF9B0;
+    if ldr_sb_reg || ldr_sh_reg || ldr_sb_imm || ldr_sh_imm {
+        let rt = ((second >> 12) & 0x0F) as usize;
+        let rn = (first & 0x0F) as usize;
+        let mnem = if ldr_sb_reg || ldr_sb_imm { "ldrsb" } else { "ldrsh" };
+        let is_reg = first & 0x0080 == 0;
+        if is_reg {
+            let rm = (second & 0x0F) as usize;
+            let shift = (second >> 4) & 0x03;
+            let shift_str = if shift == 0 {
+                String::new()
+            } else {
+                format!(", lsl #{shift}")
+            };
+            return format!("{mnem} r{rt}, [r{rn}, r{rm}{shift_str}]");
+        }
+        let imm12 = second & 0x0FFF;
+        return if rn == 15 {
+            format!("{mnem} r{rt}, [pc, #0x{imm12:x}]")
+        } else {
+            format!("{mnem} r{rt}, [r{rn}, #0x{imm12:x}]")
+        };
+    }
+
     // Memory barriers DMB/DSB/ISB (0xF3BF 0x8F5F/8F6F/8F7F).
     if first == 0xF3BF && second & 0xFFF0 >= 0x8F50 && second & 0xFFF0 <= 0x8F70 {
         let name = match (second >> 4) & 0x0F {
@@ -6126,6 +6157,13 @@ mod tests {
             (0xE8C9_8F47, "strexb r7, r8, [r9]"),
             (0xE8DB_AF5F, "ldrexh r10, [r11]"),
             (0xE8C1_0F5C, "strexh r12, r0, [r1]"),
+            // Signed byte/halfword loads.
+            (0xF917_6018, "ldrsb r6, [r7, r8, lsl #1]"),
+            (0xF93A_902B, "ldrsh r9, [r10, r11, lsl #2]"),
+            (0xF991_0004, "ldrsb r0, [r1, #0x4]"),
+            (0xF9B3_2008, "ldrsh r2, [r3, #0x8]"),
+            (0xF99F_0004, "ldrsb r0, [pc, #0x4]"),
+            (0xF9BF_1008, "ldrsh r1, [pc, #0x8]"),
         ];
         for (insn, expected) in cases {
             let bytes = [

@@ -2707,6 +2707,83 @@ fn run_arm_thumb2_ldrex_strex() {
 }
 
 #[test]
+fn run_arm_thumb2_ldrsb_ldrsh() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-ldrsb.json");
+    // Vector table: SP = 0x20000000, reset PC = 0x08000011 → executes at 0x08000010.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(), "--arch", "arm",
+               "--addr", "0x08000000", "--bytes", "0x00", "0x00", "0x00", "0x20",
+               "0x11", "0x00", "0x00", "0x08"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Code: ldrsb.w r6,[r7,r8,lsl #1]; ldrsh.w r9,[r10,r11,lsl #2];
+    // ldrsb.w r0,[r1,#4]; ldrsh.w r2,[r3,#8].
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--addr", "0x08000010", "--bytes",
+               "0x17", "0xF9", "0x18", "0x60", // ldrsb.w r6, [r7, r8, lsl #1]
+               "0x3A", "0xF9", "0x2B", "0x90", // ldrsh.w r9, [r10, r11, lsl #2]
+               "0x91", "0xF9", "0x04", "0x00", // ldrsb.w r0, [r1, #4]
+               "0xB3", "0xF9", "0x08", "0x20"]) // ldrsh.w r2, [r3, #8]
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Seed the signed-load targets.
+    for (addr, bytes) in [
+        (0x2000_0002u64, vec![0x80u8]),             // sign-extended byte
+        (0x2000_0014u64, vec![0x00u8, 0x80]),       // sign-extended halfword
+        (0x2000_0024u64, vec![0x7Fu8]),             // positive byte
+        (0x2000_0038u64, vec![0x34u8, 0x12]),       // positive halfword
+    ] {
+        let mut args: Vec<String> = vec![
+            "mem".into(), "write".into(), "--session".into(), sess.to_str().unwrap().into(),
+            "--addr".into(), format!("0x{addr:X}"), "--bytes".into(),
+        ];
+        for b in &bytes {
+            args.push(format!("0x{b:02X}"));
+        }
+        let out = Command::new(bin()).args(&args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["reset", "--session", sess.to_str().unwrap(), "--entry", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for (name, value) in [
+        ("r7", "0x20000000"), ("r8", "0x00000001"),
+        ("r10", "0x20000010"), ("r11", "0x00000001"),
+        ("r1", "0x20000020"), ("r3", "0x20000030"),
+    ] {
+        let out = Command::new(bin())
+            .args(["reg", "set", "--session", sess.to_str().unwrap(), "--name", name, "--value", value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for _ in 0..4 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x0800_0020u64);
+    assert_eq!(json["registers"]["r6"], 0xFFFF_FF80u64); // ldrsb register
+    assert_eq!(json["registers"]["r9"], 0xFFFF_8000u64);  // ldrsh register
+    assert_eq!(json["registers"]["r0"], 0x7Fu64);          // ldrsb immediate
+    assert_eq!(json["registers"]["r2"], 0x1234u64);        // ldrsh immediate
+}
+
+#[test]
 fn run_arm_thumb1_it_bkpt() {
     let dir = tmpdir();
     let sess = dir.join("arm-itbkpt.json");
@@ -2947,6 +3024,43 @@ fn disasm_thumb2_ldrex_strex() {
         "0x0000000c: strexb r7, r8, [r9]",
         "0x00000010: ldrexh r10, [r11]",
         "0x00000014: strexh r12, r0, [r1]",
+    ] {
+        assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
+    }
+}
+
+#[test]
+fn disasm_thumb2_ldrsb_ldrsh() {
+    let dir = tmpdir();
+    let binfile = dir.join("thumb2-ldrsb.bin");
+    let sess = dir.join("thumb2-ldrsb.json");
+    // Thumb-2 signed byte/halfword load forms the core executes.
+    let bytes: &[u8] = &[
+        0x17, 0xF9, 0x18, 0x60, // ldrsb.w r6, [r7, r8, lsl #1]
+        0x3A, 0xF9, 0x2B, 0x90, // ldrsh.w r9, [r10, r11, lsl #2]
+        0x91, 0xF9, 0x04, 0x00, // ldrsb.w r0, [r1, #4]
+        0xB3, 0xF9, 0x08, 0x20, // ldrsh.w r2, [r3, #8]
+        0x9F, 0xF9, 0x04, 0x00, // ldrsb.w r0, [pc, #4]
+        0xBF, 0xF9, 0x08, 0x10, // ldrsh.w r1, [pc, #8]
+    ];
+    std::fs::write(&binfile, bytes).unwrap();
+    Command::new(bin())
+        .args(["mem", "load", "--session", sess.to_str().unwrap(), "--firmware", binfile.to_str().unwrap(), "--arch", "arm"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0", "--count", "6", "--arm-state", "thumb"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "0x00000000: ldrsb r6, [r7, r8, lsl #1]",
+        "0x00000004: ldrsh r9, [r10, r11, lsl #2]",
+        "0x00000008: ldrsb r0, [r1, #0x4]",
+        "0x0000000c: ldrsh r2, [r3, #0x8]",
+        "0x00000010: ldrsb r0, [pc, #0x4]",
+        "0x00000014: ldrsh r1, [pc, #0x8]",
     ] {
         assert!(text.contains(expected), "missing {:?} in:\n{}", expected, text);
     }

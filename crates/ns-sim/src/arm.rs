@@ -1347,6 +1347,35 @@ impl ArmCore {
             return;
         }
 
+        // LDRSB/LDRSH wide forms. Register offset: first = 0xF910|Rn /
+        // 0xF930|Rn (bit 7 = 0), second = `Rt 0000 00shift Rm`. Immediate and
+        // PC-relative literal (Rn = PC): first = 0xF990|Rn / 0xF9B0|Rn
+        // (bit 7 = 1), second = `Rt imm12`.
+        let ldr_sb_reg = first & 0xFFF0 == 0xF910 && second & 0x0FC0 == 0;
+        let ldr_sh_reg = first & 0xFFF0 == 0xF930 && second & 0x0FC0 == 0;
+        let ldr_sb_imm = first & 0xFFF0 == 0xF990;
+        let ldr_sh_imm = first & 0xFFF0 == 0xF9B0;
+        if ldr_sb_reg || ldr_sh_reg || ldr_sb_imm || ldr_sh_imm {
+            let rt = ((second >> 12) & 0x0F) as usize;
+            let rn = (first & 0x0F) as usize;
+            let is_reg = first & 0x0080 == 0;
+            let addr = if is_reg {
+                let rm = (second & 0x0F) as usize;
+                let shift = ((second >> 4) & 0x03) as u32;
+                self.regs[rn].wrapping_add(self.regs[rm].wrapping_shl(shift))
+            } else {
+                let imm12 = (second & 0x0FFF) as u32;
+                let base = if rn == PC { pc & !3 } else { self.regs[rn] };
+                base.wrapping_add(imm12)
+            };
+            self.regs[rt] = if ldr_sb_reg || ldr_sb_imm {
+                self.read_u8(addr) as i8 as i32 as u32
+            } else {
+                self.read_u16(addr) as i16 as i32 as u32
+            };
+            return;
+        }
+
         // Memory barriers DMB/DSB/ISB (0xF3BF 0x8F5F/8F6F/8F7F): no-ops here.
         if first == 0xF3BF && second & 0xFFF0 >= 0x8F50 && second & 0xFFF0 <= 0x8F70 {
             return;
@@ -2984,6 +3013,54 @@ mod tests {
         run(&mut c, &[0xE8C1, 0x0F5C], 1);
         assert_eq!(c.regs[12], 0, "exclusive halfword store succeeds");
         assert_eq!(c.read_u16(0x100), 0x1234);
+    }
+
+    #[test]
+    fn thumb2_ldrsb_ldrsh() {
+        // ldrsb.w r6, [r7, r8, lsl #1] (0xF9176018): sign-extend byte at
+        // r7 + (r8 << 1).
+        let mut c = core();
+        c.regs[7] = 0x100;
+        c.regs[8] = 1;
+        c.write_u8(0x102, 0x80);
+        run(&mut c, &[0xF917, 0x6018], 1);
+        assert_eq!(c.regs[6], 0xFFFF_FF80);
+        assert_eq!(c.regs[PC], 4);
+
+        // ldrsh.w r9, [r10, r11, lsl #2] (0xF93A902B): sign-extend halfword
+        // at r10 + (r11 << 2).
+        let mut c = core();
+        c.regs[10] = 0x200;
+        c.regs[11] = 1;
+        c.write_u16(0x204, 0x8000);
+        run(&mut c, &[0xF93A, 0x902B], 1);
+        assert_eq!(c.regs[9], 0xFFFF_8000);
+
+        // ldrsb.w r0, [r1, #4] (0xF9910004): sign-extend byte at r1 + 4.
+        let mut c = core();
+        c.regs[1] = 0x100;
+        c.write_u8(0x104, 0x7F);
+        run(&mut c, &[0xF991, 0x0004], 1);
+        assert_eq!(c.regs[0], 0x7F);
+
+        // ldrsh.w r2, [r3, #8] (0xF9B32008): sign-extend halfword at r3 + 8.
+        let mut c = core();
+        c.regs[3] = 0x200;
+        c.write_u16(0x208, 0x1234);
+        run(&mut c, &[0xF9B3, 0x2008], 1);
+        assert_eq!(c.regs[2], 0x1234);
+
+        // ldrsb.w r0, [pc, #4] (0xF99F0004): literal base is Align(PC, 4).
+        let mut c = core();
+        c.write_u8(0x8, 0x80);
+        run(&mut c, &[0xF99F, 0x0004], 1);
+        assert_eq!(c.regs[0], 0xFFFF_FF80);
+
+        // ldrsh.w r1, [pc, #8] (0xF9BF1008): literal base is Align(PC, 4).
+        let mut c = core();
+        c.write_u16(0xC, 0x8000);
+        run(&mut c, &[0xF9BF, 0x1008], 1);
+        assert_eq!(c.regs[1], 0xFFFF_8000);
     }
 
     #[test]
