@@ -244,6 +244,24 @@ fn arr(args: &Map<String, Value>, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Extract a comma-separated (or array) field list, e.g. `"pc,registers"`.
+fn csv(args: &Map<String, Value>, key: &str) -> Vec<String> {
+    args.get(key)
+        .map(|v| match v {
+            Value::Array(a) => a
+                .iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect(),
+            Value::String(s) => s
+                .split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect(),
+            _ => Vec::new(),
+        })
+        .unwrap_or_default()
+}
+
 /// Load (or create) the session simulator, run `f`, then save it back when
 /// `mutate` is true and a session path is known.
 fn with_sim<F>(server: &McpServer, args: &Map<String, Value>, mutate: bool, f: F) -> Result<Value>
@@ -404,13 +422,14 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "state",
-            description: "读取当前完整状态（寄存器/内存/外设/CSR/断点/固件/符号）。",
+            description: "读取当前完整状态（寄存器/内存/外设/CSR/断点/固件/符号），可用 fields 选取字段子集。",
             schema: obj(
                 &[
                     ("session", session.clone()),
                     ("arch", arch.clone()),
                     ("firmware", firmware.clone()),
                     ("base", base.clone()),
+                    ("fields", prop_str("逗号分隔的 JSON 字段子集（如 pc,registers,csr）。")),
                 ],
                 &[],
             ),
@@ -1251,7 +1270,14 @@ fn tool_session_save(server: &McpServer, args: &Map<String, Value>) -> Result<Va
 }
 
 fn tool_state(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    with_sim(server, args, false, |sim, fw, _| Ok(full_state(sim, fw)))
+    let fields = csv(args, "fields");
+    with_sim(server, args, false, |sim, fw, _| {
+        let mut value = full_state(sim, fw);
+        if !fields.is_empty() {
+            value = crate::select_json_fields(&value, &fields)?;
+        }
+        Ok(value)
+    })
 }
 
 fn tool_step(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {

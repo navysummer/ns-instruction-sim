@@ -6463,6 +6463,16 @@ fn mcp_call_step_and_state() {
     assert_eq!(r["structuredContent"]["pc"], 0x8000_0004u64);
     assert!(r["structuredContent"]["registers"].is_object());
 
+    // Field-subset state returns only the requested fields.
+    let r = client.call_tool(
+        "state",
+        serde_json::json!({ "session": sess, "fields": "pc,cycleCount,registers" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "state fields failed: {}", r);
+    assert!(r["structuredContent"].get("pc").is_some());
+    assert!(r["structuredContent"].get("registers").is_some());
+    assert!(r["structuredContent"].get("arch").is_none());
+
     // Register write/read round-trip.
     let r = client.call_tool("reg_set", serde_json::json!({ "session": sess, "name": "x1", "value": "0x1234" }));
     assert!(!r["isError"].as_bool().unwrap(), "reg_set failed: {}", r);
@@ -6545,6 +6555,31 @@ fn mcp_device_codegen_and_svd() {
     // Unknown device error path.
     let r = client.call_tool("device_linker", serde_json::json!({ "device": "nope" }));
     assert!(r["isError"].as_bool().unwrap());
+    client.close();
+}
+
+#[test]
+fn mcp_all_arch_step() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    for arch in [
+        "riscv", "arm", "mcs51", "mcs251", "c166", "xtensa", "avr", "msp430", "v850", "stm8", "rx", "rl78",
+    ] {
+        let sess = tmpdir().join(format!("mcp-all-{arch}-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&sess);
+        let r = client.call_tool("session_create", serde_json::json!({ "session": sess, "arch": arch }));
+        assert!(!r["isError"].as_bool().unwrap(), "{arch} session_create: {}", r);
+        let r = client.call_tool("step", serde_json::json!({ "session": sess }));
+        assert!(!r["isError"].as_bool().unwrap(), "{arch} step: {}", r);
+        assert_eq!(r["structuredContent"]["arch"], arch);
+        let r = client.call_tool("reg_list", serde_json::json!({ "session": sess }));
+        assert!(!r["isError"].as_bool().unwrap(), "{arch} reg_list: {}", r);
+        assert!(r["structuredContent"]["registers"].is_object());
+        let r = client.call_tool("mem_read", serde_json::json!({ "session": sess, "addr": "0x0", "len": 4 }));
+        assert!(!r["isError"].as_bool().unwrap(), "{arch} mem_read: {}", r);
+        let r = client.call_tool("disasm", serde_json::json!({ "session": sess, "addr": "0x0", "count": 2 }));
+        assert!(!r["isError"].as_bool().unwrap(), "{arch} disasm: {}", r);
+    }
     client.close();
 }
 

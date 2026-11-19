@@ -2745,7 +2745,7 @@ fn cmd_state(args: StateArgs) -> Result<()> {
 
 /// Keep only the requested (possibly dot-nested) fields of a JSON value.
 /// An unknown field path is reported as an error instead of being dropped.
-fn select_json_fields(
+pub(crate) fn select_json_fields(
     value: &serde_json::Value,
     paths: &[String],
 ) -> Result<serde_json::Value> {
