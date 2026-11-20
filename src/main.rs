@@ -854,6 +854,12 @@ enum WatchSub {
         /// 监视起始地址（--addr 形式）。
         #[arg(long = "addr", conflicts_with = "addr")]
         addr_flag: Option<String>,
+        /// ELF 符号名（数据符号地址；与 --addr 二选一）。
+        #[arg(long = "symbol")]
+        symbol: Option<String>,
+        /// 相对符号地址的字节偏移（配合 --symbol）。
+        #[arg(long)]
+        offset: Option<String>,
         /// 监视字节数（1..64，默认 1）。
         #[arg(long, default_value = "1")]
         len: u32,
@@ -3858,14 +3864,37 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
             session,
             addr,
             addr_flag,
+            symbol,
+            offset,
             len,
             hit_count,
             once,
             json,
         } => {
-            let addr_num = parse_num(
-                &addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?,
-            )?;
+            let addr_num = if let Some(sym) = symbol.as_deref() {
+                if addr.is_some() || addr_flag.is_some() {
+                    bail!("--addr 与 --symbol 只能二选一");
+                }
+                let sim = Session::load(&session)?.apply(None)?;
+                let s = sim
+                    .symbols
+                    .iter()
+                    .find(|s| s.name == sym)
+                    .ok_or_else(|| anyhow::anyhow!("符号未找到: {sym}"))?;
+                let off = offset
+                    .as_deref()
+                    .map(parse_num)
+                    .transpose()?
+                    .unwrap_or(0);
+                s.address.wrapping_add(off)
+            } else {
+                if offset.is_some() {
+                    bail!("--offset 需要配合 --symbol");
+                }
+                parse_num(
+                    &addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?,
+                )?
+            };
             if len == 0 || len > 64 {
                 bail!("--len 必须在 1..64");
             }

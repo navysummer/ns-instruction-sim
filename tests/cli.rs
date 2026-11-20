@@ -9106,7 +9106,7 @@ fn help_every_param() {
         (&["mcp"], &["--session"]),
         (&["state"], &["--session", "--arch", "--firmware", "--base", "--json", "--fields", "--mem", "--mem-len", "--summary"]),
         (&["symbol", "nearest"], &["--session", "--addr", "--json"]),
-        (&["watch", "set"], &["--session", "--addr", "--len", "--hit-count", "--once", "--json"]),
+        (&["watch", "set"], &["--session", "--addr", "--symbol", "--offset", "--len", "--hit-count", "--once", "--json"]),
         (&["watch", "list"], &["--session", "--json"]),
         (&["watch", "clear"], &["--session", "--addr", "--json"]),
         (&["watch", "enable"], &["--session", "--addr", "--json"]),
@@ -9550,6 +9550,79 @@ fn mcp_watch_overlap() {
     assert!(!r["isError"].as_bool().unwrap(), "watch_set overlap: {}", r);
     assert_eq!(r["structuredContent"]["overlapCount"], 1u64, "{}", r);
     assert_eq!(r["structuredContent"]["overlaps"][0]["address"], 0x10u64, "{}", r);
+    client.close();
+}
+
+#[test]
+fn watch_set_by_symbol() {
+    let dir = tmpdir();
+    let elf = dir.join("watch-sym.elf");
+    write_riscv_elf_with_symbol_at(&elf, &[0x93, 0x00, 0x10, 0x00], "gv", 0x8000_0008);
+    let sess = dir.join("watch-sym.json");
+    let out = Command::new(bin())
+        .args([
+            "state", "--arch", "riscv", "--firmware", elf.to_str().unwrap(),
+            "--session", sess.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Resolve a data symbol to its address.
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(), "--symbol", "gv", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x8000_0008u64);
+    // Symbol + offset.
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(), "--symbol", "gv", "--offset", "2", "--len", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x8000_000au64);
+    // Unknown symbol errors.
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(), "--symbol", "nope"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("符号未找到"));
+    // addr + symbol conflict errors.
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x80000000", "--symbol", "gv"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("二选一"));
+}
+
+#[test]
+fn mcp_watch_set_by_symbol() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-watch-sym-{}.elf", std::process::id()));
+    write_riscv_elf_with_symbol_at(&elf, &[0x93, 0x00, 0x10, 0x00], "gv", 0x8000_0008);
+    let sess = dir.join(format!("mcp-watch-sym-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({
+        "session": s, "arch": "riscv", "firmware": elf.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("watch_set", serde_json::json!({
+        "session": s, "symbol": "gv", "len": 4,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_set: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x8000_0008u64, "{}", r);
+    // Unknown symbol is a tool error.
+    let r = client.call_tool("watch_set", serde_json::json!({
+        "session": s, "symbol": "nope",
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
     client.close();
 }
 

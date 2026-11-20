@@ -870,11 +870,13 @@ fn tools() -> Vec<Tool> {
                 &[
                     ("session", session.clone()),
                     ("addr", addr.clone()),
+                    ("symbol", prop_str("ELF 数据符号名（与 addr 二选一）。")),
+                    ("offset", prop_num("相对符号地址的字节偏移。")),
                     ("len", prop_num("监视字节数（1..64，默认 1）。")),
                     ("hit_count", prop_num("第 N 次写入时暂停（0 = 每次写入）。")),
                     ("once", prop_bool("一次性观察点：命中后自动禁用。")),
                 ],
-                &["addr"],
+                &[],
             ),
             handler: tool_watch_set,
         },
@@ -2427,7 +2429,27 @@ where
 }
 
 fn tool_watch_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    let addr = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
+    let addr = if let Some(sym) = s(args, "symbol") {
+        if s(args, "addr").is_some() {
+            bail!("addr 与 symbol 只能二选一");
+        }
+        let path = server
+            .resolve_session(args)
+            .ok_or_else(|| anyhow::anyhow!("缺少 session"))?;
+        let session = Session::load(&path)?;
+        let sim = session.apply(None)?;
+        let found = sim
+            .symbols
+            .iter()
+            .find(|x| x.name == sym)
+            .ok_or_else(|| anyhow::anyhow!("符号未找到: {sym}"))?;
+        found.address.wrapping_add(u(args, "offset").unwrap_or(0))
+    } else {
+        if s(args, "offset").is_some() {
+            bail!("offset 需要配合 symbol");
+        }
+        parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr 或 symbol"))?)?
+    };
     let len = u(args, "len").unwrap_or(1);
     if !(1..=64).contains(&len) {
         bail!("len 必须在 1..64");
