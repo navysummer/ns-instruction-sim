@@ -120,7 +120,7 @@ ns-instruction-sim/
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` / `region` / `copy` | 内存读/写/填充（含确定性伪随机；`fill` 的 `--pattern` 重复填充字节模式）/搜索模式（`search` 的 `--pattern` 按 `--width` `byte`/`half`/`word`/`dword` 解释为小端整数值，可直接按字/双字常量搜索）/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验）/复制内存区域（源→目标，重叠范围按 memmove 语义）；`read` 可用 `--ascii`（按 ASCII 文本解读，非可打印显示为 `.`）或 `--string`（读取 NUL 结尾字符串，最多 `--len` 字节），`write` 可用 `--string`（写入字符串 ASCII 字节，`--null` 追加 NUL 终止符） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --src --dst --name --format --width --ascii --string --null --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数；`list --symbols` 用 ELF 符号注释断点地址） | `--addr --symbol --line --condition --hit-count --once --symbols --session --json` | 表/JSON |
-| `watch` | `set` / `list` / `clear` / `clear-all` / `enable` / `disable` | 内存观察点管理（`step`/`run`/`continue`/`trace`/`coverage`/`profile` 在每条指令前后比较被监视字节范围，被写入时暂停并报 `lastResult`/`result="watchpoint"`、`watchHit=<地址>`；支持长度/命中次数/一次性/启用禁用；命中计数持久化） | `--addr --len --hit-count --once --session --json` | 表/JSON |
+| `watch` | `set` / `list` / `clear` / `clear-all` / `enable` / `disable` | 内存观察点管理（`step`/`run`/`continue`/`trace`/`coverage`/`profile` 在每条指令前后比较被监视字节范围，被写入时暂停并报 `lastResult`/`result="watchpoint"`、`watchHit=<地址>`；支持长度/命中次数/一次性/启用禁用；命中计数持久化；`set` 检测与既有观察点的地址范围重叠并返回 `overlaps`/`overlapCount`） | `--addr --len --hit-count --once --session --json` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON；`--firmware` 直接加载固件反汇编，无需先建会话，架构从 ELF 推导） | `--firmware --base --arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要；`--mem` 附带指定起始地址的内存快照，人读模式输出 hex dump；JSON 含 `watchpoints` 完整观察点快照） | `--session --arch --firmware --base --mem --mem-len --json --fields --summary` | 状态/JSON/摘要 |
@@ -204,7 +204,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `bp_set/modify/clear/list/enable/disable/clear_all`
    （`bp_list` 支持 `symbols` 参数）、
    `watch_set/list/clear/enable/disable/clear_all`（内存观察点；`watch_set` 支持
-   `len`/`hit_count`/`once`，`state` 返回 `watchpoints` 数组），
+   `len`/`hit_count`/`once`，`watch_set` 返回 `overlaps`/`overlapCount` 报告既有范围重叠，
+   `state` 返回 `watchpoints` 数组），
    `disasm`、`reset`、`cycle_get/estimate/tick/set`（`cycle_estimate` 支持 `symbol` 参数，
    从会话固件符号表解析地址）、`interrupt_take/pending/set`、
    `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`
@@ -316,6 +317,9 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `mcp_watch_tools`：MCP `watch_set/list/clear/enable/disable/clear_all` 与 `state` 的
   `watchpoints` 数组；`continue` 停在观察点（`lastResult`/`watchHit`），`watch_set` 的 `len>64`
   以 `isError:true` 返回。
+- `watch_overlap_reported`：`watch set` 在地址范围与既有观察点重叠时返回
+  `overlaps`/`overlapCount`（JSON），不重叠时为 0。
+- `mcp_watch_overlap`：MCP `watch_set` 返回 `overlaps`/`overlapCount`，报告与既有观察点的重叠。
 - `analyze_stops_on_watchpoint`：`trace`/`coverage`/`profile` 在内存观察点被写入时停止
   （`result="watchpoint"`、`watchHit=<地址>`），命中计数持久化。
 - `mcp_analyze_stops_on_watchpoint`：MCP `trace` 同样停在观察点并返回 `watchHit`，`state` 反映

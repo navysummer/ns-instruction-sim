@@ -2365,6 +2365,17 @@ fn tool_watch_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value
     with_watch_session(server, args, |session| {
         // Replacing a watchpoint at the same address starts its hit count over.
         session.watchpoints.retain(|w| w.address != addr);
+        // Report existing watchpoints whose range overlaps the new one.
+        let mut overlaps: Vec<Value> = Vec::new();
+        for w in &session.watchpoints {
+            let ws = w.address as u64;
+            let we = ws + w.len as u64;
+            let ns = addr as u64;
+            let ne = ns + len as u64;
+            if ws < ne && ns < we {
+                overlaps.push(crate::watch_json(w));
+            }
+        }
         let wp = crate::session::WatchState {
             address: addr,
             len,
@@ -2376,6 +2387,8 @@ fn tool_watch_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value
         session.watchpoints.push(wp.clone());
         let mut out = crate::watch_json(&wp);
         out["count"] = json!(session.watchpoints.len());
+        out["overlaps"] = json!(overlaps);
+        out["overlapCount"] = json!(overlaps.len());
         Ok(out)
     })
 }

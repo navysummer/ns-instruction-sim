@@ -9243,6 +9243,54 @@ fn mcp_watch_tools() {
     client.close();
 }
 
+#[test]
+fn watch_overlap_reported() {
+    let dir = tmpdir();
+    let sess = dir.join("watch-overlap.json");
+    bootstrap(&sess);
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // An overlapping range is reported in the JSON result.
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x12", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["overlapCount"], 1u64);
+    assert_eq!(json["overlaps"][0]["address"], 0x10u64);
+    // A non-overlapping range reports no overlaps.
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x30", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["overlapCount"], 0u64);
+}
+
+#[test]
+fn mcp_watch_overlap() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-watch-overlap-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("watch_set", serde_json::json!({ "session": s, "addr": "0x10", "len": 4 }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_set: {}", r);
+    let r = client.call_tool("watch_set", serde_json::json!({ "session": s, "addr": "0x12", "len": 4 }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_set overlap: {}", r);
+    assert_eq!(r["structuredContent"]["overlapCount"], 1u64, "{}", r);
+    assert_eq!(r["structuredContent"]["overlaps"][0]["address"], 0x10u64, "{}", r);
+    client.close();
+}
+
 /// Bootstrap a session by executing `n` firmware instructions, then arm a
 /// 4-byte watchpoint at 0x10. Returns the session path.
 fn bootstrap_with_watch(elf: &std::path::Path, sess: &std::path::Path, n: u32) {

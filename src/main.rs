@@ -3781,6 +3781,17 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
             let mut s = Session::load(&session)?;
             // Replacing a watchpoint at the same address starts its hit count over.
             s.watchpoints.retain(|w| w.address != addr_num);
+            // Detect overlap with existing watchpoints (for callers to resolve).
+            let mut overlaps: Vec<serde_json::Value> = Vec::new();
+            for w in &s.watchpoints {
+                let ws = w.address as u64;
+                let we = ws + w.len as u64;
+                let ns = addr_num as u64;
+                let ne = ns + len as u64;
+                if ws < ne && ns < we {
+                    overlaps.push(watch_json(w));
+                }
+            }
             let wp = session::WatchState {
                 address: addr_num,
                 len,
@@ -3793,6 +3804,8 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
             s.save(&session)?;
             let mut out = watch_json(&wp);
             out["count"] = serde_json::json!(s.watchpoints.len());
+            out["overlaps"] = serde_json::Value::Array(overlaps.clone());
+            out["overlapCount"] = serde_json::json!(overlaps.len());
             if json {
                 print_json(&out)?;
             } else {
@@ -3800,6 +3813,11 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
                     "已设置观察点 @ 0x{addr_num:08x}（{len} 字节，共 {} 个）",
                     s.watchpoints.len()
                 );
+                for o in &overlaps {
+                    let oa = o["address"].as_u64().unwrap_or(0);
+                    let ol = o["len"].as_u64().unwrap_or(0);
+                    println!("注意: 与已有观察点 @ 0x{oa:08x}（{ol} 字节）重叠");
+                }
             }
             Ok(())
         }
