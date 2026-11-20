@@ -84,6 +84,7 @@ ns-instruction-sim periph uart --session s.json --bytes 0x41 0x42 0x43
 
 # 符号 / 行号 / 周期 / 中断 / 看门狗 / CSR / 外设寄存器
 ns-instruction-sim symbol list --session s.json
+ns-instruction-sim symbol nearest --session s.json --addr 0x80000004 --json
 ns-instruction-sim cycle get --session s.json
 ns-instruction-sim cycle set --session s.json --count 1000
 ns-instruction-sim interrupt pending --session s.json

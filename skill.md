@@ -184,6 +184,8 @@ ns-instruction-sim periph config --session s.json --uart-base 0x50000000 --gpio-
 # 符号 / 行号
 ns-instruction-sim symbol list --session s.json
 ns-instruction-sim symbol at --session s.json 0x80000000
+ns-instruction-sim symbol nearest --session s.json 0x80000004
+ns-instruction-sim symbol nearest --session s.json 0x80000004 --json
 ns-instruction-sim symbol line --session s.json 0x80000000
 ns-instruction-sim symbol addr --session s.json --file 0 --line 1
 

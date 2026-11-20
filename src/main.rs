@@ -1233,6 +1233,21 @@ enum SymbolSub {
         #[arg(long)]
         json: bool,
     },
+    /// 查询最接近且地址不大于给定地址的符号（含偏移）。
+    Nearest {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 地址（--addr 形式，十六进制或十进制）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
     /// 地址 → (源文件, 行号) 映射。
     Line {
         /// 会话文件路径（JSON）。
@@ -4789,6 +4804,39 @@ fn cmd_symbol(sub: SymbolSub) -> Result<()> {
                 );
             } else {
                 println!("0x{:08x}: (无符号)", addr_num);
+            }
+            Ok(())
+        }
+        SymbolSub::Nearest { session, addr, addr_flag, json } => {
+            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+            let addr_num = parse_num(&addr)?;
+            let sim = load_session_sim(&session)?;
+            let found = sim
+                .symbols
+                .iter()
+                .filter(|s| s.address <= addr_num)
+                .max_by_key(|s| s.address)
+                .map(|s| {
+                    serde_json::json!({
+                        "name": s.name,
+                        "address": s.address,
+                        "size": s.size,
+                        "offset": addr_num - s.address,
+                    })
+                });
+            if json {
+                print_json(&found)?;
+            } else if let Some(s) = &found {
+                println!(
+                    "0x{:08x}: {} + {:#x} (base 0x{:08x}, size {})",
+                    addr_num,
+                    s["name"].as_str().unwrap_or(""),
+                    s["offset"].as_u64().unwrap_or(0),
+                    s["address"].as_u64().unwrap_or(0),
+                    s["size"].as_u64().unwrap_or(0)
+                );
+            } else {
+                println!("0x{:08x}: (无前置符号)", addr_num);
             }
             Ok(())
         }

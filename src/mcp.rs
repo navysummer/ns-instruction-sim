@@ -1158,6 +1158,12 @@ fn tools() -> Vec<Tool> {
             handler: tool_symbol_at,
         },
         Tool {
+            name: "symbol_nearest",
+            description: "查询最接近且地址不大于给定地址的符号（含偏移）。",
+            schema: obj(&[("session", session.clone()), ("addr", addr.clone())], &["addr"]),
+            handler: tool_symbol_nearest,
+        },
+        Tool {
             name: "symbol_line",
             description: "地址 -> (源文件, 行号) 映射。",
             schema: obj(&[("session", session.clone()), ("addr", addr.clone())], &["addr"]),
@@ -2908,6 +2914,24 @@ fn tool_symbol_at(server: &McpServer, args: &Map<String, Value>) -> Result<Value
         Ok(sim
             .symbol_at(addr)
             .map(|sym| json!({ "name": sym.name, "address": sym.address, "size": sym.size }))
+            .unwrap_or(Value::Null))
+    })
+}
+
+fn tool_symbol_nearest(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let addr = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
+    with_sim(server, args, false, |sim, _, _| {
+        Ok(sim
+            .symbols
+            .iter()
+            .filter(|sym| sym.address <= addr)
+            .max_by_key(|sym| sym.address)
+            .map(|sym| json!({
+                "name": sym.name,
+                "address": sym.address,
+                "size": sym.size,
+                "offset": addr - sym.address,
+            }))
             .unwrap_or(Value::Null))
     })
 }

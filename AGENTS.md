@@ -125,7 +125,7 @@ ns-instruction-sim/
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要；`--mem` 附带指定起始地址的内存快照，人读模式输出 hex dump；JSON 含 `watchpoints` 完整观察点快照） | `--session --arch --firmware --base --mem --mem-len --json --fields --summary` | 状态/JSON/摘要 |
 | `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费）；`reg-dump --fields` 附带每个寄存器的 SVD 位域解码（位偏移/宽度/当前值/描述） | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --input --file --device --peripheral --register --field --fields --force --session --json` | 表/JSON |
-| `symbol` | `list` / `at` / `line` / `addr` | ELF 符号与源行号映射 | `--filter --addr --file --line --session --json` | 表/JSON |
+| `symbol` | `list` / `at` / `nearest` / `line` / `addr` | ELF 符号与源行号映射（`nearest` 查询地址不大于给定地址的最近符号，含 `offset`） | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` / `set` | 周期计数/指令周期估算/外设推进/设置周期计数（模拟时间流逝/超时） | `--addr --cycles --count --session --json` | 值/JSON |
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
 | `watchdog` | `status` / `feed` / `config` / `reset` | 看门狗查询/喂狗/配置/强制复位 | `--enabled --timeout --base --entry --session --json` | 表/JSON |
@@ -205,7 +205,7 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `disasm`、`reset`、`cycle_get/estimate/tick/set`、`interrupt_take/pending/set`、
    `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`
    （`periph_reg_dump` 默认返回 `fields` 位域解码，`fields: false` 省略）、
-   `symbol_list/at/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
+   `symbol_list/at/nearest/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
    `trace`、`coverage`、`profile` 与 CLI 同名子命令一一对应（`analyze_schema` 共享参数），
    返回结构化轨迹/覆盖/直方图 JSON，并支持 `out` 参数把结果写入文件；
    `device_memory_map`（设备内存区域与地址所属区域）、`session_info`（会话元信息）、
@@ -664,6 +664,9 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `state_reports_loaded_firmware`：`state --json` 报告已加载固件（path/base/format）。
 - `state_reports_pc_symbol`：`state --json` 报告 PC 处最近符号（pcSymbol）。
 - `symbol_list_shows_symbols`：`symbol list --json` 列出 ELF 符号（名称/地址）。
+- `symbol_nearest`：`symbol nearest` 查询地址不大于给定地址的最近符号（含 `offset`；
+  位置参数/`--addr` 双形式；无前置符号为 null；缺地址报错）。
+- `mcp_symbol_nearest`：MCP `symbol_nearest` 返回最近符号与偏移，无符号为 null。
 - `device_svd_by_device_key`：`device svd --device` 从内置 SVD 解析；缺源报错。
 - `disasm_rx_fc_fd_long_forms`：RX `0xFC`/`0xFD` 长操作码族反汇编文本与实际宽度推进。
 - `step_rx_fc_fd_long_forms`：RX `0xFC`/`0xFD` 长操作码族执行（ADC/SHLR/SBB）与 PC/寄存器变化。

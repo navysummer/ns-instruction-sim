@@ -8608,6 +8608,7 @@ fn help_every_param() {
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--json"]),
         (&["mcp"], &["--session"]),
         (&["state"], &["--session", "--arch", "--firmware", "--base", "--json", "--fields", "--mem", "--mem-len", "--summary"]),
+        (&["symbol", "nearest"], &["--session", "--addr", "--json"]),
         (&["watch", "set"], &["--session", "--addr", "--len", "--hit-count", "--once", "--json"]),
         (&["watch", "list"], &["--session", "--json"]),
         (&["watch", "clear"], &["--session", "--addr", "--json"]),
@@ -9192,6 +9193,105 @@ fn mcp_mem_read_ascii_string() {
     );
     assert!(!r["isError"].as_bool().unwrap(), "mem_read string failed: {}", r);
     assert_eq!(r["structuredContent"]["text"], "Hi!");
+
+    client.close();
+}
+
+#[test]
+fn symbol_nearest() {
+    let dir = tmpdir();
+    let sess = dir.join("nearest.json");
+    let elf = dir.join("nearest.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // Nearest symbol at/below an in-function address reports the offset.
+    let out = Command::new(bin())
+        .args(["symbol", "nearest", "--session", sess.to_str().unwrap(),
+               "--addr", "0x80000004", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["name"], "main");
+    assert_eq!(v["address"], 0x8000_0000u64);
+    assert_eq!(v["offset"], 4u64);
+    assert_eq!(v["size"], 16u64);
+
+    // Positional form; address one past the symbol still resolves to it.
+    let out = Command::new(bin())
+        .args(["symbol", "nearest", "--session", sess.to_str().unwrap(), "0x80000010", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["name"], "main");
+    assert_eq!(v["offset"], 16u64);
+
+    // An address below every symbol has no preceding symbol.
+    let out = Command::new(bin())
+        .args(["symbol", "nearest", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap(), serde_json::Value::Null);
+
+    // Missing address is an error.
+    let out = Command::new(bin())
+        .args(["symbol", "nearest", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("缺少地址"));
+}
+
+#[test]
+fn mcp_symbol_nearest() {
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-nearest-{}.json", std::process::id()));
+    let elf = dir.join("mcp-nearest.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    client.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+
+    let r = client.call_tool(
+        "run",
+        serde_json::json!({ "session": sess, "firmware": elf.to_str().unwrap(), "steps": 1 }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "run failed: {}", r);
+
+    let r = client.call_tool(
+        "symbol_nearest",
+        serde_json::json!({ "session": sess, "addr": "0x80000004" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "symbol_nearest failed: {}", r);
+    assert_eq!(r["structuredContent"]["name"], "main");
+    assert_eq!(r["structuredContent"]["offset"], 4u64);
+
+    let r = client.call_tool(
+        "symbol_nearest",
+        serde_json::json!({ "session": sess, "addr": "0x10" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "symbol_nearest none failed: {}", r);
+    assert!(r["structuredContent"].is_null());
 
     client.close();
 }
