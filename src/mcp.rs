@@ -681,6 +681,8 @@ fn tools() -> Vec<Tool> {
                     ("values", prop_arr("值序列（配合 width，十进制/十六进制）。")),
                     ("width", prop_str("数据宽度：byte/half/word。")),
                     ("file", prop_str("从二进制文件读取字节写入。")),
+                    ("string", prop_str("写入字符串的 ASCII 字节。")),
+                    ("null", prop_bool("配合 string：追加 NUL 终止符。")),
                 ],
                 &["addr"],
             ),
@@ -1887,7 +1889,21 @@ fn tool_mem_write(server: &McpServer, args: &Map<String, Value>) -> Result<Value
     let addr_num = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
     let width = s(args, "width").unwrap_or_else(|| "byte".to_string());
     let mut data = Vec::new();
-    if let Some(file) = s(args, "file") {
+    if let Some(text) = s(args, "string") {
+        let elem_size = match width.as_str() {
+            "byte" => 1usize,
+            "half" => 2usize,
+            "word" => 4usize,
+            other => bail!("不支持的内存宽度: {other}（支持 byte/half/word）"),
+        };
+        if elem_size != 1 {
+            bail!("string 要求 width=byte");
+        }
+        data.extend_from_slice(text.as_bytes());
+        if b(args, "null").unwrap_or(false) {
+            data.push(0);
+        }
+    } else if let Some(file) = s(args, "file") {
         data = std::fs::read(&file).with_context(|| format!("读取 {file} 失败"))?;
     } else {
         let elem_size = match width.as_str() {

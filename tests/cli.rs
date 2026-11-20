@@ -8604,6 +8604,7 @@ fn help_every_param() {
         (&["mem", "read"], &["--session", "--arch", "--addr", "--len", "--width", "--ascii", "--string", "--out", "--json"]),
         (&["mem", "region"], &["--session", "--arch", "--device", "--region", "--offset", "--len", "--json"]),
         (&["mem", "copy"], &["--session", "--arch", "--src", "--dst", "--len", "--json"]),
+        (&["mem", "write"], &["--session", "--arch", "--addr", "--bytes", "--width", "--values", "--file", "--string", "--null", "--json"]),
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--fields", "--json"]),
@@ -9435,6 +9436,84 @@ fn mcp_run_until_symbol() {
         serde_json::json!({ "session": sess, "firmware": elf.to_str().unwrap(), "until_symbol": "nope" }),
     );
     assert!(r["isError"].as_bool().unwrap(), "unknown symbol must error");
+
+    client.close();
+}
+
+#[test]
+fn mem_write_string_roundtrip() {
+    let dir = tmpdir();
+    let sess = dir.join("wstr.json");
+    let out = Command::new(bin())
+        .args([
+            "mem", "write", "--session", sess.to_str().unwrap(), "--arch", "riscv",
+            "--addr", "0x20000000", "--string", "Hello, world", "--null", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["len"], 13u64); // "Hello, world" (12) + NUL
+
+    // Read the string back (stops at the NUL).
+    let out = Command::new(bin())
+        .args([
+            "mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x20000000",
+            "--len", "32", "--string", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["text"], "Hello, world");
+
+    // `--null` without `--string` is rejected (clap requires).
+    let out = Command::new(bin())
+        .args([
+            "mem", "write", "--session", sess.to_str().unwrap(), "--arch", "riscv",
+            "--addr", "0x20000000", "--null",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--string"));
+
+    // `--string` with a non-byte width is rejected.
+    let out = Command::new(bin())
+        .args([
+            "mem", "write", "--session", sess.to_str().unwrap(), "--arch", "riscv",
+            "--addr", "0x20000000", "--string", "Hi", "--width", "word",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--width byte"));
+}
+
+#[test]
+fn mcp_mem_write_string() {
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-wstr-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    client.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+
+    let r = client.call_tool("session_create", serde_json::json!({ "session": sess, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create failed: {}", r);
+    let r = client.call_tool(
+        "mem_write",
+        serde_json::json!({ "session": sess, "addr": "0x20000000", "string": "Hi!", "null": true }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write failed: {}", r);
+    assert_eq!(r["structuredContent"]["len"], 4u64);
+
+    let r = client.call_tool(
+        "mem_read",
+        serde_json::json!({ "session": sess, "addr": "0x20000000", "len": 16, "string": true }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "mem_read failed: {}", r);
+    assert_eq!(r["structuredContent"]["text"], "Hi!");
 
     client.close();
 }

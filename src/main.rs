@@ -488,6 +488,12 @@ enum MemSub {
         /// 从二进制文件读取字节写入。
         #[arg(long)]
         file: Option<PathBuf>,
+        /// 写入字符串的 ASCII 字节（与 --file/--bytes/--values 互斥）。
+        #[arg(long, conflicts_with_all = ["bytes", "values", "file"])]
+        string: Option<String>,
+        /// 配合 --string：追加 NUL 终止符。
+        #[arg(long, requires = "string")]
+        null: bool,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -3124,7 +3130,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Write { session, arch, addr, addr_flag, bytes, width, values, file, json } => {
+        MemSub::Write { session, arch, addr, addr_flag, bytes, width, values, file, string, null, json } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let mut data = Vec::new();
@@ -3134,7 +3140,15 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                 "word" => 4usize,
                 other => bail!("不支持的内存宽度: {other}（支持 byte/half/word）"),
             };
-            if let Some(f) = &file {
+            if let Some(s) = &string {
+                if elem_size != 1 {
+                    bail!("--string 要求 --width byte");
+                }
+                data.extend_from_slice(s.as_bytes());
+                if null {
+                    data.push(0);
+                }
+            } else if let Some(f) = &file {
                 data = std::fs::read(&f).with_context(|| format!("读取 {} 失败", f.display()))?;
             } else if elem_size > 1 {
                 for v in &values {
