@@ -961,6 +961,57 @@ fn periph_timer_counter_set_readback() {
 }
 
 #[test]
+fn periph_gpio_direction_output_readback() {
+    let dir = tmpdir();
+    let sess = dir.join("gpio-dir.json");
+    bootstrap(&sess);
+    // Set direction (output) and output level for pin 5.
+    let out = Command::new(bin())
+        .args([
+            "periph", "gpio", "--session", sess.to_str().unwrap(), "--pin", "5",
+            "--direction", "1", "--output", "1", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pin"], 5u64);
+    assert_eq!(json["direction"], 1u64);
+    assert_eq!(json["output"], 1u64);
+    assert_eq!(json["input"], 0u64);
+    // Read the pin state back in a separate invocation.
+    let out = Command::new(bin())
+        .args(["periph", "gpio", "--session", sess.to_str().unwrap(), "--pin", "5", "--read", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["direction"], 1u64);
+    assert_eq!(json["output"], 1u64);
+    assert_eq!(json["input"], 0u64);
+    // Set input value for the same pin; it stays separate from the output.
+    let out = Command::new(bin())
+        .args(["periph", "gpio", "--session", sess.to_str().unwrap(), "--pin", "5", "--value", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["periph", "gpio", "--session", sess.to_str().unwrap(), "--pin", "5", "--read", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["input"], 0u64);
+    assert_eq!(json["output"], 1u64);
+    // Invalid direction is rejected.
+    let out = Command::new(bin())
+        .args(["periph", "gpio", "--session", sess.to_str().unwrap(), "--pin", "5", "--direction", "2"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("方向必须是"));
+}
+
+#[test]
 fn mem_write_read_roundtrip_persists() {
     let dir = tmpdir();
     let sess = dir.join("mem.json");
@@ -8203,6 +8254,38 @@ fn mcp_periph_timer_counter() {
 }
 
 #[test]
+fn mcp_periph_gpio_status() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-gpio-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({
+        "session": s, "arch": "riscv",
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    // Set direction and output.
+    let r = client.call_tool("periph_gpio", serde_json::json!({
+        "session": s, "pin": 5, "direction": 1, "output": 1,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_gpio: {}", r);
+    assert_eq!(r["structuredContent"]["direction"], 1u64, "{}", r);
+    assert_eq!(r["structuredContent"]["output"], 1u64, "{}", r);
+    // Read back.
+    let r = client.call_tool("periph_gpio", serde_json::json!({
+        "session": s, "pin": 5, "read": true,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_gpio read: {}", r);
+    assert_eq!(r["structuredContent"]["direction"], 1u64, "{}", r);
+    assert_eq!(r["structuredContent"]["output"], 1u64, "{}", r);
+    // No mutation and no read is an error.
+    let r = client.call_tool("periph_gpio", serde_json::json!({ "session": s, "pin": 5 }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn disasm_from_firmware() {
     let dir = tmpdir();
     let elf = dir.join("disfw.elf");
@@ -8746,6 +8829,7 @@ fn help_every_param() {
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--fields", "--json"]),
         (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--json"]),
+        (&["periph", "gpio"], &["--session", "--pin", "--value", "--direction", "--output", "--read", "--json"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
         (&["cycle", "estimate"], &["--session", "--addr", "--symbol", "--json"]),
         (&["cycle", "set"], &["--session", "--count", "--json"]),

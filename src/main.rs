@@ -1069,6 +1069,15 @@ enum PeriphSub {
         /// 引脚值（--value 形式）。
         #[arg(long = "value", conflicts_with = "value")]
         value_flag: Option<u32>,
+        /// 设置该引脚方向（0 = 输入，1 = 输出）。
+        #[arg(long)]
+        direction: Option<u32>,
+        /// 设置该引脚输出电平（0/1；写入 gpio_out 位）。
+        #[arg(long)]
+        output: Option<u32>,
+        /// 仅读取当前引脚状态（不修改）。
+        #[arg(long)]
+        read: bool,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -4540,31 +4549,68 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             Ok(())
         }
-        PeriphSub::Gpio { session, pin, pin_flag, value, value_flag, json } => {
+        PeriphSub::Gpio { session, pin, pin_flag, value, value_flag, direction, output, read, json } => {
             let pin = pin_flag.or(pin).ok_or_else(|| anyhow::anyhow!("缺少引脚号"))?;
-            let value = value_flag.or(value).ok_or_else(|| anyhow::anyhow!("缺少引脚值"))?;
             if pin > 31 {
                 bail!("引脚号必须在 0..=31");
             }
-            if value > 1 {
-                bail!("引脚值必须是 0 或 1");
+            let value = value_flag.or(value);
+            if let Some(v) = value {
+                if v > 1 {
+                    bail!("引脚值必须是 0 或 1");
+                }
+            }
+            if let Some(v) = direction {
+                if v > 1 {
+                    bail!("方向必须是 0 或 1");
+                }
+            }
+            if let Some(v) = output {
+                if v > 1 {
+                    bail!("输出值必须是 0 或 1");
+                }
             }
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
-            if value == 1 {
-                sim.peripherals.gpio_in |= 1 << pin;
-            } else {
-                sim.peripherals.gpio_in &= !(1 << pin);
+            if let Some(v) = value {
+                if v == 1 {
+                    sim.peripherals.gpio_in |= 1 << pin;
+                } else {
+                    sim.peripherals.gpio_in &= !(1 << pin);
+                }
+            }
+            if let Some(v) = direction {
+                if v == 1 {
+                    sim.peripherals.gpio_dir |= 1 << pin;
+                } else {
+                    sim.peripherals.gpio_dir &= !(1 << pin);
+                }
+            }
+            if let Some(v) = output {
+                if v == 1 {
+                    sim.peripherals.gpio_out |= 1 << pin;
+                } else {
+                    sim.peripherals.gpio_out &= !(1 << pin);
+                }
             }
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
+            let in_val = (sim.peripherals.gpio_in >> pin) & 1;
+            let out_val = (sim.peripherals.gpio_out >> pin) & 1;
+            let dir_val = (sim.peripherals.gpio_dir >> pin) & 1;
             if json {
                 print_json(&serde_json::json!({
                     "pin": pin,
-                    "value": value,
+                    "value": in_val,
+                    "input": in_val,
+                    "output": out_val,
+                    "direction": dir_val,
+                    "read": read,
                     "gpioIn": sim.peripherals.gpio_in,
+                    "gpioOut": sim.peripherals.gpio_out,
+                    "gpioDir": sim.peripherals.gpio_dir,
                 }))?;
             } else {
-                println!("GPIO IN 引脚 {pin} = {value}");
+                println!("GPIO 引脚 {pin}: IN={in_val} OUT={out_val} DIR={dir_val}");
             }
             Ok(())
         }
