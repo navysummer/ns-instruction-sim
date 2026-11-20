@@ -125,7 +125,7 @@ ns-instruction-sim/
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON；`--firmware` 直接加载固件反汇编，无需先建会话，架构从 ELF 推导） | `--firmware --base --arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要；`--mem` 附带指定起始地址的内存快照，人读模式输出 hex dump；JSON 含 `watchpoints` 完整观察点快照） | `--session --arch --firmware --base --mem --mem-len --json --fields --summary` | 状态/JSON/摘要 |
-| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费）；`reg-dump --fields` 附带每个寄存器的 SVD 位域解码（位偏移/宽度/当前值/描述）；`timer` 可直接设置/读取运行时计数器（`--counter`）与更新计数（`--update-count`）；`gpio` 可设置引脚方向/输出电平（`--direction`/`--output`）并读取输入/输出/方向（`--read`） | `--uart-base --gpio-base --pin --value --direction --output --read --index --enabled --prescaler --auto-reload --counter --update-count --addr --name --len --bytes --input --file --device --peripheral --register --field --fields --force --session --json` | 表/JSON |
+| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费），`--peek` 查看下一条待读字节而不消费、`--rx-drain` 清空接收 FIFO；`reg-dump --fields` 附带每个寄存器的 SVD 位域解码（位偏移/宽度/当前值/描述）；`timer` 可直接设置/读取运行时计数器（`--counter`）与更新计数（`--update-count`）；`gpio` 可设置引脚方向/输出电平（`--direction`/`--output`）并读取输入/输出/方向（`--read`） | `--uart-base --gpio-base --pin --value --direction --output --read --index --enabled --prescaler --auto-reload --counter --update-count --addr --name --len --bytes --input --peek --rx-drain --file --device --peripheral --register --field --fields --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `nearest` / `line` / `addr` | ELF 符号与源行号映射（`nearest` 查询地址不大于给定地址的最近符号，含 `offset`） | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` / `set` | 周期计数/指令周期估算/外设推进/设置周期计数（模拟时间流逝/超时）；`estimate` 可用 `--symbol` 按 ELF 符号解析地址 | `--addr --symbol --cycles --count --session --json` | 值/JSON |
 | `interrupt` | `take` / `pending` / `vector` / `set` | 中断触发/查询/向量表/置线；`vector` 返回 mtvec 基址与模式（`direct`/`vectored`）及每行目标地址 | `--line --value --session --json` | 值/JSON |
@@ -214,6 +214,7 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    返回 `base`/`mode`/`vectors`）、
    `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`
    （`periph_reg_dump` 默认返回 `fields` 位域解码，`fields: false` 省略；
+   `periph_uart` 支持 `peek` 查看下一条待读字节与 `rx_drain` 清空接收 FIFO；
    `periph_timer` 支持 `counter`/`update_count` 直接设置运行时计数器与更新计数；
    `periph_gpio` 支持 `direction`/`output`/`read` 设置方向、输出并读取引脚状态）、
    `symbol_list/at/nearest/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
@@ -349,6 +350,11 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   固件从 UART 数据寄存器读取（FIFO 消费、跨会话持久化），`state --json` 的
   `peripherals.uartInput` 显示未消费字节。
 - `mcp_periph_uart_input`：MCP `periph_uart {"bytes":[...]}` 注入后 `run` 读到首字节。
+- `periph_uart_peek_and_drain`：`periph uart --peek` 查看下一条待读字节而不消费（多次 peek
+  返回同一字节、`inputLen` 不变），`--rx-drain` 清空接收 FIFO（`drained` 回报丢弃数），
+  peek 后 `peek` 为 null；人读模式标注 `待读首字节: 0xNN`。
+- `mcp_periph_uart_peek_drain`：MCP `periph_uart` 的 `peek`/`rx_drain` 参数跨调用持久化，
+  peek 不消费、drain 清空后 peek 为 null。
 - `device_svd_parse_and_filter`：SVD 文件解析、外设/寄存器过滤与错误路径。
 - `run_steps_runs_exactly_n_instructions`：`--steps N` 精确运行 N 条指令并停住。
 - `run_until_stops_at_address`：`run --until` 临时断点运行到指定地址且不持久化。

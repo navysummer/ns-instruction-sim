@@ -1103,6 +1103,12 @@ enum PeriphSub {
         /// 注入 UART 输入字节（空格分隔，支持 0xNN；与 --input 互斥）。
         #[arg(long, value_delimiter = ' ', num_args = 1.., conflicts_with = "input")]
         bytes: Vec<String>,
+        /// 仅查看下一条待读输入字节（不从 FIFO 消费）。
+        #[arg(long)]
+        peek: bool,
+        /// 丢弃全部待读输入字节（清空接收 FIFO）。
+        #[arg(long)]
+        rx_drain: bool,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -4850,7 +4856,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             Ok(())
         }
-        PeriphSub::Uart { session, clear, input, bytes, json } => {
+        PeriphSub::Uart { session, clear, input, bytes, peek, rx_drain, json } => {
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             let mut injected = 0usize;
             if let Some(text) = &input {
@@ -4868,7 +4874,18 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 injected = data.len();
                 sim.push_uart_input(&data);
             }
-            if injected > 0 || clear {
+            let peeked = if peek {
+                sim.peripherals.uart_rx.borrow().front().copied()
+            } else {
+                None
+            };
+            let mut drained = 0usize;
+            if rx_drain {
+                let mut q = sim.peripherals.uart_rx.borrow_mut();
+                drained = q.len();
+                q.clear();
+            }
+            if injected > 0 || clear || rx_drain {
                 if clear {
                     sim.peripherals.outputs.clear();
                 }
@@ -4885,11 +4902,19 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                     "cleared": clear,
                     "injected": injected,
                     "inputLen": rx_len,
+                    "peek": peeked,
+                    "drained": drained,
                 }))?;
             } else {
                 let mut msg = format!("UART 输出 ({len} 字节): {text}");
                 if injected > 0 {
                     msg.push_str(&format!("\nUART 注入 {injected} 字节（剩余接收队列 {rx_len}）"));
+                }
+                if let Some(b) = peeked {
+                    msg.push_str(&format!("\nUART 待读首字节: 0x{b:02x}"));
+                }
+                if drained > 0 {
+                    msg.push_str(&format!("\nUART 已丢弃 {drained} 字节接收输入"));
                 }
                 println!("{msg}");
             }

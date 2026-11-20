@@ -1030,13 +1030,15 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "periph_uart",
-            description: "读取 UART 输出 / 注入输入字节（固件从数据寄存器读取）。",
+            description: "读取 UART 输出 / 注入输入字节（固件从数据寄存器读取）/ 查看或清空接收 FIFO。",
             schema: obj(
                 &[
                     ("session", session.clone()),
                     ("clear", prop_bool("清空输出缓冲。")),
                     ("input", prop_str("注入 UART 输入文本（UTF-8 字节，FIFO）。")),
                     ("bytes", prop_arr("注入 UART 输入字节（支持 0xNN）。")),
+                    ("peek", prop_bool("仅查看下一条待读输入字节（不从 FIFO 消费）。")),
+                    ("rx_drain", prop_bool("丢弃全部待读输入字节（清空接收 FIFO）。")),
                 ],
                 &["session"],
             ),
@@ -2820,6 +2822,8 @@ fn tool_periph_config(server: &McpServer, args: &Map<String, Value>) -> Result<V
 
 fn tool_periph_uart(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let clear = b(args, "clear").unwrap_or(false);
+    let peek = b(args, "peek").unwrap_or(false);
+    let rx_drain = b(args, "rx_drain").unwrap_or(false);
     let mut injected = 0usize;
     with_sim(server, args, true, |sim, _, _| {
         if let Some(text) = s(args, "input") {
@@ -2840,6 +2844,17 @@ fn tool_periph_uart(server: &McpServer, args: &Map<String, Value>) -> Result<Val
                 sim.push_uart_input(&data);
             }
         }
+        let peeked = if peek {
+            sim.peripherals.uart_rx.borrow().front().copied()
+        } else {
+            None
+        };
+        let mut drained = 0usize;
+        if rx_drain {
+            let mut q = sim.peripherals.uart_rx.borrow_mut();
+            drained = q.len();
+            q.clear();
+        }
         let text = String::from_utf8_lossy(&sim.peripherals.outputs).into_owned();
         let len = sim.peripherals.outputs.len();
         if clear {
@@ -2852,6 +2867,8 @@ fn tool_periph_uart(server: &McpServer, args: &Map<String, Value>) -> Result<Val
             "cleared": clear,
             "injected": injected,
             "inputLen": input_len,
+            "peek": peeked,
+            "drained": drained,
         }))
     })
 }

@@ -8377,6 +8377,61 @@ fn periph_uart_input_injects_and_firmware_reads() {
 }
 
 #[test]
+fn periph_uart_peek_and_drain() {
+    let dir = tmpdir();
+    let sess = dir.join("uart-peek.json");
+    Command::new(bin())
+        .args(["state", "--arch", "riscv", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    // Inject three bytes and peek: the first byte is shown but not consumed.
+    let out = Command::new(bin())
+        .args(["periph", "uart", "--session", sess.to_str().unwrap(),
+               "--bytes", "0x41", "0x42", "0x43", "--peek", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["injected"], 3u64, "{}", json);
+    assert_eq!(json["peek"], 0x41u64, "{}", json);
+    assert_eq!(json["inputLen"], 3u64, "{}", json);
+    // Peeking again still returns the same byte (not consumed).
+    let out = Command::new(bin())
+        .args(["periph", "uart", "--session", sess.to_str().unwrap(), "--peek", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["peek"], 0x41u64, "{}", json);
+    assert_eq!(json["inputLen"], 3u64, "{}", json);
+    // Human output names the peeked byte.
+    let out = Command::new(bin())
+        .args(["periph", "uart", "--session", sess.to_str().unwrap(), "--peek"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("待读首字节: 0x41"));
+    // Drain the receive FIFO: all three bytes dropped.
+    let out = Command::new(bin())
+        .args(["periph", "uart", "--session", sess.to_str().unwrap(), "--rx-drain", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["drained"], 3u64, "{}", json);
+    assert_eq!(json["inputLen"], 0u64, "{}", json);
+    // Peek after drain is null (empty FIFO), persisted.
+    let out = Command::new(bin())
+        .args(["periph", "uart", "--session", sess.to_str().unwrap(), "--peek", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["peek"].is_null(), "{}", json);
+    assert_eq!(json["inputLen"], 0u64, "{}", json);
+}
+
+#[test]
 fn mcp_periph_uart_input() {
     let mut client = McpClient::start();
     let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
@@ -8407,6 +8462,38 @@ fn mcp_periph_uart_input() {
     }));
     assert!(!r["isError"].as_bool().unwrap(), "run: {}", r);
     assert_eq!(r["structuredContent"]["registers"]["ra"], 0x41u64, "{}", r);
+    client.close();
+}
+
+#[test]
+fn mcp_periph_uart_peek_drain() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-uart-peek-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    // Inject + peek: the first byte is shown but not consumed.
+    let r = client.call_tool("periph_uart", serde_json::json!({
+        "session": s, "bytes": ["0x41", "0x42"], "peek": true,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_uart peek: {}", r);
+    assert_eq!(r["structuredContent"]["peek"], 0x41u64, "{}", r);
+    assert_eq!(r["structuredContent"]["inputLen"], 2u64, "{}", r);
+    // Peek alone (no consume), cross-call persisted.
+    let r = client.call_tool("periph_uart", serde_json::json!({ "session": s, "peek": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_uart peek2: {}", r);
+    assert_eq!(r["structuredContent"]["peek"], 0x41u64, "{}", r);
+    // Drain the receive FIFO.
+    let r = client.call_tool("periph_uart", serde_json::json!({ "session": s, "rx_drain": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_uart drain: {}", r);
+    assert_eq!(r["structuredContent"]["drained"], 2u64, "{}", r);
+    assert_eq!(r["structuredContent"]["inputLen"], 0u64, "{}", r);
+    let r = client.call_tool("periph_uart", serde_json::json!({ "session": s, "peek": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_uart peek3: {}", r);
+    assert!(r["structuredContent"]["peek"].is_null(), "{}", r);
     client.close();
 }
 
@@ -9183,7 +9270,7 @@ fn help_every_param() {
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--fields", "--json"]),
-        (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--json"]),
+        (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--peek", "--rx-drain", "--json"]),
         (&["periph", "gpio"], &["--session", "--pin", "--value", "--direction", "--output", "--read", "--json"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
         (&["cycle", "estimate"], &["--session", "--addr", "--symbol", "--json"]),

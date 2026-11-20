@@ -183,6 +183,8 @@ ns-instruction-sim state --session s.json --summary
 ns-instruction-sim periph status --session s.json
 ns-instruction-sim periph uart --session s.json --input "AT\r\n"
 ns-instruction-sim periph uart --session s.json --bytes 0x41 0x42 0x43
+ns-instruction-sim periph uart --session s.json --peek --json
+ns-instruction-sim periph uart --session s.json --rx-drain --json
 ns-instruction-sim periph gpio --session s.json --pin 0 --direction 1 --output 1 --read --json
 ns-instruction-sim periph config --session s.json --uart-base 0x50000000 --gpio-base 0x50002000
 
