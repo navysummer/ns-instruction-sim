@@ -221,7 +221,7 @@ ns-instruction-sim periph reg-read --session s.json --name TIM2.CR1 --device stm
 ns-instruction-sim periph reg-write --session s.json --name TIM2.CR1 --device stm32f103c8 --bytes 0x01 0x00 0x00 0x00
 ns-instruction-sim periph field-get --session s.json --device stm32f103c8 --peripheral RCC --register CR --field HSION
 ns-instruction-sim periph field-set --session s.json --device stm32f103c8 --peripheral RCC --register CR --field HSION --value 1
-ns-instruction-sim periph timer --session s.json --index 1 --enabled true --prescaler 8 --auto-reload 1000
+ns-instruction-sim periph timer --session s.json --index 1 --enabled true --prescaler 8 --auto-reload 1000 --counter 123 --update-count 5
 
 # 执行轨迹 / 覆盖 / 助记符直方图（分析模式）
 ns-instruction-sim trace --session s.json --steps 200 --json

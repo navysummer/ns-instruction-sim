@@ -1038,6 +1038,8 @@ fn tools() -> Vec<Tool> {
                     ("enabled", prop_bool("启用/禁用。")),
                     ("prescaler", prop_num("预分频。")),
                     ("auto_reload", prop_num("自动重载值。")),
+                    ("counter", prop_num("直接设置运行时计数器值。")),
+                    ("update_count", prop_num("直接设置更新计数。")),
                 ],
                 &["session"],
             ),
@@ -2716,6 +2718,8 @@ fn tool_periph_timer(server: &McpServer, args: &Map<String, Value>) -> Result<Va
     let enabled = b(args, "enabled");
     let prescaler = u(args, "prescaler");
     let auto_reload = u(args, "auto_reload");
+    let counter = u(args, "counter");
+    let update_count = u64(args, "update_count");
     with_sim(server, args, true, |sim, _, _| {
         while sim.peripherals.timers.len() <= index {
             sim.peripherals
@@ -2732,6 +2736,12 @@ fn tool_periph_timer(server: &McpServer, args: &Map<String, Value>) -> Result<Va
             }
             if let Some(v) = auto_reload {
                 t.auto_reload = v;
+            }
+            if let Some(v) = counter {
+                t.counter = v;
+            }
+            if let Some(v) = update_count {
+                t.update_count = v;
             }
         }
         let t = &sim.peripherals.timers[index];

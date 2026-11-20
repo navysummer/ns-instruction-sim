@@ -1090,6 +1090,12 @@ enum PeriphSub {
         /// 自动重载值（可选，仅配置时使用）。
         #[arg(long)]
         auto_reload: Option<u32>,
+        /// 直接设置运行时计数器值（可选）。
+        #[arg(long)]
+        counter: Option<u32>,
+        /// 直接设置更新计数（可选）。
+        #[arg(long)]
+        update_count: Option<u64>,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -4559,7 +4565,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             Ok(())
         }
-        PeriphSub::Timer { session, index, enabled, prescaler, auto_reload, json } => {
+        PeriphSub::Timer { session, index, enabled, prescaler, auto_reload, counter, update_count, json } => {
             if index >= 8 {
                 bail!("定时器索引必须在 0..8");
             }
@@ -4580,6 +4586,12 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 }
                 if let Some(v) = auto_reload {
                     t.auto_reload = v;
+                }
+                if let Some(v) = counter {
+                    t.counter = v;
+                }
+                if let Some(v) = update_count {
+                    t.update_count = v;
                 }
             }
             let t = &sim.peripherals.timers[index];

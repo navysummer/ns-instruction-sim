@@ -851,6 +851,35 @@ fn periph_timer_config_and_uart_write() {
 }
 
 #[test]
+fn periph_timer_counter_set_readback() {
+    let dir = tmpdir();
+    let sess = dir.join("timer-counter.json");
+    bootstrap(&sess);
+    // Set the runtime counter and update count directly.
+    let out = Command::new(bin())
+        .args([
+            "periph", "timer", "--session", sess.to_str().unwrap(), "--index", "2",
+            "--counter", "12345", "--update-count", "678", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["index"], 2u64);
+    assert_eq!(json["counter"], 12345u64);
+    assert_eq!(json["updateCount"], 678u64);
+    // A separate invocation reads the persisted values back.
+    let out = Command::new(bin())
+        .args(["periph", "timer", "--session", sess.to_str().unwrap(), "--index", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["counter"], 12345u64);
+    assert_eq!(json["updateCount"], 678u64);
+}
+
+#[test]
 fn mem_write_read_roundtrip_persists() {
     let dir = tmpdir();
     let sess = dir.join("mem.json");
@@ -8066,6 +8095,33 @@ fn mcp_periph_uart_input() {
 }
 
 #[test]
+fn mcp_periph_timer_counter() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-timer-counter-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({
+        "session": s, "arch": "riscv",
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    // Set the timer counter and update count through MCP.
+    let r = client.call_tool("periph_timer", serde_json::json!({
+        "session": s, "index": 2, "counter": 12345, "update_count": 678,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_timer: {}", r);
+    assert_eq!(r["structuredContent"]["counter"], 12345u64, "{}", r);
+    assert_eq!(r["structuredContent"]["updateCount"], 678u64, "{}", r);
+    // A second call reads the persisted values back.
+    let r = client.call_tool("periph_timer", serde_json::json!({ "session": s, "index": 2 }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_timer readback: {}", r);
+    assert_eq!(r["structuredContent"]["counter"], 12345u64, "{}", r);
+    assert_eq!(r["structuredContent"]["updateCount"], 678u64, "{}", r);
+    client.close();
+}
+
+#[test]
 fn disasm_from_firmware() {
     let dir = tmpdir();
     let elf = dir.join("disfw.elf");
@@ -8616,6 +8672,7 @@ fn help_every_param() {
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
         (&["mem", "search"], &["--session", "--arch", "--addr", "--len", "--pattern", "--width", "--out", "--json"]),
+        (&["periph", "timer"], &["--session", "--index", "--enabled", "--prescaler", "--auto-reload", "--counter", "--update-count", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
         (&["mcp"], &["--session"]),

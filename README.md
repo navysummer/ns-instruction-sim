@@ -97,7 +97,7 @@ ns-instruction-sim csr set --session s.json mtvec 0x80000010
 ns-instruction-sim periph reg-write --session s.json --addr 0x40000000 --bytes 0x48 0x69
 ns-instruction-sim periph reg-read --session s.json --name TIM2.CR1 --device stm32f103c8
 ns-instruction-sim periph field-get --session s.json --device stm32f103c8 --peripheral RCC --register CR --field HSION
-ns-instruction-sim periph timer --session s.json --index 1 --enabled true
+ns-instruction-sim periph timer --session s.json --index 1 --enabled true --prescaler 8 --auto-reload 1000 --counter 123 --update-count 5
 ns-instruction-sim periph config --session s.json --uart-base 0x50000000
 
 # 执行轨迹 / 覆盖 / 助记符直方图 / 会话对比
