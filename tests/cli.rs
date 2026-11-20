@@ -8614,7 +8614,7 @@ fn help_every_param() {
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
-        (&["mem", "fill"], &["--session", "--arch", "--addr", "--len", "--value", "--random", "--seed", "--json"]),
+        (&["mem", "fill"], &["--session", "--arch", "--addr", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
         (&["mem", "search"], &["--session", "--arch", "--addr", "--len", "--pattern", "--width", "--out", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
@@ -9514,6 +9514,74 @@ fn mcp_mem_write_string() {
     );
     assert!(!r["isError"].as_bool().unwrap(), "mem_read failed: {}", r);
     assert_eq!(r["structuredContent"]["text"], "Hi!");
+
+    client.close();
+}
+
+#[test]
+fn mem_fill_pattern() {
+    let dir = tmpdir();
+    let sess = dir.join("fpat.json");
+    let out = Command::new(bin())
+        .args([
+            "mem", "fill", "--session", sess.to_str().unwrap(), "--arch", "riscv",
+            "--addr", "0x20000000", "--len", "10", "--pattern", "0xDE", "0xAD", "0xBE", "0xEF", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["pattern"].as_array().unwrap().len(), 4);
+
+    // Read back and verify the pattern repeats.
+    let out = Command::new(bin())
+        .args([
+            "mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x20000000", "--len", "10", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let bytes: Vec<u8> = v["bytes"].as_array().unwrap().iter().map(|b| b.as_u64().unwrap() as u8).collect();
+    let expected: Vec<u8> = [0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD].to_vec();
+    assert_eq!(bytes, expected);
+
+    // `--pattern` conflicts with `--value`.
+    let out = Command::new(bin())
+        .args([
+            "mem", "fill", "--session", sess.to_str().unwrap(), "--arch", "riscv",
+            "--addr", "0x20000000", "--len", "4", "--pattern", "0xAA", "--value", "0x55",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be used with"));
+}
+
+#[test]
+fn mcp_mem_fill_pattern() {
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-fpat-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    client.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+
+    let r = client.call_tool("session_create", serde_json::json!({ "session": sess, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create failed: {}", r);
+    let r = client.call_tool(
+        "mem_fill",
+        serde_json::json!({ "session": sess, "addr": "0x20000000", "len": 10, "pattern": ["0xDE", "0xAD", "0xBE", "0xEF"] }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "mem_fill failed: {}", r);
+    let r = client.call_tool(
+        "mem_read",
+        serde_json::json!({ "session": sess, "addr": "0x20000000", "len": 10 }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "mem_read failed: {}", r);
+    let bytes: Vec<u8> = r["structuredContent"]["bytes"]
+        .as_array().unwrap().iter().map(|b| b.as_u64().unwrap() as u8).collect();
+    assert_eq!(bytes, [0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD]);
 
     client.close();
 }

@@ -121,6 +121,7 @@ ns-instruction-sim mem write --session arm.json --arch arm --addr 0x20000000 --b
 ns-instruction-sim mem write --session s.json --addr 0x20000000 --width word --values 0xefbeadde 0x12345678
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 0 --json
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 4096 --random --seed 0x1234 --json
+ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 4096 --pattern 0xDE 0xAD 0xBE 0xEF
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 0
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad 0xbe 0xef
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xdeadbeef --width word --json

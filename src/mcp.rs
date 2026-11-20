@@ -700,6 +700,7 @@ fn tools() -> Vec<Tool> {
                     ("value", prop_str("填充字节（0-255；与 random 互斥）。")),
                     ("random", prop_bool("使用确定性伪随机字节填充。")),
                     ("seed", prop_str("伪随机种子（默认固定常量）。")),
+                    ("pattern", prop_arr("重复填充的字节模式（空格分隔，如 0xDE 0xAD；与 value/random 互斥）。")),
                 ],
                 &["addr", "len"],
             ),
@@ -1950,7 +1951,27 @@ fn tool_mem_fill(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
         Some(seed_str) => Some(parse_num(seed_str)? as u64),
         None => None,
     };
-    let value_byte = if random {
+    let pattern = arr(args, "pattern");
+    let parsed_pat: Option<Vec<u8>> = if pattern.is_empty() {
+        None
+    } else {
+        if random {
+            bail!("pattern 与 random 互斥");
+        }
+        let mut pat = Vec::new();
+        for p in &pattern {
+            let n = parse_num(p)?;
+            if n > 0xff {
+                bail!("模式字节超出 0..=255: {p}");
+            }
+            pat.push(n as u8);
+        }
+        Some(pat)
+    };
+    let value_byte: u8 = if parsed_pat.is_some() {
+        // `--pattern` is the fill source; `value` is not required.
+        0
+    } else if random {
         // `--value` is ignored / optional under random; reject it to avoid
         // ambiguity.
         if s(args, "value").is_some() {
@@ -1966,7 +1987,11 @@ fn tool_mem_fill(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
     };
     let seed_used = seed.unwrap_or(0x9E37_79B9);
     with_sim(server, args, true, |sim, _, _| {
-        if random {
+        if let Some(pat) = &parsed_pat {
+            for i in 0..len {
+                write_mem_byte(sim, addr_num.wrapping_add(i as u32), pat[i % pat.len()]);
+            }
+        } else if random {
             let mut st = seed_used;
             for i in 0..len {
                 st ^= st << 13;
@@ -1985,6 +2010,7 @@ fn tool_mem_fill(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
             "value": value_byte,
             "random": random,
             "seed": if random { Some(seed_used) } else { None },
+            "pattern": pattern,
         }))
     })
 }

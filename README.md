@@ -40,6 +40,7 @@ ns-instruction-sim mem write --session s.json --addr 0x20000000 --width word --v
 ns-instruction-sim mem write --session s.json --addr 0x20000000 --string "hello" --null
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 0 --json
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 4096 --random --seed 0x1234 --json
+ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 4096 --pattern 0xDE 0xAD 0xBE 0xEF
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad 0xbe 0xef
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xdeadbeef --width word --json
 ns-instruction-sim mem search --session s.json --addr 0x20000000 --len 4096 --pattern 0xde 0xad --json --out search.json

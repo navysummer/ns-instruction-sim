@@ -527,6 +527,9 @@ enum MemSub {
         /// 伪随机种子（十进制/十六进制；默认固定常量，可复现）。
         #[arg(long)]
         seed: Option<String>,
+        /// 重复填充的字节模式（空格分隔，如 `0xDE 0xAD`；与 --value/--random 互斥）。
+        #[arg(long, value_delimiter = ' ', num_args = 1.., conflicts_with_all = ["value", "value_flag", "random"])]
+        pattern: Vec<String>,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -3188,11 +3191,30 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Fill { session, arch, addr, addr_flag, len, value, value_flag, random, seed, json } => {
+        MemSub::Fill { session, arch, addr, addr_flag, len, value, value_flag, random, seed, pattern, json } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let (mut sim, fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
-            let (bytes, value_byte, seed_used): (Vec<u8>, u8, Option<u64>) = if random {
+            let parsed_pat: Option<Vec<u8>> = if pattern.is_empty() {
+                None
+            } else {
+                let mut pat = Vec::new();
+                for p in &pattern {
+                    let n = parse_num(p)?;
+                    if n > 0xff {
+                        bail!("模式字节超出 0..=255: {p}");
+                    }
+                    pat.push(n as u8);
+                }
+                Some(pat)
+            };
+            let (bytes, value_byte, seed_used): (Vec<u8>, u8, Option<u64>) = if let Some(pat) = &parsed_pat {
+                let mut bytes = Vec::with_capacity(len);
+                for i in 0..len {
+                    bytes.push(pat[i % pat.len()]);
+                }
+                (bytes, 0, None)
+            } else if random {
                 let seed_input = seed.as_deref().map(parse_num).transpose()?.unwrap_or(0x9E37_79B9) as u64;
                 let mut st = seed_input;
                 let bytes = (0..len)
@@ -3225,6 +3247,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                     "value": value_byte,
                     "random": random,
                     "seed": seed_used,
+                    "pattern": pattern,
                 }))?;
             } else {
                 if random {
@@ -3233,6 +3256,19 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                         len,
                         addr_num,
                         seed_used.map(|s| format!("{s:#x}")).unwrap_or_default()
+                    );
+                } else if !pattern.is_empty() {
+                    let pat_hex: Vec<String> = parsed_pat
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .map(|b| format!("0x{b:02x}"))
+                        .collect();
+                    println!(
+                        "填充 {} 字节 @ 0x{:08x} = 模式 {}",
+                        len,
+                        addr_num,
+                        pat_hex.join(" ")
                     );
                 } else {
                     println!("填充 {} 字节 @ 0x{:08x} = 0x{value_byte:02x}", len, addr_num);
