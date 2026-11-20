@@ -112,6 +112,7 @@ ns-instruction-sim/
 | `arch` | `list` | 列出支持的架构与示例设备 | `--json` | 表/JSON |
 | `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析（文件或内置）/链接脚本/启动文件/外设初始化 C 骨架 | `--file --device --peripheral --register --out --json` | 表/文本/JSON |
 | `device` | `memory-map` | 列出设备内存区域（FLASH/RAM/PERIPHERALS），可用 `--addr` 查询地址所属区域 | `device [--addr] [--json]` | 表/JSON |
+| `device` | `lookup` | 按地址反查设备内存区域/外设/寄存器（内置 SVD），含寄存器内偏移与位域字段 | `device --addr [--json]` | 表/JSON |
 | `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址/指定符号/条件成立/周期上限（可指定会话保留外设/SVD 寄存器；`--trace-regs` 打印每条指令后变化的寄存器；`--max-cycles` 到达即停并报 `lastResult="cycles"`） | `--firmware --session --arch --base --max-steps --steps --until --until-symbol --until-condition --max-cycles --cycle-accurate --save-session --json --trace --trace-regs --source` | 状态 |
 | `step` | — | 单步一条指令 | `--session --arch --firmware --base --json --source` | 状态 |
 | `step-over` | — | 步过（跳过调用） | 同上 | 状态 |
@@ -218,7 +219,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `symbol_list/at/nearest/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
    `trace`、`coverage`、`profile` 与 CLI 同名子命令一一对应（`analyze_schema` 共享参数），
    返回结构化轨迹/覆盖/直方图 JSON，并支持 `out` 参数把结果写入文件；
-   `device_memory_map`（设备内存区域与地址所属区域）、`session_info`（会话元信息）、
+   `device_memory_map`（设备内存区域与地址所属区域）、`device_lookup`（按地址反查区域/外设/寄存器）、
+   `session_info`（会话元信息）、
    `session_diff`（两个会话文件的完整差异：标量/寄存器/断点/内存）、
    `session_patch`（直接修改会话的 PC/周期/停机/寄存器/CSR 并保存）、
    `firmware_info`（固件元信息：格式/架构/入口/符号表/首条指令）补齐设备与会话维度的工具。
@@ -755,6 +757,9 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   参数修改后 `reg_get`/`csr_get` 读回一致，未知寄存器以 `isError:true` 返回。
 - `device_memory_map_and_address_lookup`：`device memory-map` 列出 FLASH/RAM/PERIPHERALS 区域
   （`access`/`start`/`end`/`size`），`--addr` 解析所属区域；越界地址与未知设备报错。
+- `device_lookup_resolves_register`：`device lookup` 按地址反查区域/外设/寄存器
+  （GPIOA.CRL@0x40010800 含 `registerSize`/`registerOffset`/`fields`，CRH 为独立寄存器不被前一个
+  的 SVD 位宽吞并；`0x08000000` 仅命中 FLASH 区域；未知设备报错）。
 - `disasm_and_trace_write_files`：`disasm --out` 写出汇编清单、`trace --json --out` 写出结构化
   轨迹、`profile --out` 写出文本直方图，文件内容均可被重新解析校验。
 - `firmware_info_command`：`firmware info` 对 ELF 自动检测架构与入口（`entryText` 反汇编首条指令、
@@ -783,9 +788,11 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `disasm_from_symbol`：`disasm --symbol main` 从符号地址开始反汇编（JSON 首项地址=符号地址、
   未知符号报错）。
 - `mcp_disasm_from_symbol`：MCP `disasm` 的 `symbol` 参数从符号地址开始（含未知符号错误路径）。
-- `mcp_session_and_memory_map_tools`：MCP `session_info` / `session_diff` / `device_memory_map`
-  工具端到端（含未知设备错误路径）与 `trace` 的 `out` 参数把轨迹写入文件并回报 `file`/`bytes`。
-- `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff`、`device memory-map`）的
+- `mcp_session_and_memory_map_tools`：MCP `session_info` / `session_diff` / `device_memory_map` /
+  `device_lookup` 工具端到端（`device_lookup` 解析 GPIOA.CRL 寄存器与位域，含缺参/未知设备
+  错误路径）与 `trace` 的 `out` 参数把轨迹写入文件并回报 `file`/`bytes`。
+- `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff`、`device memory-map`、
+  `device lookup`）的
   `--help` 与 `-h` 均退出 0 且含 `Usage:`。
 - `help_every_param`：`run`/`bp set`/`mem read`/`reg set`/`periph reg-write`/`watchdog config`/
   `watch set`/`watch list`/`trace`/`coverage`/`profile`/`mcp` 的 `--help` 包含每个参数的帮助文本

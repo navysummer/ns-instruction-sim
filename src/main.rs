@@ -211,6 +211,17 @@ enum DeviceSub {
         #[arg(long)]
         json: bool,
     },
+    /// 按地址反查设备外设/寄存器（SVD 目录）。
+    Lookup {
+        /// 目标设备键（如 stm32f103c8）。
+        device: String,
+        /// 查询地址（十六进制或十进制）。
+        #[arg(short, long)]
+        addr: String,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -1728,6 +1739,9 @@ fn real_main() -> Result<()> {
         Command::Device { sub: DeviceSub::MemoryMap { device, addr, json } } => {
             cmd_device_memory_map(&device, addr.as_deref(), json)
         }
+        Command::Device { sub: DeviceSub::Lookup { device, addr, json } } => {
+            cmd_device_lookup(&device, &addr, json)
+        }
         Command::Run(args) => cmd_run(args),
         Command::Step(args) => cmd_step(args, StepKind::Step),
         Command::StepOver(args) => cmd_step(args, StepKind::StepOver),
@@ -2502,6 +2516,111 @@ fn cmd_device_memory_map(device: &str, addr: Option<&str>, json: bool) -> Result
         println!("地址 0x{a:08x} → 区域 {name}");
     }
     Ok(())
+}
+
+/// Resolve an address to the device region/peripheral/register it belongs to
+/// (`device lookup`), using the built-in SVD catalog.
+fn cmd_device_lookup(device: &str, addr: &str, json: bool) -> Result<()> {
+    let value = device_lookup_value(device, addr)?;
+    if json {
+        print_json(&value)?;
+        return Ok(());
+    }
+    let a = value["address"].as_u64().unwrap_or(0) as u32;
+    println!("设备 {device} 地址 0x{a:08x}:");
+    println!("  区域: {}", value["region"].as_str().unwrap_or("(未找到)"));
+    println!(
+        "  外设: {}",
+        value["peripheral"].as_str().unwrap_or("(未找到)")
+    );
+    println!(
+        "  寄存器: {}",
+        value["register"].as_str().unwrap_or("(未找到)")
+    );
+    if let Some(off) = value["registerOffset"].as_u64() {
+        println!("  寄存器内偏移: {off} 字节");
+    }
+    if !value["found"].as_bool().unwrap_or(false) {
+        println!("  （地址不在任何内存区域/外设中）");
+    }
+    Ok(())
+}
+
+/// Resolve an address to the device region/peripheral/register it belongs to
+/// (`device lookup`), using the built-in SVD catalog. Shared CLI/MCP value.
+pub(crate) fn device_lookup_value(device: &str, addr: &str) -> Result<serde_json::Value> {
+    let dev = ns_device::device_for_target(device)
+        .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {device}"))?;
+    let a = parse_num(addr)? as u64;
+    let region = ns_device::memory_map(device)
+        .iter()
+        .find(|r| a >= r.start && a < r.start.saturating_add(r.size))
+        .map(|r| r.name.clone());
+    let mut found_register: Option<(&ns_device::Peripheral, &ns_device::Register)> = None;
+    'outer: for p in dev.sorted_peripherals() {
+        for r in &p.registers {
+            // `<size>` in CMSIS-SVD is a bit width; convert to a byte span.
+            let bytes = (r.size / 8).max(1) as u64;
+            let end = r.address + bytes;
+            if a >= r.address && a < end {
+                found_register = Some((p, r));
+                break 'outer;
+            }
+        }
+    }
+    let peripheral = found_register
+        .map(|(p, _)| p)
+        .or_else(|| {
+            dev.sorted_peripherals().into_iter().find(|p| {
+                let end = p
+                    .registers
+                    .iter()
+                    .map(|r| r.address + ((r.size / 8).max(1) as u64))
+                    .max()
+                    .unwrap_or(p.base_address + 1);
+                a >= p.base_address && a < end
+            })
+        });
+    let (reg_name, reg_addr, reg_size, reg_offset, reg_desc, reg_fields) =
+        if let Some((_, r)) = found_register {
+            let fields: Vec<_> = r
+                .fields
+                .iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "name": f.name,
+                        "bitOffset": f.bit_offset,
+                        "bitWidth": f.bit_width,
+                        "description": f.description,
+                    })
+                })
+                .collect();
+            (
+                Some(r.name.clone()),
+                Some(r.address),
+                Some(r.size),
+                Some(a - r.address),
+                Some(r.description.clone()),
+                Some(fields),
+            )
+        } else {
+            (None, None, None, None, None, None)
+        };
+    let found = region.is_some() || found_register.is_some() || peripheral.is_some();
+    Ok(serde_json::json!({
+        "device": device,
+        "address": a,
+        "region": region,
+        "peripheral": peripheral.map(|p| p.name.clone()),
+        "peripheralBase": peripheral.map(|p| p.base_address),
+        "register": reg_name,
+        "registerAddress": reg_addr,
+        "registerSize": reg_size,
+        "registerOffset": reg_offset,
+        "description": reg_desc,
+        "fields": reg_fields,
+        "found": found,
+    }))
 }
 
 /// Why a bounded run stopped early (beyond a breakpoint/halt/max-steps).

@@ -6889,7 +6889,7 @@ fn mcp_handshake_and_list_tools() {
         "mem_search", "mem_load", "mem_dump", "mem_region", "mem_copy", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
         "cycle_get", "cycle_set", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
-        "bp_modify", "session_info", "session_diff", "device_memory_map", "firmware_info",
+        "bp_modify", "session_info", "session_diff", "device_memory_map", "device_lookup", "firmware_info",
         "periph_reg_dump",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
@@ -8858,6 +8858,83 @@ fn device_memory_map_and_address_lookup() {
 }
 
 #[test]
+fn device_lookup_resolves_register() {
+    // Register resolution: GPIOA CRL at the peripheral base 0x40010800.
+    let out = Command::new(bin())
+        .args(["device", "lookup", "stm32f103c8", "--addr", "0x40010800", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["device"], "stm32f103c8");
+    assert_eq!(json["address"], 0x4001_0800u64);
+    assert_eq!(json["region"], "PERIPHERALS");
+    assert_eq!(json["peripheral"], "GPIOA");
+    assert_eq!(json["peripheralBase"], 0x4001_0800u64);
+    assert_eq!(json["register"], "CRL");
+    assert_eq!(json["registerAddress"], 0x4001_0800u64);
+    assert_eq!(json["registerSize"], 32u64);
+    assert_eq!(json["registerOffset"], 0u64);
+    assert_eq!(json["found"], true);
+    let fields = json["fields"].as_array().unwrap();
+    assert!(
+        fields.iter().any(|f| f["name"] == "MODE0" && f["bitOffset"] == 0 && f["bitWidth"] == 4),
+        "{fields:?}"
+    );
+
+    // A mid-register address resolves the same register with a non-zero offset.
+    let out = Command::new(bin())
+        .args(["device", "lookup", "stm32f103c8", "--addr", "0x40010802", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["peripheral"], "GPIOA");
+    assert_eq!(json["register"], "CRL");
+    assert_eq!(json["registerOffset"], 2u64);
+
+    // The next register (CRH at offset 4) is distinct, not swallowed by CRL's span.
+    let out = Command::new(bin())
+        .args(["device", "lookup", "stm32f103c8", "--addr", "0x40010804", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["register"], "CRH");
+    assert_eq!(json["registerOffset"], 0u64);
+
+    // Region-only resolution (flash start), no peripheral/register.
+    let out = Command::new(bin())
+        .args(["device", "lookup", "stm32f103c8", "--addr", "0x08000000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["region"], "FLASH");
+    assert!(json["peripheral"].is_null());
+    assert!(json["register"].is_null());
+    assert_eq!(json["found"], true);
+
+    // Human output names the peripheral and register.
+    let out = Command::new(bin())
+        .args(["device", "lookup", "stm32f103c8", "--addr", "0x40010800"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("GPIOA"), "{text}");
+    assert!(text.contains("CRL"), "{text}");
+
+    // Unknown device is an error.
+    let out = Command::new(bin())
+        .args(["device", "lookup", "nosuch", "--addr", "0x40010800"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("未知设备"));
+}
+
+#[test]
 fn disasm_and_trace_write_files() {
     let dir = tmpdir();
     let sess = dir.join(format!("outfile-{}.json", std::process::id()));
@@ -8977,6 +9054,24 @@ fn mcp_session_and_memory_map_tools() {
     let r = client.call_tool("device_memory_map", serde_json::json!({ "device": "nosuch" }));
     assert!(r["isError"].as_bool().unwrap());
 
+    // `device_lookup` resolves an address to the containing register.
+    let r = client.call_tool(
+        "device_lookup",
+        serde_json::json!({ "device": "stm32f103c8", "addr": "0x40010800" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "device_lookup: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["region"], "PERIPHERALS");
+    assert_eq!(sc["peripheral"], "GPIOA");
+    assert_eq!(sc["register"], "CRL");
+    assert_eq!(sc["registerAddress"], 0x4001_0800u64);
+    assert_eq!(sc["fields"][0]["name"], "MODE0");
+    // Missing addr / unknown device are errors.
+    let r = client.call_tool("device_lookup", serde_json::json!({ "device": "stm32f103c8" }));
+    assert!(r["isError"].as_bool().unwrap());
+    let r = client.call_tool("device_lookup", serde_json::json!({ "device": "nosuch", "addr": "0x0" }));
+    assert!(r["isError"].as_bool().unwrap());
+
     // `trace` with `out` writes the payload to a file.
     let trace = dir.join(format!("mcp-out-{}.trace.json", std::process::id()));
     let trace = trace.to_str().unwrap();
@@ -9030,7 +9125,7 @@ fn help_every_command() {
     let commands: &[&[&str]] = &[
         &["version"],
         &["arch", "list"],
-        &["device", "list"], &["device", "info"], &["device", "linker"],
+        &["device", "list"], &["device", "info"], &["device", "lookup"], &["device", "linker"],
         &["device", "startup"], &["device", "init"], &["device", "svd"],
         &["run"], &["step"], &["step-over"], &["step-out"], &["continue"],
         &["reg", "list"], &["reg", "get"], &["reg", "set"],
@@ -9100,6 +9195,7 @@ fn help_every_param() {
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
         (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--len", "--pattern", "--width", "--out", "--json"]),
+        (&["device", "lookup"], &["--addr", "--json"]),
         (&["periph", "timer"], &["--session", "--index", "--enabled", "--prescaler", "--auto-reload", "--counter", "--update-count", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),

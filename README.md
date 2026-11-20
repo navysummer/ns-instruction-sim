@@ -122,6 +122,7 @@ ns-instruction-sim session patch --file s.json --pc 0x80000010 --cycle 42 --reg 
 # 设备 / SVD 文件解析
 ns-instruction-sim device list
 ns-instruction-sim device memory-map stm32f103c8 --addr 0x40010000 --json
+ns-instruction-sim device lookup stm32f103c8 --addr 0x40010800 --json
 ns-instruction-sim device svd --file chip.svd --json
 ns-instruction-sim device svd --file chip.svd --peripheral USART1 --register DR
 ns-instruction-sim device svd --device stm32f103c8 --json
