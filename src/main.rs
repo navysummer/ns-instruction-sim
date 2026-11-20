@@ -443,6 +443,12 @@ enum MemSub {
         /// 数据宽度：`byte`/`half`/`word`/`dword`（默认 byte；此时 `--len` 为元素个数）。
         #[arg(long, default_value = "byte")]
         width: String,
+        /// 以 ASCII 文本解读（可打印字符原样、其余显示为 `.`，忽略末尾 NUL）。
+        #[arg(long, conflicts_with = "string")]
+        ascii: bool,
+        /// 读取以 NUL 结尾的字符串（最多 `--len` 字节；与 `--ascii` 互斥）。
+        #[arg(long, conflicts_with = "ascii")]
+        string: bool,
         /// 输出原始二进制到文件。
         #[arg(long)]
         out: Option<PathBuf>,
@@ -2990,10 +2996,13 @@ fn cmd_reg(sub: RegSub) -> Result<()> {
 
 fn cmd_mem(sub: MemSub) -> Result<()> {
     match sub {
-        MemSub::Read { session, arch, addr, addr_flag, len, width, out, json } => {
+        MemSub::Read { session, arch, addr, addr_flag, len, width, ascii, string, out, json } => {
             let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
             let addr_num = parse_num(&addr)?;
             let (sim, _fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
+            if (ascii || string) && out.is_some() {
+                bail!("--ascii/--string 与 --out 互斥");
+            }
             let elem_size = match width.as_str() {
                 "byte" => 1usize,
                 "half" => 2usize,
@@ -3001,12 +3010,48 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                 "dword" => 8usize,
                 other => bail!("不支持的内存宽度: {other}（支持 byte/half/word/dword）"),
             };
+            if (ascii || string) && elem_size != 1 {
+                bail!("--ascii/--string 要求 --width byte");
+            }
             let mut bytes = Vec::with_capacity(len * elem_size);
             for i in 0..len {
                 let a = addr_num.wrapping_add((i * elem_size) as u32);
                 for j in 0..elem_size {
                     bytes.push(read_mem_byte(&sim, a.wrapping_add(j as u32)));
                 }
+            }
+            if ascii || string {
+                let text: String = bytes
+                    .iter()
+                    .map(|&b| {
+                        if b == 0 {
+                            '\0'
+                        } else if b.is_ascii_graphic() || b == b' ' {
+                            b as char
+                        } else {
+                            '.'
+                        }
+                    })
+                    .collect();
+                let text = if string {
+                    text.split('\0').next().unwrap_or("").to_string()
+                } else {
+                    text.trim_end_matches('\0').to_string()
+                };
+                if json {
+                    print_json(&serde_json::json!({
+                        "address": addr_num,
+                        "len": len,
+                        "width": width,
+                        "bytes": bytes,
+                        "text": text,
+                        "ascii": ascii,
+                        "string": string,
+                    }))?;
+                } else {
+                    println!("{text}");
+                }
+                return Ok(());
             }
             if let Some(out_path) = out {
                 std::fs::write(&out_path, &bytes)

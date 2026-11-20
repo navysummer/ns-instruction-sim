@@ -118,7 +118,7 @@ ns-instruction-sim/
 | `step-out` | — | 步出（运行至返回） | 同上 | 状态 |
 | `continue` | — | 连续运行至断点/停止/上限/指定地址/条件成立/周期上限（临时断点/条件每步后求值；`--trace-regs` 打印每条指令后变化的寄存器；`--max-cycles` 到达即停并报 `lastResult="cycles"`） | `--session --until --until-condition --max-steps --max-cycles --save --json --trace --trace-regs --source` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
-| `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` / `region` / `copy` | 内存读/写/填充（含确定性伪随机）/搜索模式（`search` 的 `--pattern` 按 `--width` `byte`/`half`/`word`/`dword` 解释为小端整数值，可直接按字/双字常量搜索）/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验）/复制内存区域（源→目标，重叠范围按 memmove 语义） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --src --dst --name --format --width --out --json` | hex/C/JSON |
+| `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` / `region` / `copy` | 内存读/写/填充（含确定性伪随机）/搜索模式（`search` 的 `--pattern` 按 `--width` `byte`/`half`/`word`/`dword` 解释为小端整数值，可直接按字/双字常量搜索）/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验）/复制内存区域（源→目标，重叠范围按 memmove 语义）；`read` 可用 `--ascii`（按 ASCII 文本解读，非可打印显示为 `.`）或 `--string`（读取 NUL 结尾字符串，最多 `--len` 字节） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --src --dst --name --format --width --ascii --string --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数；`list --symbols` 用 ELF 符号注释断点地址） | `--addr --symbol --line --condition --hit-count --once --symbols --session --json` | 表/JSON |
 | `watch` | `set` / `list` / `clear` / `clear-all` / `enable` / `disable` | 内存观察点管理（`step`/`run`/`continue`/`trace`/`coverage`/`profile` 在每条指令前后比较被监视字节范围，被写入时暂停并报 `lastResult`/`result="watchpoint"`、`watchHit=<地址>`；支持长度/命中次数/一次性/启用禁用；命中计数持久化） | `--addr --len --hit-count --once --session --json` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON；`--firmware` 直接加载固件反汇编，无需先建会话，架构从 ELF 推导） | `--firmware --base --arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
@@ -197,6 +197,7 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    均响应内存观察点，被写入时 `lastResult`/`result="watchpoint"` 且返回 `watchHit`）、`reg_list/get/set`、
    `mem_read/write/fill/search/load/dump/region/copy`
    （`mem_search` 支持 `width` 参数，`pattern` 值按 `byte`/`half`/`word`/`dword` 小端展开）、
+   `mem_read` 支持 `ascii`/`string` 返回 `text`（NUL 结尾字符串或 ASCII 视图）、
    `bp_set/modify/clear/list/enable/disable/clear_all`
    （`bp_list` 支持 `symbols` 参数）、
    `watch_set/list/clear/enable/disable/clear_all`（内存观察点；`watch_set` 支持
@@ -344,6 +345,9 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `mem_fill_hex_value`：`mem fill --value` 十六进制值填充并可读回。
 - `mem_read_word_width`：`mem read --width` 按字节/半字/字/双字读取（含非法宽度错误路径）。
 - `mem_read_json`：`mem read --json` 输出地址/宽度/字节数组。
+- `mem_read_ascii_and_string`：`mem read --ascii` 按 ASCII 文本解读（非可打印显示为 `.`），
+  `--string` 读取 NUL 结尾字符串（`--ascii`/`--string` 互斥、非 byte 宽度被拒绝）。
+- `mcp_mem_read_ascii_string`：MCP `mem_read` 的 `ascii`/`string` 参数返回 `text`。
 - `mem_write_word_width`：`mem write --width --values` 按字/半字小端写入（含越界错误路径）。
 - `mem_write_fill_json`：`mem write/fill --json` 机器可读确认。
 - `arch_device_periph_json`：`arch/device/periph uart/gpio --json` 机器可读输出。

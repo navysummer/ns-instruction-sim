@@ -659,6 +659,8 @@ fn tools() -> Vec<Tool> {
                     ("addr", addr.clone()),
                     ("len", prop_num("元素个数（默认 64）。")),
                     ("width", prop_str("数据宽度：byte/half/word/dword。")),
+                    ("ascii", prop_bool("按 ASCII 解读（可打印字符、其余显示为 .，忽略末尾 NUL）。")),
+                    ("string", prop_bool("读取 NUL 结尾字符串（最多 len 字节）。")),
                 ],
                 &["addr"],
             ),
@@ -1821,6 +1823,8 @@ fn tool_mem_read(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
     let addr_num = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
     let len = u(args, "len").unwrap_or(64) as usize;
     let width = s(args, "width").unwrap_or_else(|| "byte".to_string());
+    let ascii = b(args, "ascii").unwrap_or(false);
+    let string = b(args, "string").unwrap_or(false);
     with_sim(server, args, false, |sim, _, _| {
         let elem_size = match width.as_str() {
             "byte" => 1usize,
@@ -1829,6 +1833,9 @@ fn tool_mem_read(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
             "dword" => 8usize,
             other => bail!("不支持的内存宽度: {other}（支持 byte/half/word/dword）"),
         };
+        if (ascii || string) && elem_size != 1 {
+            bail!("ascii/string 要求 width=byte");
+        }
         let mut bytes = Vec::with_capacity(len * elem_size);
         for i in 0..len {
             let a = addr_num.wrapping_add((i * elem_size) as u32);
@@ -1836,7 +1843,30 @@ fn tool_mem_read(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
                 bytes.push(read_mem_byte(sim, a.wrapping_add(j as u32)));
             }
         }
-        Ok(json!({ "address": addr_num, "len": len, "width": width, "bytes": bytes }))
+        let mut value = json!({ "address": addr_num, "len": len, "width": width, "bytes": bytes });
+        if ascii || string {
+            let text: String = bytes
+                .iter()
+                .map(|&b| {
+                    if b == 0 {
+                        '\0'
+                    } else if b.is_ascii_graphic() || b == b' ' {
+                        b as char
+                    } else {
+                        '.'
+                    }
+                })
+                .collect();
+            let text = if string {
+                text.split('\0').next().unwrap_or("").to_string()
+            } else {
+                text.trim_end_matches('\0').to_string()
+            };
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("text".to_string(), Value::String(text));
+            }
+        }
+        Ok(value)
     })
 }
 

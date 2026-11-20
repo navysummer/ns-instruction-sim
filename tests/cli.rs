@@ -8590,7 +8590,7 @@ fn help_every_param() {
         (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
         (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
         (&["bp", "list"], &["--session", "--symbols", "--json"]),
-        (&["mem", "read"], &["--session", "--arch", "--addr", "--len", "--width", "--out", "--json"]),
+        (&["mem", "read"], &["--session", "--arch", "--addr", "--len", "--width", "--ascii", "--string", "--out", "--json"]),
         (&["mem", "region"], &["--session", "--arch", "--device", "--region", "--offset", "--len", "--json"]),
         (&["mem", "copy"], &["--session", "--arch", "--src", "--dst", "--len", "--json"]),
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
@@ -9089,6 +9089,109 @@ fn mcp_analyze_stops_on_watchpoint() {
     // `state` reflects the persisted watchpoint hit counter.
     let r = client.call_tool("state", serde_json::json!({ "session": sess }));
     assert_eq!(r["structuredContent"]["watchpoints"][0]["hits"], 1u64);
+
+    client.close();
+}
+
+#[test]
+fn mem_read_ascii_and_string() {
+    let dir = tmpdir();
+    let sess = dir.join("str.json");
+    // "Hi!\0AB\0" at 0x20000000.
+    let out = Command::new(bin())
+        .args([
+            "mem", "write", "--session", sess.to_str().unwrap(), "--arch", "riscv",
+            "--addr", "0x20000000",
+            "--bytes", "0x48", "0x69", "0x21", "0x00", "0x41", "0x42", "0x00",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // `--ascii` renders printable bytes (NUL bytes kept as control chars in the
+    // JSON text, trailing NULs trimmed).
+    let out = Command::new(bin())
+        .args([
+            "mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x20000000",
+            "--len", "7", "--ascii", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["text"], "Hi!\u{0}AB");
+    assert_eq!(v["ascii"], true);
+    assert_eq!(v["bytes"].as_array().unwrap().len(), 7);
+
+    // `--string` reads up to the first NUL.
+    let out = Command::new(bin())
+        .args([
+            "mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x20000000",
+            "--len", "7", "--string", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["text"], "Hi!");
+    assert_eq!(v["string"], true);
+
+    // `--ascii` and `--string` conflict.
+    let out = Command::new(bin())
+        .args([
+            "mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x20000000",
+            "--len", "7", "--ascii", "--string",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be used with"));
+
+    // Non-byte width is rejected for text reads.
+    let out = Command::new(bin())
+        .args([
+            "mem", "read", "--session", sess.to_str().unwrap(), "--addr", "0x20000000",
+            "--len", "2", "--width", "word", "--ascii",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--width byte"));
+}
+
+#[test]
+fn mcp_mem_read_ascii_string() {
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-str-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    client.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+
+    let r = client.call_tool("session_create", serde_json::json!({ "session": sess, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create failed: {}", r);
+    let r = client.call_tool(
+        "mem_write",
+        serde_json::json!({
+            "session": sess, "addr": "0x20000000",
+            "bytes": ["0x48", "0x69", "0x21", "0x00", "0x41", "0x42", "0x00"],
+        }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write failed: {}", r);
+
+    let r = client.call_tool(
+        "mem_read",
+        serde_json::json!({ "session": sess, "addr": "0x20000000", "len": 7, "ascii": true }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "mem_read ascii failed: {}", r);
+    assert_eq!(r["structuredContent"]["text"], "Hi!\u{0}AB");
+
+    let r = client.call_tool(
+        "mem_read",
+        serde_json::json!({ "session": sess, "addr": "0x20000000", "len": 7, "string": true }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "mem_read string failed: {}", r);
+    assert_eq!(r["structuredContent"]["text"], "Hi!");
 
     client.close();
 }
