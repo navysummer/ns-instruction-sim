@@ -663,6 +663,7 @@ fn tools() -> Vec<Tool> {
                     ("device", prop_str("内置设备键（配合 region，如 stm32f103c8）。")),
                     ("region", prop_str("设备命名内存区域（FLASH/RAM/PERIPHERALS）。")),
                     ("offset", prop_num("区域内偏移（默认 0）。")),
+                    ("symbol", prop_str("ELF 符号名（数据符号起始地址；与 addr/device 二选一）。")),
                     ("len", prop_num("元素个数（默认 64）。")),
                     ("width", prop_str("数据宽度：byte/half/word/dword。")),
                     ("ascii", prop_bool("按 ASCII 解读（可打印字符、其余显示为 .，忽略末尾 NUL）。")),
@@ -683,6 +684,7 @@ fn tools() -> Vec<Tool> {
                     ("device", prop_str("内置设备键（配合 region，如 stm32f103c8）。")),
                     ("region", prop_str("设备命名内存区域（FLASH/RAM/PERIPHERALS）。")),
                     ("offset", prop_num("区域内偏移（默认 0）。")),
+                    ("symbol", prop_str("ELF 符号名（数据符号起始地址；与 addr/device 二选一）。")),
                     ("bytes", prop_arr("字节序列（支持 0xNN）。")),
                     ("values", prop_arr("值序列（配合 width，十进制/十六进制）。")),
                     ("width", prop_str("数据宽度：byte/half/word。")),
@@ -705,6 +707,7 @@ fn tools() -> Vec<Tool> {
                     ("device", prop_str("内置设备键（配合 region，如 stm32f103c8）。")),
                     ("region", prop_str("设备命名内存区域（FLASH/RAM/PERIPHERALS）。")),
                     ("offset", prop_num("区域内偏移（默认 0）。")),
+                    ("symbol", prop_str("ELF 符号名（数据符号起始地址；与 addr/device 二选一）。")),
                     ("len", prop_num("长度（字节）。")),
                     ("value", prop_str("填充字节（0-255；与 random 互斥）。")),
                     ("random", prop_bool("使用确定性伪随机字节填充。")),
@@ -726,6 +729,7 @@ fn tools() -> Vec<Tool> {
                     ("device", prop_str("内置设备键（配合 region，如 stm32f103c8）。")),
                     ("region", prop_str("设备命名内存区域（FLASH/RAM/PERIPHERALS）。")),
                     ("offset", prop_num("区域内偏移（默认 0）。")),
+                    ("symbol", prop_str("ELF 符号名（数据符号起始地址；与 addr/device 二选一）。")),
                     ("len", prop_num("搜索长度（默认 256）。")),
                     ("pattern", prop_arr("搜索模式值（整数，宽度由 width 决定）。")),
                     ("width", prop_str("模式宽度：byte/half/word/dword（默认 byte）。")),
@@ -1912,18 +1916,20 @@ fn tool_reg_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value> 
 }
 
 fn tool_mem_read(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    let addr_num = crate::resolve_mem_address(
-        s(args, "addr").as_deref(),
-        None,
-        s(args, "device").as_deref(),
-        s(args, "region").as_deref(),
-        u(args, "offset").unwrap_or(0),
-    )?;
     let len = u(args, "len").unwrap_or(64) as usize;
     let width = s(args, "width").unwrap_or_else(|| "byte".to_string());
     let ascii = b(args, "ascii").unwrap_or(false);
     let string = b(args, "string").unwrap_or(false);
     with_sim(server, args, false, |sim, _, _| {
+        let addr_num = crate::resolve_mem_addr(
+            s(args, "symbol").as_deref(),
+            s(args, "addr").as_deref(),
+            None,
+            s(args, "device").as_deref(),
+            s(args, "region").as_deref(),
+            u(args, "offset").unwrap_or(0),
+            sim,
+        )?;
         let elem_size = match width.as_str() {
             "byte" => 1usize,
             "half" => 2usize,
@@ -1969,13 +1975,6 @@ fn tool_mem_read(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
 }
 
 fn tool_mem_write(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    let addr_num = crate::resolve_mem_address(
-        s(args, "addr").as_deref(),
-        None,
-        s(args, "device").as_deref(),
-        s(args, "region").as_deref(),
-        u(args, "offset").unwrap_or(0),
-    )?;
     let width = s(args, "width").unwrap_or_else(|| "byte".to_string());
     let mut data = Vec::new();
     if let Some(text) = s(args, "string") {
@@ -2024,6 +2023,15 @@ fn tool_mem_write(server: &McpServer, args: &Map<String, Value>) -> Result<Value
     }
     let data_len = data.len();
     with_sim(server, args, true, |sim, _, _| {
+        let addr_num = crate::resolve_mem_addr(
+            s(args, "symbol").as_deref(),
+            s(args, "addr").as_deref(),
+            None,
+            s(args, "device").as_deref(),
+            s(args, "region").as_deref(),
+            u(args, "offset").unwrap_or(0),
+            sim,
+        )?;
         for (i, byte) in data.iter().enumerate() {
             write_mem_byte(sim, addr_num.wrapping_add(i as u32), *byte);
         }
@@ -2032,13 +2040,6 @@ fn tool_mem_write(server: &McpServer, args: &Map<String, Value>) -> Result<Value
 }
 
 fn tool_mem_fill(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    let addr_num = crate::resolve_mem_address(
-        s(args, "addr").as_deref(),
-        None,
-        s(args, "device").as_deref(),
-        s(args, "region").as_deref(),
-        u(args, "offset").unwrap_or(0),
-    )?;
     let len = u(args, "len").ok_or_else(|| anyhow::anyhow!("缺少 len"))? as usize;
     let random = b(args, "random").unwrap_or(false);
     let seed: Option<u64> = match s(args, "seed").as_deref() {
@@ -2081,6 +2082,15 @@ fn tool_mem_fill(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
     };
     let seed_used = seed.unwrap_or(0x9E37_79B9);
     with_sim(server, args, true, |sim, _, _| {
+        let addr_num = crate::resolve_mem_addr(
+            s(args, "symbol").as_deref(),
+            s(args, "addr").as_deref(),
+            None,
+            s(args, "device").as_deref(),
+            s(args, "region").as_deref(),
+            u(args, "offset").unwrap_or(0),
+            sim,
+        )?;
         if let Some(pat) = &parsed_pat {
             for i in 0..len {
                 write_mem_byte(sim, addr_num.wrapping_add(i as u32), pat[i % pat.len()]);
@@ -2110,13 +2120,6 @@ fn tool_mem_fill(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
 }
 
 fn tool_mem_search(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    let addr_num = crate::resolve_mem_address(
-        s(args, "addr").as_deref(),
-        None,
-        s(args, "device").as_deref(),
-        s(args, "region").as_deref(),
-        u(args, "offset").unwrap_or(0),
-    )?;
     let len = u(args, "len").unwrap_or(256) as usize;
     let pattern = arr(args, "pattern");
     // Each pattern token is an integer of the requested width (byte/half/word/
@@ -2127,6 +2130,15 @@ fn tool_mem_search(server: &McpServer, args: &Map<String, Value>) -> Result<Valu
     }
     let pat = crate::expand_search_pattern(&pattern, &width)?;
     with_sim(server, args, false, |sim, _, _| {
+        let addr_num = crate::resolve_mem_addr(
+            s(args, "symbol").as_deref(),
+            s(args, "addr").as_deref(),
+            None,
+            s(args, "device").as_deref(),
+            s(args, "region").as_deref(),
+            u(args, "offset").unwrap_or(0),
+            sim,
+        )?;
         let mut matches = Vec::new();
         if len >= pat.len() {
             for off in 0..=(len - pat.len()) {

@@ -120,6 +120,8 @@ ns-instruction-sim mem write --session s.json --device stm32f103c8 --region RAM 
 ns-instruction-sim mem write --session s.json --addr 0x20000000 --string "hello" --null
 ns-instruction-sim mem write --session arm.json --arch arm --addr 0x20000000 --bytes 0xaa 0xbb
 ns-instruction-sim mem write --session s.json --addr 0x20000000 --width word --values 0xefbeadde 0x12345678
+ns-instruction-sim mem read --session s.json --symbol g_counter --len 4 --json
+ns-instruction-sim mem write --session s.json --symbol g_counter --bytes 0xde 0xad 0xbe 0xef
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 16 --value 0 --json
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 4096 --random --seed 0x1234 --json
 ns-instruction-sim mem fill --session s.json --addr 0x20000000 --len 4096 --pattern 0xDE 0xAD 0xBE 0xEF

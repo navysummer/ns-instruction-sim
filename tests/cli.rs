@@ -1092,6 +1092,90 @@ fn mem_write_read_roundtrip_persists() {
 }
 
 #[test]
+fn mem_symbol_relative_addressing() {
+    let dir = tmpdir();
+    let sess = dir.join("memsym.json");
+    let elf = dir.join("memsym.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    // `g_counter` is a data symbol beyond the entry point.
+    write_riscv_elf_with_symbol_at(&elf, &code, "g_counter", 0x8000_0100);
+    Command::new(bin())
+        .args(["state", "--arch", "riscv", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    // Write at the symbol address via `mem write --symbol`.
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", sess.to_str().unwrap(),
+               "--symbol", "g_counter", "--bytes", "0xDE", "0xAD", "0xBE", "0xEF", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x8000_0100u64, "{}", json);
+    // Read it back via `mem read --symbol`.
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--symbol", "g_counter", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x8000_0100u64, "{}", json);
+    assert_eq!(json["bytes"], serde_json::json!([0xDE, 0xAD, 0xBE, 0xEF]), "{}", json);
+    // Human output shows the symbol-resolved address.
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--symbol", "g_counter", "--len", "1"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("80000100"));
+    // `mem fill --symbol` fills from the symbol address.
+    let out = Command::new(bin())
+        .args(["mem", "fill", "--session", sess.to_str().unwrap(),
+               "--symbol", "g_counter", "--len", "2", "--value", "0x55", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x8000_0100u64, "{}", json);
+    // `mem search --symbol` finds the pattern starting at the symbol address.
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", sess.to_str().unwrap(),
+               "--symbol", "g_counter", "--len", "2", "--pattern", "0x55", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x8000_0100u64, "{}", json);
+    assert_eq!(json["matches"], serde_json::json!([0x8000_0100u64, 0x8000_0101u64]), "{}", json);
+    // Unknown symbol errors for every mem form.
+    for args in [
+        vec!["mem", "read", "--session", sess.to_str().unwrap(), "--symbol", "nope", "--len", "1"],
+        vec!["mem", "write", "--session", sess.to_str().unwrap(), "--symbol", "nope", "--bytes", "0x00"],
+        vec!["mem", "fill", "--session", sess.to_str().unwrap(), "--symbol", "nope", "--len", "1", "--value", "0x00"],
+        vec!["mem", "search", "--session", sess.to_str().unwrap(), "--symbol", "nope", "--len", "1", "--pattern", "0x00"],
+    ] {
+        let out = Command::new(bin()).args(args).output().unwrap();
+        assert!(!out.status.success(), "expected failure for unknown symbol");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("符号未找到"));
+    }
+    // `--symbol` conflicts with `--addr` / `--device`.
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--symbol", "g_counter", "--addr", "0x80000000", "--len", "1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("只能二选一"));
+}
+
+#[test]
 fn mem_fill_hex_value() {
     let dir = tmpdir();
     let sess = dir.join("memfill.json");
@@ -8180,6 +8264,52 @@ fn mcp_mem_copy() {
 }
 
 #[test]
+fn mcp_mem_symbol() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-memsym-{}.elf", std::process::id()));
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol_at(&elf, &code, "g_counter", 0x8000_0100);
+    let sess = dir.join(format!("mcp-memsym-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({
+        "session": s, "arch": "riscv", "firmware": elf.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    // `mem_write --symbol` resolves the data symbol address.
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "symbol": "g_counter", "bytes": ["0xDE", "0xAD", "0xBE", "0xEF"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write symbol: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x8000_0100u64, "{}", r);
+    // `mem_read --symbol` reads the same location.
+    let r = client.call_tool("mem_read", serde_json::json!({
+        "session": s, "symbol": "g_counter", "len": 4,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_read symbol: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x8000_0100u64, "{}", r);
+    assert_eq!(r["structuredContent"]["bytes"], serde_json::json!([0xDE, 0xAD, 0xBE, 0xEF]), "{}", r);
+    // Unknown symbol errors.
+    let r = client.call_tool("mem_read", serde_json::json!({ "session": s, "symbol": "nope", "len": 1 }));
+    assert!(r["isError"].as_bool().unwrap());
+    let r = client.call_tool("mem_write", serde_json::json!({ "session": s, "symbol": "nope", "bytes": ["0x00"] }));
+    assert!(r["isError"].as_bool().unwrap());
+    // `symbol` conflicts with `addr`.
+    let r = client.call_tool("mem_read", serde_json::json!({
+        "session": s, "symbol": "g_counter", "addr": "0x80000000", "len": 1,
+    }));
+    assert!(r["isError"].as_bool().unwrap());
+    client.close();
+}
+
+#[test]
 fn mcp_mem_search_width() {
     let mut client = McpClient::start();
     let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
@@ -9263,10 +9393,10 @@ fn help_every_param() {
         (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
         (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
         (&["bp", "list"], &["--session", "--symbols", "--json"]),
-        (&["mem", "read"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--len", "--width", "--ascii", "--string", "--out", "--json"]),
+        (&["mem", "read"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--width", "--ascii", "--string", "--out", "--json"]),
         (&["mem", "region"], &["--session", "--arch", "--device", "--region", "--offset", "--len", "--json"]),
         (&["mem", "copy"], &["--session", "--arch", "--src", "--dst", "--len", "--json"]),
-        (&["mem", "write"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--bytes", "--width", "--values", "--file", "--string", "--null", "--json"]),
+        (&["mem", "write"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--bytes", "--width", "--values", "--file", "--string", "--null", "--json"]),
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--fields", "--json"]),
@@ -9280,8 +9410,8 @@ fn help_every_param() {
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["session", "patch"], &["--file", "--pc", "--cycle", "--halted", "--reg", "--csr", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
-        (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
-        (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--len", "--pattern", "--width", "--out", "--json"]),
+        (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
+        (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--pattern", "--width", "--out", "--json"]),
         (&["device", "lookup"], &["--addr", "--json"]),
         (&["periph", "timer"], &["--session", "--index", "--enabled", "--prescaler", "--auto-reload", "--counter", "--update-count", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
