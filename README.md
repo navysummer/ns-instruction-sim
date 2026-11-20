@@ -69,6 +69,7 @@ ns-instruction-sim watch set --session s.json --symbol gv --offset 0 --len 4 --j
 ns-instruction-sim watch set --session s.json --addr 0x20000000 --len 4 --hit-count 2 --once --json
 ns-instruction-sim watch list --session s.json --json
 ns-instruction-sim watch modify --session s.json --addr 0x20000000 --len 8 --hit-count 5 --once true --json
+ns-instruction-sim watch set --session s.json --device stm32f103c8 --region FLASH --offset 0 --len 4 --json
 ns-instruction-sim watch disable --session s.json --addr 0x20000000
 ns-instruction-sim watch enable --session s.json --addr 0x20000000
 ns-instruction-sim watch clear --session s.json --addr 0x20000000

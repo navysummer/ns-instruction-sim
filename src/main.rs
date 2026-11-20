@@ -880,7 +880,13 @@ enum WatchSub {
         /// ELF 符号名（数据符号地址；与 --addr 二选一）。
         #[arg(long = "symbol")]
         symbol: Option<String>,
-        /// 相对符号地址的字节偏移（配合 --symbol）。
+        /// 内置设备键（配合 --region，如 stm32f103c8；与 --addr/--symbol 二选一）。
+        #[arg(long)]
+        device: Option<String>,
+        /// 设备命名内存区域（FLASH/RAM/PERIPHERALS；配合 --device）。
+        #[arg(long)]
+        region: Option<String>,
+        /// 区域内/相对符号地址的字节偏移。
         #[arg(long)]
         offset: Option<String>,
         /// 监视字节数（1..64，默认 1）。
@@ -4043,6 +4049,8 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
             addr,
             addr_flag,
             symbol,
+            device,
+            region,
             offset,
             len,
             hit_count,
@@ -4050,8 +4058,8 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
             json,
         } => {
             let addr_num = if let Some(sym) = symbol.as_deref() {
-                if addr.is_some() || addr_flag.is_some() {
-                    bail!("--addr 与 --symbol 只能二选一");
+                if addr.is_some() || addr_flag.is_some() || device.is_some() || region.is_some() {
+                    bail!("--symbol 与 --addr/--device/--region 只能二选一");
                 }
                 let sim = Session::load(&session)?.apply(None)?;
                 let s = sim
@@ -4065,9 +4073,19 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
                     .transpose()?
                     .unwrap_or(0);
                 s.address.wrapping_add(off)
+            } else if device.is_some() || region.is_some() {
+                if addr.is_some() || addr_flag.is_some() {
+                    bail!("--device/--region 与 --addr 只能二选一");
+                }
+                let off = offset
+                    .as_deref()
+                    .map(parse_num)
+                    .transpose()?
+                    .unwrap_or(0);
+                resolve_mem_address(None, None, device.as_deref(), region.as_deref(), off)?
             } else {
                 if offset.is_some() {
-                    bail!("--offset 需要配合 --symbol");
+                    bail!("--offset 需要配合 --symbol/--device+--region");
                 }
                 parse_num(
                     &addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?,

@@ -9521,7 +9521,7 @@ fn help_every_param() {
         (&["mcp"], &["--session"]),
         (&["state"], &["--session", "--arch", "--firmware", "--base", "--json", "--fields", "--mem", "--mem-len", "--summary"]),
         (&["symbol", "nearest"], &["--session", "--addr", "--json"]),
-        (&["watch", "set"], &["--session", "--addr", "--symbol", "--offset", "--len", "--hit-count", "--once", "--json"]),
+        (&["watch", "set"], &["--session", "--addr", "--symbol", "--device", "--region", "--offset", "--len", "--hit-count", "--once", "--json"]),
         (&["watch", "list"], &["--session", "--json"]),
         (&["watch", "clear"], &["--session", "--addr", "--json"]),
         (&["watch", "enable"], &["--session", "--addr", "--json"]),
@@ -10114,6 +10114,54 @@ fn watch_set_by_symbol() {
 }
 
 #[test]
+fn watch_set_by_region() {
+    let dir = tmpdir();
+    let sess = dir.join("watch-region.json");
+    Command::new(bin())
+        .args(["state", "--arch", "arm", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    // FLASH at offset 0 → 0x08000000; RAM at offset 8 → 0x20000008.
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--region", "FLASH", "--offset", "0", "--len", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["address"], 0x0800_0000u64, "{}", v);
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--region", "RAM", "--offset", "8", "--len", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["address"], 0x2000_0008u64, "{}", v);
+    // Unknown region / `--device` without `--region` / `--offset` without
+    // region/symbol are errors.
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--region", "NOPE", "--len", "4"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("未知区域"));
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--len", "4"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(),
+               "--addr", "0x10", "--offset", "1", "--len", "4"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
 fn mcp_watch_set_by_symbol() {
     let mut client = McpClient::start();
     let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
@@ -10135,6 +10183,37 @@ fn mcp_watch_set_by_symbol() {
     // Unknown symbol is a tool error.
     let r = client.call_tool("watch_set", serde_json::json!({
         "session": s, "symbol": "nope",
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
+fn mcp_watch_set_by_region() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-watch-region-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "arm" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("watch_set", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "region": "FLASH", "offset": 0, "len": 4,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_set region: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x0800_0000u64, "{}", r);
+    let r = client.call_tool("watch_set", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "region": "RAM", "offset": 8, "len": 2,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_set region2: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x2000_0008u64, "{}", r);
+    // Unknown region / device without region are tool errors.
+    let r = client.call_tool("watch_set", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "region": "NOPE", "len": 4,
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    let r = client.call_tool("watch_set", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "len": 4,
     }));
     assert!(r["isError"].as_bool().unwrap(), "{}", r);
     client.close();
