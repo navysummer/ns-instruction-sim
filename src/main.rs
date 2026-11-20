@@ -1329,6 +1329,9 @@ enum CycleSub {
         /// 地址（--addr 形式，十六进制或十进制）。
         #[arg(long = "addr", conflicts_with = "addr")]
         addr_flag: Option<String>,
+        /// ELF 符号名（与 --addr 二选一；从会话固件符号表解析地址）。
+        #[arg(long = "symbol")]
+        symbol: Option<String>,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -4973,15 +4976,35 @@ fn cmd_cycle(sub: CycleSub) -> Result<()> {
             }
             Ok(())
         }
-        CycleSub::Estimate { session, addr, addr_flag, json } => {
-            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
-            let addr_num = parse_num(&addr)?;
+        CycleSub::Estimate { session, addr, addr_flag, symbol, json } => {
+            if symbol.is_some() && (addr.is_some() || addr_flag.is_some()) {
+                bail!("--addr 与 --symbol 只能二选一");
+            }
             let sim = load_session_sim(&session)?;
+            let (addr_num, resolved_symbol) = if let Some(name) = symbol.as_deref() {
+                let sym = sim
+                    .symbols
+                    .iter()
+                    .find(|s| s.name == name)
+                    .ok_or_else(|| anyhow::anyhow!("符号未找到: {name}"))?;
+                (sym.address, Some(sym.name.clone()))
+            } else {
+                let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址或符号"))?;
+                (parse_num(&addr)?, None)
+            };
             let cycles = sim.cycles_for_instruction(addr_num);
             if json {
-                print_json(&serde_json::json!({ "address": addr_num, "cycles": cycles }))?;
+                print_json(&serde_json::json!({
+                    "address": addr_num,
+                    "symbol": resolved_symbol,
+                    "cycles": cycles,
+                }))?;
             } else {
-                println!("0x{:08x}: {} 周期", addr_num, cycles);
+                if let Some(name) = resolved_symbol {
+                    println!("{name} (0x{:08x}): {} 周期", addr_num, cycles);
+                } else {
+                    println!("0x{:08x}: {} 周期", addr_num, cycles);
+                }
             }
             Ok(())
         }

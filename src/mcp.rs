@@ -929,8 +929,15 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "cycle_estimate",
-            description: "估算指定地址的指令周期数。",
-            schema: obj(&[("session", session.clone()), ("addr", addr.clone())], &["addr"]),
+            description: "估算指定地址（或 ELF 符号）的指令周期数。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("addr", addr.clone()),
+                    ("symbol", prop_str("ELF 符号名（与 addr 二选一）。")),
+                ],
+                &[],
+            ),
             handler: tool_cycle_estimate,
         },
         Tool {
@@ -2563,9 +2570,24 @@ fn tool_cycle_get(server: &McpServer, args: &Map<String, Value>) -> Result<Value
 }
 
 fn tool_cycle_estimate(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    let addr = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
+    let addr_arg = s(args, "addr");
+    let symbol = s(args, "symbol");
+    if symbol.is_some() && addr_arg.is_some() {
+        bail!("addr 与 symbol 只能二选一");
+    }
     with_sim(server, args, false, |sim, _, _| {
-        Ok(json!({ "address": addr, "cycles": sim.cycles_for_instruction(addr) }))
+        let (addr, sym) = if let Some(name) = symbol.as_deref() {
+            let s = sim
+                .symbols
+                .iter()
+                .find(|s| s.name == name)
+                .ok_or_else(|| anyhow::anyhow!("符号未找到: {name}"))?;
+            (s.address, Some(s.name.clone()))
+        } else {
+            let addr = parse_num(&addr_arg.ok_or_else(|| anyhow::anyhow!("缺少 addr 或 symbol"))?)?;
+            (addr, None)
+        };
+        Ok(json!({ "address": addr, "symbol": sym, "cycles": sim.cycles_for_instruction(addr) }))
     })
 }
 

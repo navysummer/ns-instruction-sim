@@ -548,6 +548,53 @@ fn cycle_get_and_tick() {
 }
 
 #[test]
+fn cycle_estimate_by_symbol() {
+    let dir = tmpdir();
+    let elf = dir.join("cycsym.elf");
+    write_riscv_elf_with_symbol(&elf, &[0x93, 0x00, 0x10, 0x00], "main");
+    let sess = dir.join("cycsym.json");
+    let out = Command::new(bin())
+        .args([
+            "state", "--arch", "riscv", "--firmware", elf.to_str().unwrap(),
+            "--session", sess.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Estimate cycles by symbol name.
+    let out = Command::new(bin())
+        .args([
+            "cycle", "estimate", "--session", sess.to_str().unwrap(), "--symbol", "main", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x8000_0000u64);
+    assert_eq!(json["symbol"], "main");
+    assert!(json["cycles"].as_u64().unwrap() >= 1);
+    // Unknown symbol is an error.
+    let out = Command::new(bin())
+        .args([
+            "cycle", "estimate", "--session", sess.to_str().unwrap(), "--symbol", "nope",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("符号未找到"));
+    // --addr and --symbol are mutually exclusive.
+    let out = Command::new(bin())
+        .args([
+            "cycle", "estimate", "--session", sess.to_str().unwrap(),
+            "--addr", "0x80000000", "--symbol", "main",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("二选一"));
+}
+
+#[test]
 fn cycle_set_roundtrip() {
     let dir = tmpdir();
     let sess = dir.join("cycleset.json");
@@ -610,6 +657,40 @@ fn mcp_cycle_set() {
     let r = client.call_tool("cycle_get", serde_json::json!({ "session": s }));
     assert!(!r["isError"].as_bool().unwrap(), "cycle_get: {}", r);
     assert_eq!(r["structuredContent"]["cycleCount"], 1000u64, "{}", r);
+    client.close();
+}
+
+#[test]
+fn mcp_cycle_estimate_symbol() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-cycsym-{}.elf", std::process::id()));
+    write_riscv_elf_with_symbol(&elf, &[0x93, 0x00, 0x10, 0x00], "main");
+    let sess = dir.join(format!("mcp-cycsym-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({
+        "session": s, "arch": "riscv", "firmware": elf.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("cycle_estimate", serde_json::json!({
+        "session": s, "symbol": "main",
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "cycle_estimate: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x8000_0000u64, "{}", r);
+    assert_eq!(r["structuredContent"]["symbol"], "main", "{}", r);
+    assert!(r["structuredContent"]["cycles"].as_u64().unwrap() >= 1);
+    // Unknown symbol is a tool error.
+    let r = client.call_tool("cycle_estimate", serde_json::json!({
+        "session": s, "symbol": "nope",
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    // addr + symbol conflict.
+    let r = client.call_tool("cycle_estimate", serde_json::json!({
+        "session": s, "addr": "0x80000000", "symbol": "main",
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
     client.close();
 }
 
@@ -8666,6 +8747,7 @@ fn help_every_param() {
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--fields", "--json"]),
         (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--json"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
+        (&["cycle", "estimate"], &["--session", "--addr", "--symbol", "--json"]),
         (&["cycle", "set"], &["--session", "--count", "--json"]),
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),

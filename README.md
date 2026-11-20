@@ -89,6 +89,7 @@ ns-instruction-sim periph uart --session s.json --bytes 0x41 0x42 0x43
 ns-instruction-sim symbol list --session s.json
 ns-instruction-sim symbol nearest --session s.json --addr 0x80000004 --json
 ns-instruction-sim cycle get --session s.json
+ns-instruction-sim cycle estimate --session s.json --symbol main --json
 ns-instruction-sim cycle set --session s.json --count 1000
 ns-instruction-sim interrupt pending --session s.json
 ns-instruction-sim watchdog config --session s.json --enabled true --timeout 1000

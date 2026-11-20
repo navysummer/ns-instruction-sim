@@ -126,7 +126,7 @@ ns-instruction-sim/
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要；`--mem` 附带指定起始地址的内存快照，人读模式输出 hex dump；JSON 含 `watchpoints` 完整观察点快照） | `--session --arch --firmware --base --mem --mem-len --json --fields --summary` | 状态/JSON/摘要 |
 | `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费）；`reg-dump --fields` 附带每个寄存器的 SVD 位域解码（位偏移/宽度/当前值/描述）；`timer` 可直接设置/读取运行时计数器（`--counter`）与更新计数（`--update-count`） | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --counter --update-count --addr --name --len --bytes --input --file --device --peripheral --register --field --fields --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `nearest` / `line` / `addr` | ELF 符号与源行号映射（`nearest` 查询地址不大于给定地址的最近符号，含 `offset`） | `--filter --addr --file --line --session --json` | 表/JSON |
-| `cycle` | `get` / `estimate` / `tick` / `set` | 周期计数/指令周期估算/外设推进/设置周期计数（模拟时间流逝/超时） | `--addr --cycles --count --session --json` | 值/JSON |
+| `cycle` | `get` / `estimate` / `tick` / `set` | 周期计数/指令周期估算/外设推进/设置周期计数（模拟时间流逝/超时）；`estimate` 可用 `--symbol` 按 ELF 符号解析地址 | `--addr --symbol --cycles --count --session --json` | 值/JSON |
 | `interrupt` | `take` / `pending` / `set` | 中断触发/查询/置线 | `--line --value --session --json` | 值/JSON |
 | `watchdog` | `status` / `feed` / `config` / `reset` | 看门狗查询/喂狗/配置/强制复位 | `--enabled --timeout --base --entry --session --json` | 表/JSON |
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
@@ -205,7 +205,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    （`bp_list` 支持 `symbols` 参数）、
    `watch_set/list/clear/enable/disable/clear_all`（内存观察点；`watch_set` 支持
    `len`/`hit_count`/`once`，`state` 返回 `watchpoints` 数组），
-   `disasm`、`reset`、`cycle_get/estimate/tick/set`、`interrupt_take/pending/set`、
+   `disasm`、`reset`、`cycle_get/estimate/tick/set`（`cycle_estimate` 支持 `symbol` 参数，
+   从会话固件符号表解析地址）、`interrupt_take/pending/set`、
    `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`
    （`periph_reg_dump` 默认返回 `fields` 位域解码，`fields: false` 省略；
    `periph_timer` 支持 `counter`/`update_count` 直接设置运行时计数器与更新计数）、
@@ -276,6 +277,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `all_arch_core_operations`：12 架构寄存器列出/单步/内存写读往返/反汇编均成功。
 - `mem_overlay_persists_across_step`：ARM（私有内存模型核心）显式内存写在单步后仍持久化（memory_overlay 跨调用重放）。
 - `cycle_get_and_tick`：周期计数读取/推进/指令周期估算。
+- `cycle_estimate_by_symbol`：`cycle estimate --symbol` 按 ELF 符号解析地址并估算周期
+  （含未知符号与 `--addr`/`--symbol` 互斥错误路径）。
+- `mcp_cycle_estimate_symbol`：MCP `cycle_estimate` 的 `symbol` 参数解析并返回地址/周期，
+  未知符号与 `addr`+`symbol` 冲突以 `isError:true` 返回。
 - `cycle_set_roundtrip`：`cycle set --count` 直接设置周期计数（位置参数/`--count` 双形式），
   `state --json` 可见持久化；缺周期数报错。
 - `mcp_cycle_set`：MCP `cycle_set` 设置后 `cycle_get` 读回一致。
