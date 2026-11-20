@@ -116,6 +116,7 @@ ns-instruction-sim mem read --session s.json --addr 0x20000000 --len 64 --ascii
 ns-instruction-sim mem read --session s.json --addr 0x20000000 --len 64 --string
 ns-instruction-sim mem read --session s.json --addr 0x20000000 --len 64 --string --json
 ns-instruction-sim mem write --session s.json --addr 0x20000000 --bytes 0x01 0x02 0x03
+ns-instruction-sim mem write --session s.json --device stm32f103c8 --region RAM --offset 0 --bytes 0x01 0x02
 ns-instruction-sim mem write --session s.json --addr 0x20000000 --string "hello" --null
 ns-instruction-sim mem write --session arm.json --arch arm --addr 0x20000000 --bytes 0xaa 0xbb
 ns-instruction-sim mem write --session s.json --addr 0x20000000 --width word --values 0xefbeadde 0x12345678

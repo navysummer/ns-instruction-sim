@@ -7862,6 +7862,130 @@ fn mcp_mem_region() {
 }
 
 #[test]
+fn mem_region_addressing_read_write_fill_search() {
+    let dir = tmpdir();
+    let sess = dir.join("mem-region-addr.json");
+    bootstrap(&sess);
+    // Write via named region (RAM @ 0x20000000) + offset.
+    let out = Command::new(bin())
+        .args([
+            "mem", "write", "--session", sess.to_str().unwrap(),
+            "--device", "stm32f103c8", "--region", "RAM", "--offset", "0",
+            "--bytes", "0xde", "0xad", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x2000_0000u64);
+    // Read back through the same region.
+    let out = Command::new(bin())
+        .args([
+            "mem", "read", "--session", sess.to_str().unwrap(),
+            "--device", "stm32f103c8", "--region", "RAM", "--offset", "0",
+            "--len", "2", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x2000_0000u64);
+    assert_eq!(json["bytes"][0], 0xdeu64);
+    assert_eq!(json["bytes"][1], 0xadu64);
+    // Fill a 4-byte pattern at RAM offset 0x10 and search for it.
+    let out = Command::new(bin())
+        .args([
+            "mem", "fill", "--session", sess.to_str().unwrap(),
+            "--device", "stm32f103c8", "--region", "RAM", "--offset", "0x10",
+            "--len", "4", "--value", "0xaa", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args([
+            "mem", "search", "--session", sess.to_str().unwrap(),
+            "--device", "stm32f103c8", "--region", "RAM", "--offset", "0",
+            "--len", "32", "--pattern", "0xaa", "0xaa", "0xaa", "0xaa", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["matches"].as_array().unwrap().contains(&serde_json::json!(0x2000_0010u64)));
+    // Device without region is an error.
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(), "--device", "stm32f103c8"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("必须同时提供"));
+    // Unknown region is an error.
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--region", "NOSUCH"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("未知区域"));
+    // addr + region is an error.
+    let out = Command::new(bin())
+        .args(["mem", "read", "--session", sess.to_str().unwrap(),
+               "--addr", "0x20000000", "--device", "stm32f103c8", "--region", "RAM"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("二选一"));
+}
+
+#[test]
+fn mcp_mem_region_addressing() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-mem-region-addr-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap());
+    // Write via named region.
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "region": "RAM", "offset": 0,
+        "bytes": ["0xde", "0xad"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x2000_0000u64, "{}", r);
+    // Read back.
+    let r = client.call_tool("mem_read", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "region": "RAM", "offset": 0, "len": 2,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_read: {}", r);
+    assert_eq!(r["structuredContent"]["bytes"][0], 0xdeu64, "{}", r);
+    // Fill and search.
+    let r = client.call_tool("mem_fill", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "region": "RAM", "offset": 0x10,
+        "len": 4, "value": "0xaa",
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_fill: {}", r);
+    let r = client.call_tool("mem_search", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "region": "RAM", "offset": 0,
+        "len": 32, "pattern": ["0xaa", "0xaa", "0xaa", "0xaa"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_search: {}", r);
+    assert!(r["structuredContent"]["matches"].as_array().unwrap().contains(&serde_json::json!(0x2000_0010u64)));
+    // Unknown region is a tool error.
+    let r = client.call_tool("mem_read", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "region": "NOSUCH",
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    // Device without region is a tool error.
+    let r = client.call_tool("mem_read", serde_json::json!({
+        "session": s, "device": "stm32f103c8",
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn state_reports_arm_it_and_pc_limit() {
     let dir = tmpdir();
     let sess = dir.join("arm-itstate.json");
@@ -8881,10 +9005,10 @@ fn help_every_param() {
         (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
         (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
         (&["bp", "list"], &["--session", "--symbols", "--json"]),
-        (&["mem", "read"], &["--session", "--arch", "--addr", "--len", "--width", "--ascii", "--string", "--out", "--json"]),
+        (&["mem", "read"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--len", "--width", "--ascii", "--string", "--out", "--json"]),
         (&["mem", "region"], &["--session", "--arch", "--device", "--region", "--offset", "--len", "--json"]),
         (&["mem", "copy"], &["--session", "--arch", "--src", "--dst", "--len", "--json"]),
-        (&["mem", "write"], &["--session", "--arch", "--addr", "--bytes", "--width", "--values", "--file", "--string", "--null", "--json"]),
+        (&["mem", "write"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--bytes", "--width", "--values", "--file", "--string", "--null", "--json"]),
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--fields", "--json"]),
@@ -8897,8 +9021,8 @@ fn help_every_param() {
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
-        (&["mem", "fill"], &["--session", "--arch", "--addr", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
-        (&["mem", "search"], &["--session", "--arch", "--addr", "--len", "--pattern", "--width", "--out", "--json"]),
+        (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
+        (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--len", "--pattern", "--width", "--out", "--json"]),
         (&["periph", "timer"], &["--session", "--index", "--enabled", "--prescaler", "--auto-reload", "--counter", "--update-count", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),

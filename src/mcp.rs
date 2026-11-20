@@ -660,12 +660,15 @@ fn tools() -> Vec<Tool> {
                     ("firmware", firmware.clone()),
                     ("base", base.clone()),
                     ("addr", addr.clone()),
+                    ("device", prop_str("内置设备键（配合 region，如 stm32f103c8）。")),
+                    ("region", prop_str("设备命名内存区域（FLASH/RAM/PERIPHERALS）。")),
+                    ("offset", prop_num("区域内偏移（默认 0）。")),
                     ("len", prop_num("元素个数（默认 64）。")),
                     ("width", prop_str("数据宽度：byte/half/word/dword。")),
                     ("ascii", prop_bool("按 ASCII 解读（可打印字符、其余显示为 .，忽略末尾 NUL）。")),
                     ("string", prop_bool("读取 NUL 结尾字符串（最多 len 字节）。")),
                 ],
-                &["addr"],
+                &[],
             ),
             handler: tool_mem_read,
         },
@@ -677,6 +680,9 @@ fn tools() -> Vec<Tool> {
                     ("session", session.clone()),
                     ("arch", arch.clone()),
                     ("addr", addr.clone()),
+                    ("device", prop_str("内置设备键（配合 region，如 stm32f103c8）。")),
+                    ("region", prop_str("设备命名内存区域（FLASH/RAM/PERIPHERALS）。")),
+                    ("offset", prop_num("区域内偏移（默认 0）。")),
                     ("bytes", prop_arr("字节序列（支持 0xNN）。")),
                     ("values", prop_arr("值序列（配合 width，十进制/十六进制）。")),
                     ("width", prop_str("数据宽度：byte/half/word。")),
@@ -684,7 +690,7 @@ fn tools() -> Vec<Tool> {
                     ("string", prop_str("写入字符串的 ASCII 字节。")),
                     ("null", prop_bool("配合 string：追加 NUL 终止符。")),
                 ],
-                &["addr"],
+                &[],
             ),
             handler: tool_mem_write,
         },
@@ -696,13 +702,16 @@ fn tools() -> Vec<Tool> {
                     ("session", session.clone()),
                     ("arch", arch.clone()),
                     ("addr", addr.clone()),
+                    ("device", prop_str("内置设备键（配合 region，如 stm32f103c8）。")),
+                    ("region", prop_str("设备命名内存区域（FLASH/RAM/PERIPHERALS）。")),
+                    ("offset", prop_num("区域内偏移（默认 0）。")),
                     ("len", prop_num("长度（字节）。")),
                     ("value", prop_str("填充字节（0-255；与 random 互斥）。")),
                     ("random", prop_bool("使用确定性伪随机字节填充。")),
                     ("seed", prop_str("伪随机种子（默认固定常量）。")),
                     ("pattern", prop_arr("重复填充的字节模式（空格分隔，如 0xDE 0xAD；与 value/random 互斥）。")),
                 ],
-                &["addr", "len"],
+                &["len"],
             ),
             handler: tool_mem_fill,
         },
@@ -714,11 +723,14 @@ fn tools() -> Vec<Tool> {
                     ("session", session.clone()),
                     ("arch", arch.clone()),
                     ("addr", addr.clone()),
+                    ("device", prop_str("内置设备键（配合 region，如 stm32f103c8）。")),
+                    ("region", prop_str("设备命名内存区域（FLASH/RAM/PERIPHERALS）。")),
+                    ("offset", prop_num("区域内偏移（默认 0）。")),
                     ("len", prop_num("搜索长度（默认 256）。")),
                     ("pattern", prop_arr("搜索模式值（整数，宽度由 width 决定）。")),
                     ("width", prop_str("模式宽度：byte/half/word/dword（默认 byte）。")),
                 ],
-                &["addr", "pattern"],
+                &["pattern"],
             ),
             handler: tool_mem_search,
         },
@@ -1854,7 +1866,13 @@ fn tool_reg_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value> 
 }
 
 fn tool_mem_read(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    let addr_num = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
+    let addr_num = crate::resolve_mem_address(
+        s(args, "addr").as_deref(),
+        None,
+        s(args, "device").as_deref(),
+        s(args, "region").as_deref(),
+        u(args, "offset").unwrap_or(0),
+    )?;
     let len = u(args, "len").unwrap_or(64) as usize;
     let width = s(args, "width").unwrap_or_else(|| "byte".to_string());
     let ascii = b(args, "ascii").unwrap_or(false);
@@ -1905,7 +1923,13 @@ fn tool_mem_read(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
 }
 
 fn tool_mem_write(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    let addr_num = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
+    let addr_num = crate::resolve_mem_address(
+        s(args, "addr").as_deref(),
+        None,
+        s(args, "device").as_deref(),
+        s(args, "region").as_deref(),
+        u(args, "offset").unwrap_or(0),
+    )?;
     let width = s(args, "width").unwrap_or_else(|| "byte".to_string());
     let mut data = Vec::new();
     if let Some(text) = s(args, "string") {
@@ -1962,7 +1986,13 @@ fn tool_mem_write(server: &McpServer, args: &Map<String, Value>) -> Result<Value
 }
 
 fn tool_mem_fill(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    let addr_num = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
+    let addr_num = crate::resolve_mem_address(
+        s(args, "addr").as_deref(),
+        None,
+        s(args, "device").as_deref(),
+        s(args, "region").as_deref(),
+        u(args, "offset").unwrap_or(0),
+    )?;
     let len = u(args, "len").ok_or_else(|| anyhow::anyhow!("缺少 len"))? as usize;
     let random = b(args, "random").unwrap_or(false);
     let seed: Option<u64> = match s(args, "seed").as_deref() {
@@ -2034,7 +2064,13 @@ fn tool_mem_fill(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
 }
 
 fn tool_mem_search(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    let addr_num = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
+    let addr_num = crate::resolve_mem_address(
+        s(args, "addr").as_deref(),
+        None,
+        s(args, "device").as_deref(),
+        s(args, "region").as_deref(),
+        u(args, "offset").unwrap_or(0),
+    )?;
     let len = u(args, "len").unwrap_or(256) as usize;
     let pattern = arr(args, "pattern");
     // Each pattern token is an integer of the requested width (byte/half/word/

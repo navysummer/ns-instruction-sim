@@ -437,6 +437,15 @@ enum MemSub {
         /// 目标架构（无会话时使用，默认 riscv）。
         #[arg(short, long)]
         arch: Option<String>,
+        /// 内置设备键（配合 --region，如 stm32f103c8；与 --addr 二选一）。
+        #[arg(long)]
+        device: Option<String>,
+        /// 设备命名内存区域（FLASH/RAM/PERIPHERALS；配合 --device）。
+        #[arg(long)]
+        region: Option<String>,
+        /// 区域内偏移（配合 --device/--region，默认 0）。
+        #[arg(long, default_value = "0")]
+        offset: Option<String>,
         /// 起始地址（十六进制或十进制，位置参数或 --addr）。
         #[arg(index = 1)]
         addr: Option<String>,
@@ -470,6 +479,15 @@ enum MemSub {
         /// 目标架构（无会话时使用，默认 riscv）。
         #[arg(short, long)]
         arch: Option<String>,
+        /// 内置设备键（配合 --region，如 stm32f103c8；与 --addr 二选一）。
+        #[arg(long)]
+        device: Option<String>,
+        /// 设备命名内存区域（FLASH/RAM/PERIPHERALS；配合 --device）。
+        #[arg(long)]
+        region: Option<String>,
+        /// 区域内偏移（配合 --device/--region，默认 0）。
+        #[arg(long, default_value = "0")]
+        offset: Option<String>,
         /// 起始地址（位置参数或 --addr）。
         #[arg(index = 1)]
         addr: Option<String>,
@@ -506,6 +524,15 @@ enum MemSub {
         /// 目标架构（无会话时使用，默认 riscv）。
         #[arg(short, long)]
         arch: Option<String>,
+        /// 内置设备键（配合 --region，如 stm32f103c8；与 --addr 二选一）。
+        #[arg(long)]
+        device: Option<String>,
+        /// 设备命名内存区域（FLASH/RAM/PERIPHERALS；配合 --device）。
+        #[arg(long)]
+        region: Option<String>,
+        /// 区域内偏移（配合 --device/--region，默认 0）。
+        #[arg(long, default_value = "0")]
+        offset: Option<String>,
         /// 起始地址（位置参数或 --addr）。
         #[arg(index = 1)]
         addr: Option<String>,
@@ -542,6 +569,15 @@ enum MemSub {
         /// 目标架构（无会话时使用，默认 riscv）。
         #[arg(short, long)]
         arch: Option<String>,
+        /// 内置设备键（配合 --region，如 stm32f103c8；与 --addr 二选一）。
+        #[arg(long)]
+        device: Option<String>,
+        /// 设备命名内存区域（FLASH/RAM/PERIPHERALS；配合 --device）。
+        #[arg(long)]
+        region: Option<String>,
+        /// 区域内偏移（配合 --device/--region，默认 0）。
+        #[arg(long, default_value = "0")]
+        offset: Option<String>,
         /// 起始地址（位置参数或 --addr）。
         #[arg(index = 1)]
         addr: Option<String>,
@@ -3076,9 +3112,14 @@ fn cmd_reg(sub: RegSub) -> Result<()> {
 
 fn cmd_mem(sub: MemSub) -> Result<()> {
     match sub {
-        MemSub::Read { session, arch, addr, addr_flag, len, width, ascii, string, out, json } => {
-            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
-            let addr_num = parse_num(&addr)?;
+        MemSub::Read { session, arch, device, region, offset, addr, addr_flag, len, width, ascii, string, out, json } => {
+            let addr_num = resolve_mem_address(
+                addr.as_deref(),
+                addr_flag.as_deref(),
+                device.as_deref(),
+                region.as_deref(),
+                offset.as_deref().map(parse_num).transpose()?.unwrap_or(0),
+            )?;
             let (sim, _fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
             if (ascii || string) && out.is_some() {
                 bail!("--ascii/--string 与 --out 互斥");
@@ -3160,9 +3201,14 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Write { session, arch, addr, addr_flag, bytes, width, values, file, string, null, json } => {
-            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
-            let addr_num = parse_num(&addr)?;
+        MemSub::Write { session, arch, device, region, offset, addr, addr_flag, bytes, width, values, file, string, null, json } => {
+            let addr_num = resolve_mem_address(
+                addr.as_deref(),
+                addr_flag.as_deref(),
+                device.as_deref(),
+                region.as_deref(),
+                offset.as_deref().map(parse_num).transpose()?.unwrap_or(0),
+            )?;
             let mut data = Vec::new();
             let elem_size = match width.as_str() {
                 "byte" => 1usize,
@@ -3218,9 +3264,14 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Fill { session, arch, addr, addr_flag, len, value, value_flag, random, seed, pattern, json } => {
-            let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
-            let addr_num = parse_num(&addr)?;
+        MemSub::Fill { session, arch, device, region, offset, addr, addr_flag, len, value, value_flag, random, seed, pattern, json } => {
+            let addr_num = resolve_mem_address(
+                addr.as_deref(),
+                addr_flag.as_deref(),
+                device.as_deref(),
+                region.as_deref(),
+                offset.as_deref().map(parse_num).transpose()?.unwrap_or(0),
+            )?;
             let (mut sim, fw, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
             let parsed_pat: Option<Vec<u8>> = if pattern.is_empty() {
                 None
@@ -3303,12 +3354,14 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Search { session, arch, addr, addr_flag, len, pattern, width, out, json } => {
-            let addr_str = addr_flag
-                .as_deref()
-                .or(addr.as_deref())
-                .ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
-            let addr_num = parse_num(addr_str)?;
+        MemSub::Search { session, arch, device, region, offset, addr, addr_flag, len, pattern, width, out, json } => {
+            let addr_num = resolve_mem_address(
+                addr.as_deref(),
+                addr_flag.as_deref(),
+                device.as_deref(),
+                region.as_deref(),
+                offset.as_deref().map(parse_num).transpose()?.unwrap_or(0),
+            )?;
             if pattern.is_empty() {
                 bail!("--pattern 至少需要一个字节");
             }
@@ -4241,6 +4294,44 @@ pub(crate) fn resolve_reg_address(
         }
         (Some(_), Some(_)) => bail!("--addr 与 --name 只能二选一"),
         (None, None) => bail!("请提供 --addr 或 --name"),
+    }
+}
+
+/// Resolve a memory access address either from `--addr` or from a device
+/// named memory region (`--device` + `--region` + `--offset`). Shared by the
+/// CLI and the MCP `mem_*` tools.
+pub(crate) fn resolve_mem_address(
+    addr: Option<&str>,
+    addr_flag: Option<&str>,
+    device: Option<&str>,
+    region: Option<&str>,
+    offset: u32,
+) -> Result<u32> {
+    match (device, region) {
+        (Some(dev), Some(reg)) => {
+            if addr.is_some() || addr_flag.is_some() {
+                bail!("--addr 与 --device/--region 只能二选一");
+            }
+            let regions = ns_device::memory_map(dev);
+            let r = regions
+                .iter()
+                .find(|r| r.name.eq_ignore_ascii_case(reg))
+                .ok_or_else(|| {
+                    let names: Vec<&str> = regions.iter().map(|r| r.name.as_str()).collect();
+                    anyhow::anyhow!("未知区域 {reg}（可用: {}）", names.join("/"))
+                })?;
+            if offset as u64 >= r.size {
+                bail!("偏移 {offset} 超出区域 {} 大小 {}", r.name, r.size);
+            }
+            Ok((r.start as u32).wrapping_add(offset))
+        }
+        (Some(_), None) | (None, Some(_)) => bail!("--device 与 --region 必须同时提供"),
+        (None, None) => {
+            let a = addr_flag
+                .or(addr)
+                .ok_or_else(|| anyhow::anyhow!("缺少地址（或使用 --device/--region）"))?;
+            parse_num(a)
+        }
     }
 }
 
