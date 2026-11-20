@@ -6973,7 +6973,9 @@ fn mcp_handshake_and_list_tools() {
         "mem_search", "mem_load", "mem_dump", "mem_region", "mem_copy", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
         "cycle_get", "cycle_set", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
-        "bp_modify", "session_info", "session_diff", "device_memory_map", "device_lookup", "firmware_info",
+        "bp_modify", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
+        "watch_disable", "watch_clear_all",
+        "session_info", "session_diff", "device_memory_map", "device_lookup", "firmware_info",
         "periph_reg_dump",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
@@ -9448,6 +9450,8 @@ fn help_every_command() {
         &["mem", "load"], &["mem", "dump"], &["mem", "region"], &["mem", "copy"],
         &["bp", "list"], &["bp", "set"], &["bp", "modify"], &["bp", "clear"], &["bp", "clear-all"],
         &["bp", "enable"], &["bp", "disable"],
+        &["watch", "set"], &["watch", "list"], &["watch", "modify"], &["watch", "clear"], &["watch", "clear-all"],
+        &["watch", "enable"], &["watch", "disable"],
         &["disasm"], &["reset"], &["state"],
         &["periph", "status"], &["periph", "config"], &["periph", "svd-load"],
         &["periph", "uart"], &["periph", "gpio"], &["periph", "timer"],
@@ -9523,6 +9527,7 @@ fn help_every_param() {
         (&["watch", "enable"], &["--session", "--addr", "--json"]),
         (&["watch", "disable"], &["--session", "--addr", "--json"]),
         (&["watch", "clear-all"], &["--session", "--json"]),
+        (&["watch", "modify"], &["--session", "--addr", "--len", "--hit-count", "--once", "--json"]),
     ];
     for (args, needles) in checks {
         let out = Command::new(bin()).args(*args).arg("--help").output().unwrap();
@@ -9828,6 +9833,67 @@ fn watch_enable_disable_clear() {
 }
 
 #[test]
+fn watch_modify_updates_existing() {
+    // A single write to 0x10 so the watchpoint records a runtime hit.
+    let code: [u8; 12] = [
+        0x93, 0x00, 0x10, 0x00, // addi x1, x0, 1
+        0x23, 0x28, 0x10, 0x00, // sw x1, 16(x0)
+        0x73, 0x00, 0x00, 0x00, // ecall
+    ];
+    let dir = tmpdir();
+    let elf = dir.join("wmod.elf");
+    write_riscv_elf_code(&elf, &code);
+    let sess = dir.join("wmod.json");
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(), "--session", sess.to_str().unwrap(), "--max-steps", "1"])
+        .output()
+        .unwrap();
+    Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--len", "4", "--hit-count", "2", "--json"])
+        .output()
+        .unwrap();
+    // The first write records a hit (no pause because hit-count=2).
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "advanced", "{}", v);
+    // Modify the watchpoint attributes; runtime hits must be preserved.
+    let out = Command::new(bin())
+        .args(["watch", "modify", "--session", sess.to_str().unwrap(), "--addr", "0x10",
+               "--len", "8", "--hit-count", "5", "--once", "true", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["len"], 8u64, "{}", v);
+    assert_eq!(v["hitCount"], 5u64, "{}", v);
+    assert_eq!(v["once"], true, "{}", v);
+    assert_eq!(v["hits"], 1u64, "{}", v);
+    // `watch list` reflects the change across processes.
+    let out = Command::new(bin())
+        .args(["watch", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v[0]["len"], 8u64, "{}", v);
+    assert_eq!(v[0]["hitCount"], 5u64, "{}", v);
+    assert_eq!(v[0]["hits"], 1u64, "{}", v);
+    // No attribute / non-existent watchpoint are errors.
+    let out = Command::new(bin())
+        .args(["watch", "modify", "--session", sess.to_str().unwrap(), "--addr", "0x10"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin())
+        .args(["watch", "modify", "--session", sess.to_str().unwrap(), "--addr", "0x9999", "--len", "4"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
 fn mcp_watch_tools() {
     let dir = tmpdir();
     let sess = dir.join(format!("mcp-watch-{}.json", std::process::id()));
@@ -9913,6 +9979,43 @@ fn mcp_watch_tools() {
     );
     assert!(r["isError"].as_bool().unwrap(), "len 65 must error");
 
+    client.close();
+}
+
+#[test]
+fn mcp_watch_modify() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-watch-modify-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("watch_set", serde_json::json!({
+        "session": s, "addr": "0x10", "len": 4, "hit_count": 2,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_set: {}", r);
+    // Modify attributes; runtime hits (0) preserved.
+    let r = client.call_tool("watch_modify", serde_json::json!({
+        "session": s, "addr": "0x10", "len": 8, "hit_count": 5, "once": true,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_modify: {}", r);
+    assert_eq!(r["structuredContent"]["len"], 8u64, "{}", r);
+    assert_eq!(r["structuredContent"]["hitCount"], 5u64, "{}", r);
+    assert_eq!(r["structuredContent"]["once"], true, "{}", r);
+    let r = client.call_tool("watch_list", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_list: {}", r);
+    let wp = &r["structuredContent"]["watchpoints"][0];
+    assert_eq!(wp["len"], 8u64, "{}", r);
+    assert_eq!(wp["hitCount"], 5u64, "{}", r);
+    assert_eq!(wp["once"], true, "{}", r);
+    // No attribute / non-existent watchpoint / bad length are tool errors.
+    let r = client.call_tool("watch_modify", serde_json::json!({ "session": s, "addr": "0x10" }));
+    assert!(r["isError"].as_bool().unwrap(), "no attrs must error");
+    let r = client.call_tool("watch_modify", serde_json::json!({ "session": s, "addr": "0x9999", "len": 4 }));
+    assert!(r["isError"].as_bool().unwrap(), "absent watch must error");
+    let r = client.call_tool("watch_modify", serde_json::json!({ "session": s, "addr": "0x10", "len": 65 }));
+    assert!(r["isError"].as_bool().unwrap(), "len 65 must error");
     client.close();
 }
 

@@ -915,6 +915,21 @@ fn tools() -> Vec<Tool> {
             handler: tool_watch_clear_all,
         },
         Tool {
+            name: "watch_modify",
+            description: "修改既有观察点属性（长度/命中次数/一次性），保留运行时命中计数。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("addr", addr.clone()),
+                    ("len", prop_num("监视字节数（1..64）。")),
+                    ("hit_count", prop_num("第 N 次写入时暂停（0 = 每次写入）。")),
+                    ("once", prop_bool("一次性观察点：命中后自动禁用。")),
+                ],
+                &["session", "addr"],
+            ),
+            handler: tool_watch_modify,
+        },
+        Tool {
             name: "disasm",
             description: "反汇编 N 条指令（地址/反汇编/字节/来源/ARM 状态）。",
             schema: obj(
@@ -2565,6 +2580,38 @@ fn tool_watch_clear_all(server: &McpServer, args: &Map<String, Value>) -> Result
         let removed = session.watchpoints.len();
         session.watchpoints.clear();
         Ok(json!({ "removed": removed, "count": 0 }))
+    })
+}
+
+fn tool_watch_modify(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let addr = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
+    let len = u(args, "len");
+    let hit_count = u(args, "hit_count");
+    let once = b(args, "once");
+    if len.is_none() && hit_count.is_none() && once.is_none() {
+        bail!("至少需要 len/hit_count/once 之一");
+    }
+    if let Some(l) = len {
+        if l == 0 || l > 64 {
+            bail!("len 必须在 1..64");
+        }
+    }
+    with_watch_session(server, args, |session| {
+        let wp = session
+            .watchpoints
+            .iter_mut()
+            .find(|w| w.address == addr)
+            .ok_or_else(|| anyhow::anyhow!("观察点不存在 @ 0x{addr:08x}"))?;
+        if let Some(l) = len {
+            wp.len = l;
+        }
+        if let Some(h) = hit_count {
+            wp.hit_count = h;
+        }
+        if let Some(o) = once {
+            wp.once = o;
+        }
+        Ok(crate::watch_json(wp))
     })
 }
 

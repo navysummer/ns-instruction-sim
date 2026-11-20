@@ -959,6 +959,30 @@ enum WatchSub {
         #[arg(long)]
         json: bool,
     },
+    /// 修改既有观察点属性（长度/命中次数/一次性），保留运行时命中计数。
+    Modify {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 监视字节数（1..64）。
+        #[arg(long)]
+        len: Option<u32>,
+        /// 第 N 次写入时暂停（0 = 每次写入）。
+        #[arg(long)]
+        hit_count: Option<u32>,
+        /// 一次性观察点：命中后自动禁用。
+        #[arg(long)]
+        once: Option<bool>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -4162,6 +4186,48 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
             addr_flag,
             json,
         } => set_watch_enabled(&session, addr, addr_flag, false, json),
+        WatchSub::Modify { session, addr, addr_flag, len, hit_count, once, json } => {
+            if len.is_none() && hit_count.is_none() && once.is_none() {
+                bail!("至少需要 --len/--hit-count/--once 之一");
+            }
+            let addr_num = parse_num(
+                &addr_flag
+                    .or(addr)
+                    .ok_or_else(|| anyhow::anyhow!("缺少地址"))?,
+            )?;
+            if let Some(l) = len {
+                if l == 0 || l > 64 {
+                    bail!("--len 必须在 1..64");
+                }
+            }
+            let mut s = Session::load(&session)?;
+            let updated = {
+                let wp = watch_find(&mut s, addr_num)?;
+                if let Some(l) = len {
+                    wp.len = l;
+                }
+                if let Some(h) = hit_count {
+                    wp.hit_count = h;
+                }
+                if let Some(o) = once {
+                    wp.once = o;
+                }
+                watch_json(wp)
+            };
+            s.save(&session)?;
+            if json {
+                print_json(&updated)?;
+            } else {
+                println!(
+                    "观察点已更新 @ 0x{addr_num:08x}（{} 字节，命中次数 {}，一次性 {}，历史命中 {}）",
+                    updated["len"],
+                    updated["hitCount"],
+                    updated["once"],
+                    updated["hits"],
+                );
+            }
+            Ok(())
+        }
     }
 }
 
