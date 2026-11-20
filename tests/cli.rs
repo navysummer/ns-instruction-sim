@@ -8780,6 +8780,49 @@ fn session_info_and_diff() {
 }
 
 #[test]
+fn session_patch_fields() {
+    let dir = tmpdir();
+    let sess = dir.join("patch.json");
+    bootstrap(&sess);
+    // Patch scalar/register/CSR fields in one invocation.
+    let out = Command::new(bin())
+        .args([
+            "session", "patch", "--file", sess.to_str().unwrap(),
+            "--pc", "0x80000010", "--cycle", "42", "--halted", "true",
+            "--reg", "x1=0x55", "--csr", "mtvec=0x80000010", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pc"], 0x8000_0010u64);
+    assert_eq!(json["cycleCount"], 42u64);
+    assert_eq!(json["halted"], true);
+    // The patched register and CSR are visible through their own commands.
+    let out = Command::new(bin())
+        .args(["reg", "get", "--session", sess.to_str().unwrap(), "--name", "x1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["value"], 0x55u64);
+    let out = Command::new(bin())
+        .args(["csr", "get", "--session", sess.to_str().unwrap(), "--name", "mtvec", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["value"], 0x8000_0010u64);
+    // Unknown register is an error.
+    let out = Command::new(bin())
+        .args(["session", "patch", "--file", sess.to_str().unwrap(), "--reg", "nope=1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("未知寄存器"));
+}
+
+#[test]
 fn device_memory_map_and_address_lookup() {
     // JSON view with an address lookup.
     let out = Command::new(bin())
@@ -8950,6 +8993,39 @@ fn mcp_session_and_memory_map_tools() {
 }
 
 #[test]
+fn mcp_session_patch() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-session-patch-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("session_patch", serde_json::json!({
+        "session": s, "pc": "0x80000010", "cycle_count": 42, "halted": true,
+        "registers": { "x1": "0x55" }, "csr": { "mtvec": "0x80000010" },
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_patch: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["pc"], 0x8000_0010u64, "{}", r);
+    assert_eq!(sc["cycleCount"], 42u64, "{}", r);
+    assert_eq!(sc["halted"], true, "{}", r);
+    // Patched register/CSR are visible through their own tools.
+    let r = client.call_tool("reg_get", serde_json::json!({ "session": s, "name": "x1" }));
+    assert!(!r["isError"].as_bool().unwrap(), "reg_get: {}", r);
+    assert_eq!(r["structuredContent"]["value"], 0x55u64, "{}", r);
+    let r = client.call_tool("csr_get", serde_json::json!({ "session": s, "name": "mtvec" }));
+    assert!(!r["isError"].as_bool().unwrap(), "csr_get: {}", r);
+    assert_eq!(r["structuredContent"]["value"], 0x8000_0010u64, "{}", r);
+    // Unknown register is a tool error.
+    let r = client.call_tool("session_patch", serde_json::json!({
+        "session": s, "registers": { "nope": 1 },
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn help_every_command() {
     let commands: &[&[&str]] = &[
         &["version"],
@@ -8974,7 +9050,7 @@ fn help_every_command() {
         &["watchdog", "reset"],
         &["csr", "list"], &["csr", "get"], &["csr", "set"],
         &["trace"], &["coverage"], &["profile"],
-        &["session", "info"], &["session", "diff"], &["device", "memory-map"],
+        &["session", "info"], &["session", "diff"], &["session", "patch"], &["device", "memory-map"],
         &["firmware", "info"],
         &["mcp"],
     ];
@@ -9020,6 +9096,7 @@ fn help_every_param() {
         (&["interrupt", "vector"], &["--session", "--json"]),
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
+        (&["session", "patch"], &["--file", "--pc", "--cycle", "--halted", "--reg", "--csr", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
         (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--len", "--pattern", "--width", "--out", "--json"]),

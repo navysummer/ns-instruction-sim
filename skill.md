@@ -237,6 +237,7 @@ ns-instruction-sim profile --session s.json --steps 5000
 # 会话元信息与两个会话的差异对比
 ns-instruction-sim session info --file s.json --json
 ns-instruction-sim session diff --a s.json --b s2.json --limit 50 --json
+ns-instruction-sim session patch --file s.json --pc 0x80000010 --cycle 42 --reg x1=0x55 --csr mtvec=0x80000010 --json
 
 # 设备内存区域与地址所属区域
 ns-instruction-sim device memory-map stm32f103c8 --addr 0x40010000 --json

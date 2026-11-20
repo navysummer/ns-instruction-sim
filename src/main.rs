@@ -225,6 +225,8 @@ enum SessionSub {
     Info(SessionInfoArgs),
     /// 比较两个会话文件，列出全部差异（标量/寄存器/断点/内存）。
     Diff(SessionDiffArgs),
+    /// 直接修改会话字段（PC/周期/停机标志/寄存器/CSR）并保存。
+    Patch(SessionPatchArgs),
 }
 
 #[derive(Subcommand)]
@@ -1649,6 +1651,32 @@ struct SessionDiffArgs {
     json: bool,
 }
 
+/// Session arguments for the `session patch` subcommand.
+#[derive(Args)]
+struct SessionPatchArgs {
+    /// 会话文件（JSON）。
+    #[arg(short = 'f', long)]
+    file: PathBuf,
+    /// 设置程序计数器（十六进制或十进制）。
+    #[arg(long)]
+    pc: Option<String>,
+    /// 设置周期计数。
+    #[arg(long)]
+    cycle: Option<u64>,
+    /// 设置停机标志（true/false）。
+    #[arg(long)]
+    halted: Option<bool>,
+    /// 寄存器赋值（空格分隔，如 `x1=5 a0=0x10`）。
+    #[arg(long, value_delimiter = ' ', num_args = 1..)]
+    reg: Vec<String>,
+    /// CSR 赋值（空格分隔，如 `mtvec=0x80000010`）。
+    #[arg(long, value_delimiter = ' ', num_args = 1..)]
+    csr: Vec<String>,
+    /// 输出 JSON。
+    #[arg(long)]
+    json: bool,
+}
+
 fn main() {
     if let Err(e) = real_main() {
         eprintln!("错误: {e}");
@@ -1714,6 +1742,7 @@ fn real_main() -> Result<()> {
         Command::Csr(CsrArgs { sub }) => cmd_csr(sub),
         Command::Session(SessionArgs { sub: SessionSub::Info(args) }) => cmd_session_info(args),
         Command::Session(SessionArgs { sub: SessionSub::Diff(args) }) => cmd_session_diff(args),
+        Command::Session(SessionArgs { sub: SessionSub::Patch(args) }) => cmd_session_patch(args),
         Command::Firmware { sub: FirmwareSub::Info { firmware, arch, json } } => {
             cmd_firmware_info(&firmware, arch.as_deref(), json)
         }
@@ -4335,6 +4364,57 @@ pub(crate) fn resolve_mem_address(
     }
 }
 
+/// Apply register/CSR assignments to a session. Register names are resolved
+/// against the session architecture's display labels; unknown names error.
+pub(crate) fn apply_session_patch(
+    session: &mut session::Session,
+    regs: &[(String, u32)],
+    csrs: &[(String, u32)],
+) -> Result<()> {
+    let arch = ns_sim::Arch::from_target(&session.arch);
+    let count = ns_sim::reg_count_for(arch);
+    for (name, value) in regs {
+        let idx = if let Some(num) = name
+            .strip_prefix('x')
+            .or_else(|| name.strip_prefix('X'))
+            .or_else(|| name.strip_prefix('r'))
+            .or_else(|| name.strip_prefix('R'))
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            num
+        } else {
+            let mut found = None;
+            for i in 0..count {
+                if ns_sim::reg_label_for(arch, i).eq_ignore_ascii_case(name) {
+                    found = Some(i);
+                    break;
+                }
+            }
+            found.ok_or_else(|| anyhow::anyhow!("未知寄存器: {name}"))?
+        };
+        if idx >= count {
+            bail!("寄存器索引超出范围: {name}");
+        }
+        if let Some(entry) = session.registers.iter_mut().find(|(i, _)| *i == idx) {
+            entry.1 = *value;
+        } else {
+            session.registers.push((idx, *value));
+        }
+    }
+    for (name, value) in csrs {
+        match name.to_ascii_lowercase().as_str() {
+            "mstatus" => session.csr.mstatus = *value,
+            "mtvec" => session.csr.mtvec = *value,
+            "mepc" => session.csr.mepc = *value,
+            "mcause" => session.csr.mcause = *value,
+            "mie" => session.csr.mie = *value,
+            "mhartid" => session.csr.mhartid = *value,
+            other => bail!("未知 CSR: {other}"),
+        }
+    }
+    Ok(())
+}
+
 /// Resolve a named SVD field to its register address, bit offset and width.
 pub(crate) fn resolve_reg_field(
     device: &str,
@@ -5695,6 +5775,50 @@ fn cmd_session_diff(args: SessionDiffArgs) -> Result<()> {
             d["a"],
             d["b"]
         );
+    }
+    Ok(())
+}
+
+/// `session patch`: apply scalar/register/CSR changes to a persisted session.
+fn cmd_session_patch(args: SessionPatchArgs) -> Result<()> {
+    let mut s = Session::load(&args.file)?;
+    if let Some(pc) = args.pc.as_deref() {
+        s.pc = parse_num(pc)?;
+    }
+    if let Some(c) = args.cycle {
+        s.cycle_count = c;
+    }
+    if let Some(h) = args.halted {
+        s.halted = h;
+    }
+    let mut regs: Vec<(String, u32)> = Vec::new();
+    for tok in &args.reg {
+        let (name, val) = tok.split_once('=').ok_or_else(|| {
+            anyhow::anyhow!("寄存器赋值格式应为 NAME=VALUE: {tok}")
+        })?;
+        regs.push((name.to_string(), parse_num(val)?));
+    }
+    let mut csrs: Vec<(String, u32)> = Vec::new();
+    for tok in &args.csr {
+        let (name, val) = tok.split_once('=').ok_or_else(|| {
+            anyhow::anyhow!("CSR 赋值格式应为 NAME=VALUE: {tok}")
+        })?;
+        csrs.push((name.to_string(), parse_num(val)?));
+    }
+    apply_session_patch(&mut s, &regs, &csrs)?;
+    s.save(&args.file)?;
+    let value = s.info_value(Some(&args.file));
+    if args.json {
+        print_json(&value)?;
+    } else {
+        println!(
+            "已修改会话 {}（PC 0x{:08x} 周期 {} 停机 {}）",
+            args.file.display(),
+            s.pc,
+            s.cycle_count,
+            s.halted
+        );
+        println!("寄存器 {} 个  CSR 已更新", s.registers.len());
     }
     Ok(())
 }

@@ -1323,6 +1323,36 @@ fn tools() -> Vec<Tool> {
             schema: session_diff_schema(),
             handler: tool_session_diff,
         },
+        Tool {
+            name: "session_patch",
+            description: "直接修改会话字段（PC/周期/停机/寄存器/CSR）并保存。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("pc", prop_str("程序计数器（十六进制/十进制）。")),
+                    ("cycle_count", prop_num("周期计数。")),
+                    ("halted", prop_bool("停机标志。")),
+                    (
+                        "registers",
+                        serde_json::json!({
+                            "type": "object",
+                            "additionalProperties": {"type": ["integer", "string"]},
+                            "description": "寄存器赋值对象（名称 → 数值）。",
+                        }),
+                    ),
+                    (
+                        "csr",
+                        serde_json::json!({
+                            "type": "object",
+                            "additionalProperties": {"type": ["integer", "string"]},
+                            "description": "CSR 赋值对象（名称 → 数值）。",
+                        }),
+                    ),
+                ],
+                &["session"],
+            ),
+            handler: tool_session_patch,
+        },
     ]
 }
 
@@ -3479,6 +3509,51 @@ fn tool_session_diff(_: &McpServer, args: &Map<String, Value>) -> Result<Value> 
     crate::session::session_diff(Path::new(&a), Path::new(&b), limit)
 }
 
+/// Apply scalar/register/CSR changes to a session (`session patch`).
+fn tool_session_patch(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let path = server.resolve_session(args).ok_or_else(|| anyhow::anyhow!("缺少 session"))?;
+    let mut session = Session::load(&path)?;
+    if let Some(pc) = s(args, "pc") {
+        session.pc = parse_num(&pc)?;
+    }
+    if let Some(count) = u64(args, "cycle_count") {
+        session.cycle_count = count;
+    }
+    if let Some(halted) = b(args, "halted") {
+        session.halted = halted;
+    }
+    let regs = name_value_map(args.get("registers"), "registers")?;
+    let csrs = name_value_map(args.get("csr"), "csr")?;
+    crate::apply_session_patch(&mut session, &regs, &csrs)?;
+    session.save(&path)?;
+    Ok(session.info_value(Some(&path)))
+}
+
+/// Parse a JSON object of `name → value` pairs into ordered assignments.
+fn name_value_map(value: Option<&Value>, label: &str) -> Result<Vec<(String, u32)>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let obj = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("{label} 应为对象"))?;
+    let mut out = Vec::with_capacity(obj.len());
+    for (name, val) in obj {
+        let n = match val {
+            Value::Number(n) => n
+                .as_u64()
+                .map(|x| x as u32)
+                .ok_or_else(|| anyhow::anyhow!("{label}.{name} 应为 32 位无符号整数"))?,
+            Value::String(s) => parse_num(s)?,
+            _ => bail!("{label}.{name} 应为整数或数字字符串"),
+        };
+        out.push((name.clone(), n));
+    }
+    Ok(out)
+}
 
 #[cfg(test)]
 mod tests {
