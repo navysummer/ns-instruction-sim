@@ -3065,19 +3065,28 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
     let collect_trace = matches!(kind, AnalyzeTool::Trace);
     let collect_regs = b(args, "regs").unwrap_or(false);
     let max_cycles = u64(args, "max_cycles");
-    with_sim(server, args, true, |sim, _, _| {
+    with_sim_watch(server, args, |sim, _, watch| {
         if let Some(addr) = until {
             if addr > sim.pc_limit() {
                 bail!("until 地址 0x{addr:08x} 超出 {} 的 PC 可寻址范围", sim.arch.label());
             }
         }
         let temp_bp = until.map(|a| sim.set_breakpoint(a)).unwrap_or(false);
+        let mut hook = |before: bool, s: &Simulator| -> Option<u32> {
+            if before {
+                watch.snapshot(s);
+                None
+            } else {
+                watch.check(s)
+            }
+        };
         let analysis = crate::sim::analyze_run(
             sim,
             steps.unwrap_or(max_steps),
             collect_trace,
             collect_regs,
             max_cycles,
+            Some(&mut hook),
         );
         if temp_bp {
             if let Some(a) = until {
@@ -3091,6 +3100,7 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
                 "steps": analysis.steps,
                 "cycleCount": analysis.cycle_count,
                 "result": analysis.result,
+                "watchHit": analysis.watch_hit,
                 "trace": analysis.trace,
             }),
             AnalyzeTool::Coverage => {
@@ -3105,6 +3115,7 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
                     "steps": analysis.steps,
                     "cycleCount": analysis.cycle_count,
                     "result": analysis.result,
+                    "watchHit": analysis.watch_hit,
                     "uniquePcs": unique,
                     "coverage": items,
                 })
@@ -3121,6 +3132,7 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
                     "steps": analysis.steps,
                     "cycleCount": analysis.cycle_count,
                     "result": analysis.result,
+                    "watchHit": analysis.watch_hit,
                     "uniqueMnemonics": unique,
                     "histogram": items,
                 })

@@ -151,7 +151,7 @@ ns-instruction-sim watch disable --session s.json --addr 0x20000000
 ns-instruction-sim watch enable --session s.json --addr 0x20000000
 ns-instruction-sim watch clear --session s.json --addr 0x20000000
 ns-instruction-sim watch clear-all --session s.json
-# step/run/continue 在写入被监视范围时暂停，`state --json` 含 watchpoints 数组
+# step/run/continue/trace/coverage/profile 在写入被监视范围时暂停，`state --json` 含 watchpoints 数组
 
 # 反汇编 / 复位 / 状态 / 外设
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8

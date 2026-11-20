@@ -432,7 +432,14 @@ pub struct RunAnalysis {
     pub result: String,
     pub steps: u64,
     pub cycle_count: u64,
+    /// Address of the memory write that tripped a watchpoint (if any).
+    pub watch_hit: Option<u32>,
 }
+
+/// Watchpoint hook threaded through [`analyze_run`]: called before (`true`) and
+/// after (`false`) each simulated instruction; the post-step call returns the
+/// address of a watched range that was written (the run then stops).
+pub type WatchHook<'a> = &'a mut dyn FnMut(bool, &Simulator) -> Option<u32>;
 
 fn step_result_label(result: StepResult) -> &'static str {
     match result {
@@ -457,6 +464,7 @@ pub fn analyze_run(
     collect_trace: bool,
     collect_regs: bool,
     max_cycles: Option<u64>,
+    mut watch: Option<WatchHook>,
 ) -> RunAnalysis {
     let mut analysis = RunAnalysis {
         trace: Vec::new(),
@@ -465,6 +473,7 @@ pub fn analyze_run(
         result: "advanced".to_string(),
         steps: 0,
         cycle_count: 0,
+        watch_hit: None,
     };
     let mut count = 0u64;
     while count < max_steps {
@@ -473,6 +482,9 @@ pub fn analyze_run(
                 analysis.result = "cycles".to_string();
                 break;
             }
+        }
+        if let Some(hook) = watch.as_deref_mut() {
+            hook(true, sim);
         }
         let pc_before = sim.program_counter();
         let result = sim.step();
@@ -512,6 +524,13 @@ pub fn analyze_run(
         if let Some(mc) = max_cycles {
             if sim.cycle_count >= mc {
                 analysis.result = "cycles".to_string();
+                break;
+            }
+        }
+        if let Some(hook) = watch.as_deref_mut() {
+            if let Some(addr) = hook(false, sim) {
+                analysis.result = "watchpoint".to_string();
+                analysis.watch_hit = Some(addr);
                 break;
             }
         }

@@ -120,7 +120,7 @@ ns-instruction-sim/
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` / `region` / `copy` | 内存读/写/填充（含确定性伪随机）/搜索模式（`search` 的 `--pattern` 按 `--width` `byte`/`half`/`word`/`dword` 解释为小端整数值，可直接按字/双字常量搜索）/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验）/复制内存区域（源→目标，重叠范围按 memmove 语义） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --src --dst --name --format --width --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数；`list --symbols` 用 ELF 符号注释断点地址） | `--addr --symbol --line --condition --hit-count --once --symbols --session --json` | 表/JSON |
-| `watch` | `set` / `list` / `clear` / `clear-all` / `enable` / `disable` | 内存观察点管理（`step`/`run`/`continue` 在每条指令前后比较被监视字节范围，被写入时暂停并报 `lastResult="watchpoint"`、`watchHit=<地址>`；支持长度/命中次数/一次性/启用禁用；命中计数持久化） | `--addr --len --hit-count --once --session --json` | 表/JSON |
+| `watch` | `set` / `list` / `clear` / `clear-all` / `enable` / `disable` | 内存观察点管理（`step`/`run`/`continue`/`trace`/`coverage`/`profile` 在每条指令前后比较被监视字节范围，被写入时暂停并报 `lastResult`/`result="watchpoint"`、`watchHit=<地址>`；支持长度/命中次数/一次性/启用禁用；命中计数持久化） | `--addr --len --hit-count --once --session --json` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON；`--firmware` 直接加载固件反汇编，无需先建会话，架构从 ELF 推导） | `--firmware --base --arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要；`--mem` 附带指定起始地址的内存快照，人读模式输出 hex dump；JSON 含 `watchpoints` 完整观察点快照） | `--session --arch --firmware --base --mem --mem-len --json --fields --summary` | 状态/JSON/摘要 |
@@ -132,9 +132,9 @@ ns-instruction-sim/
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
 | `session` | `info` / `diff` | 会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）或比较两个会话的全部差异 | `--file` / `--a --b --limit [--json]` | 文本/JSON |
 | `firmware` | `info` | 固件元信息（格式/大小/架构/入口/符号表/源文件/首条指令反汇编），ELF 自动检测架构 | `--firmware --arch [--json]` | 文本/JSON |
-| `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期/寄存器快照；`--max-cycles` 到达即停并报 `result="cycles"`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --regs --out --json` | 轨迹/JSON |
-| `coverage` | — | 运行并统计执行覆盖（各 PC 执行次数、唯一 PC 数；`--max-cycles` 到达即停并报 `result="cycles"`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --json` | 覆盖表/JSON |
-| `profile` | — | 运行并统计指令助记符直方图（`--max-cycles` 到达即停并报 `result="cycles"`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --json` | 直方图/JSON |
+| `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期/寄存器快照；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --regs --out --json` | 轨迹/JSON |
+| `coverage` | — | 运行并统计执行覆盖（各 PC 执行次数、唯一 PC 数；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --json` | 覆盖表/JSON |
+| `profile` | — | 运行并统计指令助记符直方图（`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --json` | 直方图/JSON |
 | `mcp` | — | 启动 MCP（Model Context Protocol）stdio 服务器，供大模型通过工具调用完整驱动仿真 | `--session`（默认会话文件） | JSON-RPC 2.0 / 工具结果 |
 
 > `trace` / `coverage` / `profile` / `disasm` 均支持 `--out FILE`，把 JSON 或文本结果直接写入文件
@@ -193,7 +193,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
 5. **工具覆盖**：`arch_list`、`device_list`、`device_info`、`device_svd/linker/startup/init`、
    `session_create/load/save`、
    `state`（支持 `mem`/`mem_len` 附带内存快照）、`step`、`step_over`、`step_out`、
-   `run`/`continue`/`trace`/`coverage`/`profile`（均支持 `max_cycles` 周期上限，`lastResult`/`result="cycles"`）、`reg_list/get/set`、
+   `run`/`continue`/`trace`/`coverage`/`profile`（均支持 `max_cycles` 周期上限，`lastResult`/`result="cycles"`；
+   均响应内存观察点，被写入时 `lastResult`/`result="watchpoint"` 且返回 `watchHit`）、`reg_list/get/set`、
    `mem_read/write/fill/search/load/dump/region/copy`
    （`mem_search` 支持 `width` 参数，`pattern` 值按 `byte`/`half`/`word`/`dword` 小端展开）、
    `bp_set/modify/clear/list/enable/disable/clear_all`
@@ -304,6 +305,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `mcp_watch_tools`：MCP `watch_set/list/clear/enable/disable/clear_all` 与 `state` 的
   `watchpoints` 数组；`continue` 停在观察点（`lastResult`/`watchHit`），`watch_set` 的 `len>64`
   以 `isError:true` 返回。
+- `analyze_stops_on_watchpoint`：`trace`/`coverage`/`profile` 在内存观察点被写入时停止
+  （`result="watchpoint"`、`watchHit=<地址>`），命中计数持久化。
+- `mcp_analyze_stops_on_watchpoint`：MCP `trace` 同样停在观察点并返回 `watchHit`，`state` 反映
+  持久化命中计数。
 - `periph_timer_config_and_uart_write`：定时器配置与 UART 寄存器写输出。
 - `periph_uart_input_injects_and_firmware_reads`：`periph uart --bytes/--input` 注入输入字节，
   固件从 UART 数据寄存器读取（FIFO 消费、跨会话持久化），`state --json` 的

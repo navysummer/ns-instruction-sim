@@ -9006,3 +9006,89 @@ fn mcp_watch_tools() {
 
     client.close();
 }
+
+/// Bootstrap a session by executing `n` firmware instructions, then arm a
+/// 4-byte watchpoint at 0x10. Returns the session path.
+fn bootstrap_with_watch(elf: &std::path::Path, sess: &std::path::Path, n: u32) {
+    let out = Command::new(bin())
+        .args([
+            "run", "--firmware", elf.to_str().unwrap(), "--session", sess.to_str().unwrap(),
+            "--max-steps", &n.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args([
+            "watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--len", "4",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn analyze_stops_on_watchpoint() {
+    let dir = tmpdir();
+    let elf = dir.join("aw.elf");
+    write_riscv_elf(&elf);
+    // trace / coverage / profile all stop at a written watch range.
+    for cmd in ["trace", "coverage", "profile"] {
+        let sess = dir.join(format!("{cmd}-{}.json", std::process::id()));
+        bootstrap_with_watch(&elf, &sess, 1);
+        let out = Command::new(bin())
+            .args([cmd, "--session", sess.to_str().unwrap(), "--max-steps", "10", "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{cmd} failed: {}", String::from_utf8_lossy(&out.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["result"], "watchpoint", "{cmd} result: {v}");
+        assert_eq!(v["watchHit"], 16u64, "{cmd} watchHit: {v}");
+        assert_eq!(v["steps"], 2u64, "{cmd} steps: {v}");
+        // The hit counter is persisted in the session.
+        let out = Command::new(bin())
+            .args(["watch", "list", "--session", sess.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v[0]["hits"], 1u64, "{cmd} hits: {v}");
+    }
+}
+
+#[test]
+fn mcp_analyze_stops_on_watchpoint() {
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-aw-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    client.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+
+    let r = client.call_tool("session_create", serde_json::json!({ "session": sess, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create failed: {}", r);
+    let r = client.call_tool(
+        "mem_write",
+        serde_json::json!({
+            "session": sess, "addr": "0x80000000",
+            "bytes": ["0x93", "0x00", "0x10", "0x00", "0x13", "0x81", "0x20", "0x00",
+                      "0x23", "0x28", "0x10", "0x00", "0x73", "0x00", "0x00", "0x00"],
+        }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write failed: {}", r);
+    let r = client.call_tool("watch_set", serde_json::json!({ "session": sess, "addr": "0x10", "len": 4 }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_set failed: {}", r);
+
+    // MCP `trace` stops at the watchpoint and reports the hit address.
+    let r = client.call_tool("trace", serde_json::json!({ "session": sess, "max_steps": 10 }));
+    assert!(!r["isError"].as_bool().unwrap(), "trace failed: {}", r);
+    assert_eq!(r["structuredContent"]["result"], "watchpoint");
+    assert_eq!(r["structuredContent"]["watchHit"], 16u64);
+    // From the entry: addi x1, addi x2, then the `sw` trips the watchpoint.
+    assert_eq!(r["structuredContent"]["steps"], 3u64);
+
+    // `state` reflects the persisted watchpoint hit counter.
+    let r = client.call_tool("state", serde_json::json!({ "session": sess }));
+    assert_eq!(r["structuredContent"]["watchpoints"][0]["hits"], 1u64);
+
+    client.close();
+}

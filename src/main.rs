@@ -5319,14 +5319,30 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
     let limit = args.steps.unwrap_or(args.max_steps);
     let collect_trace = matches!(kind, AnalyzeKind::Trace);
-    let analysis = analyze_run(&mut sim, limit, collect_trace, args.regs, args.max_cycles);
+    let mut watch = WatchTracker::from_session(args.session.as_deref())?;
+    let mut hook = |before: bool, s: &Simulator| -> Option<u32> {
+        if before {
+            watch.snapshot(s);
+            None
+        } else {
+            watch.check(s)
+        }
+    };
+    let analysis = analyze_run(
+        &mut sim,
+        limit,
+        collect_trace,
+        args.regs,
+        args.max_cycles,
+        Some(&mut hook),
+    );
     if temp_bp {
         if let Some(addr) = until_addr {
             sim.clear_breakpoint(addr);
         }
     }
     if let Some(sp) = args.session.as_ref() {
-        Session::capture(&sim, fw).save(sp)?;
+        save_session_with_watchpoints(sp, &sim, fw, &watch)?;
     }
     let arch_name = session::arch_name(sim.arch);
     let payload: serde_json::Value = match kind {
@@ -5335,6 +5351,7 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
             "steps": analysis.steps,
             "cycleCount": analysis.cycle_count,
             "result": analysis.result,
+            "watchHit": analysis.watch_hit,
             "trace": &analysis.trace,
         }),
         AnalyzeKind::Coverage => {
@@ -5348,6 +5365,7 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
                 "steps": analysis.steps,
                 "cycleCount": analysis.cycle_count,
                 "result": analysis.result,
+                "watchHit": analysis.watch_hit,
                 "uniquePcs": items.len(),
                 "coverage": items,
             })
@@ -5363,6 +5381,7 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
                 "steps": analysis.steps,
                 "cycleCount": analysis.cycle_count,
                 "result": analysis.result,
+                "watchHit": analysis.watch_hit,
                 "uniqueMnemonics": items.len(),
                 "histogram": items,
             })
