@@ -1400,6 +1400,15 @@ enum InterruptSub {
         #[arg(long)]
         json: bool,
     },
+    /// 查询中断向量表（mtvec 基址/模式，每行目标地址）。
+    Vector {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
     /// 设置/清除外设中断线。
     Set {
         /// 会话文件路径（JSON）。
@@ -5138,6 +5147,41 @@ fn cmd_interrupt(sub: InterruptSub) -> Result<()> {
             } else {
                 println!("anyPending={} 挂起行={:?} mstatus=0x{:08x} mie=0x{:08x}",
                     sim.any_pending(), lines, sim.csr.mstatus, sim.csr.mie);
+            }
+            Ok(())
+        }
+        InterruptSub::Vector { session, json } => {
+            let sim = load_session_sim(&session)?;
+            let base = sim.csr.mtvec & !0x3;
+            let mode = sim.csr.mtvec & 0x3;
+            let vectored = mode == 1;
+            let vectors: Vec<_> = (0..16)
+                .map(|line| {
+                    serde_json::json!({
+                        "line": line,
+                        "address": if vectored { base.wrapping_add((line as u32) * 4) } else { base },
+                    })
+                })
+                .collect();
+            if json {
+                print_json(&serde_json::json!({
+                    "mtvec": sim.csr.mtvec,
+                    "base": base,
+                    "mode": if vectored { "vectored" } else { "direct" },
+                    "vectors": vectors,
+                }))?;
+            } else {
+                println!(
+                    "mtvec=0x{:08x} base=0x{:08x} mode={}",
+                    sim.csr.mtvec,
+                    base,
+                    if vectored { "vectored" } else { "direct" }
+                );
+                for v in &vectors {
+                    let line = v["line"].as_u64().unwrap_or(0);
+                    let addr = v["address"].as_u64().unwrap_or(0);
+                    println!("  IRQ {line}: 0x{addr:08x}");
+                }
             }
             Ok(())
         }

@@ -695,6 +695,29 @@ fn mcp_cycle_estimate_symbol() {
 }
 
 #[test]
+fn mcp_interrupt_vector() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-intvec-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    // Vectored mode: mtvec = 0x80000011.
+    let r = client.call_tool("csr_set", serde_json::json!({
+        "session": s, "name": "mtvec", "value": "0x80000011",
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "csr_set: {}", r);
+    let r = client.call_tool("interrupt_vector", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "interrupt_vector: {}", r);
+    assert_eq!(r["structuredContent"]["base"], 0x8000_0010u64, "{}", r);
+    assert_eq!(r["structuredContent"]["mode"], "vectored", "{}", r);
+    assert_eq!(r["structuredContent"]["vectors"][3]["address"], 0x8000_001cu64, "{}", r);
+    client.close();
+}
+
+#[test]
 fn csr_set_get_roundtrip() {
     let dir = tmpdir();
     let sess = dir.join("csr.json");
@@ -807,6 +830,43 @@ fn interrupt_set_pending_and_take() {
     assert_eq!(json["taken"], true);
     assert_eq!(json["pc"], 0x8000_0010u64);
     assert_eq!(json["mcause"], 0x8000_0003u64);
+}
+
+#[test]
+fn interrupt_vector_query() {
+    let dir = tmpdir();
+    let sess = dir.join("intvec.json");
+    bootstrap(&sess);
+    // Direct mode: mtvec = 0x80000010 (mode bits 0).
+    let out = Command::new(bin())
+        .args(["csr", "set", "--session", sess.to_str().unwrap(), "--name", "mtvec", "--value", "0x80000010"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["interrupt", "vector", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["base"], 0x8000_0010u64);
+    assert_eq!(json["mode"], "direct");
+    assert_eq!(json["vectors"][0]["address"], 0x8000_0010u64);
+    // Vectored mode: mtvec = 0x80000011 (base 0x80000010, mode 1).
+    let out = Command::new(bin())
+        .args(["csr", "set", "--session", sess.to_str().unwrap(), "--name", "mtvec", "--value", "0x80000011"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["interrupt", "vector", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["base"], 0x8000_0010u64);
+    assert_eq!(json["mode"], "vectored");
+    assert_eq!(json["vectors"][3]["address"], 0x8000_001cu64);
 }
 
 #[test]
@@ -8785,7 +8845,7 @@ fn help_every_command() {
         &["periph", "field-get"], &["periph", "field-set"],
         &["symbol", "list"], &["symbol", "at"], &["symbol", "line"], &["symbol", "addr"],
         &["cycle", "get"], &["cycle", "estimate"], &["cycle", "tick"], &["cycle", "set"],
-        &["interrupt", "take"], &["interrupt", "pending"], &["interrupt", "set"],
+        &["interrupt", "take"], &["interrupt", "pending"], &["interrupt", "vector"], &["interrupt", "set"],
         &["watchdog", "status"], &["watchdog", "feed"], &["watchdog", "config"],
         &["watchdog", "reset"],
         &["csr", "list"], &["csr", "get"], &["csr", "set"],
@@ -8833,6 +8893,7 @@ fn help_every_param() {
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
         (&["cycle", "estimate"], &["--session", "--addr", "--symbol", "--json"]),
         (&["cycle", "set"], &["--session", "--count", "--json"]),
+        (&["interrupt", "vector"], &["--session", "--json"]),
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),

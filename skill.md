@@ -201,6 +201,7 @@ ns-instruction-sim cycle set --session s.json --count 1000
 
 # 中断控制器
 ns-instruction-sim interrupt pending --session s.json
+ns-instruction-sim interrupt vector --session s.json --json
 ns-instruction-sim interrupt set --session s.json --line 3 --value 1
 ns-instruction-sim interrupt take --session s.json
 

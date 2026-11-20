@@ -977,6 +977,12 @@ fn tools() -> Vec<Tool> {
             handler: tool_interrupt_pending,
         },
         Tool {
+            name: "interrupt_vector",
+            description: "查询中断向量表（mtvec 基址/模式，每行目标地址）。",
+            schema: obj(&[("session", session.clone())], &["session"]),
+            handler: tool_interrupt_vector,
+        },
+        Tool {
             name: "interrupt_set",
             description: "设置/清除外设中断线。",
             schema: obj(
@@ -2645,6 +2651,27 @@ fn tool_interrupt_pending(server: &McpServer, args: &Map<String, Value>) -> Resu
             "anyPending": sim.any_pending(),
             "mie": sim.csr.mie,
             "mstatus": sim.csr.mstatus,
+        }))
+    })
+}
+
+fn tool_interrupt_vector(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    with_sim(server, args, false, |sim, _, _| {
+        let base = sim.csr.mtvec & !0x3;
+        let vectored = (sim.csr.mtvec & 0x3) == 1;
+        let vectors: Vec<Value> = (0..16)
+            .map(|line| {
+                json!({
+                    "line": line,
+                    "address": if vectored { base.wrapping_add((line as u32) * 4) } else { base },
+                })
+            })
+            .collect();
+        Ok(json!({
+            "mtvec": sim.csr.mtvec,
+            "base": base,
+            "mode": if vectored { "vectored" } else { "direct" },
+            "vectors": vectors,
         }))
     })
 }
