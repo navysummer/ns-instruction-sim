@@ -84,6 +84,7 @@ ns-instruction-sim run --firmware app.bin --arch riscv --base 0x80000000 --max-s
 ns-instruction-sim run --firmware app.elf --steps 1000 --json
 ns-instruction-sim run --firmware app.elf --session s.json --json
 ns-instruction-sim run --firmware app.elf --until 0x80000008 --json
+ns-instruction-sim run --firmware app.elf --until-symbol main --json
 ns-instruction-sim run --firmware app.elf --until-condition "x1 == 5" --json
 ns-instruction-sim run --firmware app.elf --cycle-accurate --max-cycles 1000 --json
 ns-instruction-sim run --firmware app.elf --steps 1000 --trace

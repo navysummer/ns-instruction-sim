@@ -381,6 +381,7 @@ fn analyze_schema() -> Value {
             ("max_steps", prop_num("最大执行步数（默认 100000）。")),
             ("max_cycles", prop_num("运行到周期计数达到该值即停止（含 cycle-accurate 预估；result=\"cycles\"）。")),
             ("until", prop_str("运行到指定地址（临时断点）。")),
+            ("until_symbol", prop_str("运行到指定符号地址（临时断点）。")),
             ("regs", prop_bool("trace 时附带每条指令执行后的寄存器快照。")),
             ("out", prop_str("把结果写入文件（JSON）；缺省直接返回结果。")),
         ],
@@ -589,6 +590,7 @@ fn tools() -> Vec<Tool> {
                     ("max_steps", prop_num("最大执行步数（默认 1000000）。")),
                     ("max_cycles", prop_num("运行到周期计数达到该值即停止（含 cycle-accurate 预估；lastResult=\"cycles\"）。")),
                     ("until", addr.clone()),
+                    ("until_symbol", prop_str("运行到指定符号地址（临时断点）。")),
                     ("until_condition", prop_str("运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`）。")),
                     ("cycle_accurate", prop_bool("周期精确模式（按指令预估周期推进）。")),
                     ("trace", prop_bool("返回每条执行指令的轨迹（含 PC/反汇编/来源/寄存器变化）。")),
@@ -605,6 +607,7 @@ fn tools() -> Vec<Tool> {
                 &[
                     ("session", session.clone()),
                     ("until", addr.clone()),
+                    ("until_symbol", prop_str("运行到指定符号地址（临时断点）。")),
                     ("until_condition", prop_str("运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`）。")),
                     ("max_steps", prop_num("最大执行步数（默认 1000000）。")),
                     ("max_cycles", prop_num("运行到周期计数达到该值即停止（含 cycle-accurate 预估；lastResult=\"cycles\"）。")),
@@ -1643,7 +1646,9 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     };
     load_firmware_into(&mut sim, Path::new(&firmware), base)?;
     sim.cycle_accurate = b(args, "cycle_accurate").unwrap_or(false);
-    let until_addr = s(args, "until").map(|x| parse_num(&x)).transpose()?;
+    let until_arg = s(args, "until");
+    let until_sym = s(args, "until_symbol");
+    let until_addr = crate::resolve_until(&sim, &until_arg, &until_sym)?;
     if let Some(addr) = until_addr {
         if addr > sim.pc_limit() {
             bail!("until 地址 0x{addr:08x} 超出 {} 的 PC 可寻址范围", sim.arch.label());
@@ -1725,7 +1730,9 @@ fn annotate_stop(output: &mut Value, reason: crate::StopReason, hit: Option<u32>
 
 fn tool_continue(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     with_sim_watch(server, args, |sim, fw, watch| {
-        let until_addr = s(args, "until").map(|x| parse_num(&x)).transpose()?;
+        let until_arg = s(args, "until");
+        let until_sym = s(args, "until_symbol");
+        let until_addr = crate::resolve_until(sim, &until_arg, &until_sym)?;
         if let Some(addr) = until_addr {
             if addr > sim.pc_limit() {
                 bail!("until 地址 0x{addr:08x} 超出 {} 的 PC 可寻址范围", sim.arch.label());
@@ -3113,13 +3120,15 @@ enum AnalyzeTool {
 }
 
 fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool) -> Result<Value> {
-    let until = s(args, "until").map(|x| parse_num(&x)).transpose()?;
     let steps = u64(args, "steps");
     let max_steps = u64(args, "max_steps").unwrap_or(100_000);
     let collect_trace = matches!(kind, AnalyzeTool::Trace);
     let collect_regs = b(args, "regs").unwrap_or(false);
     let max_cycles = u64(args, "max_cycles");
     with_sim_watch(server, args, |sim, _, watch| {
+        let until_arg = s(args, "until");
+        let until_sym = s(args, "until_symbol");
+        let until = crate::resolve_until(sim, &until_arg, &until_sym)?;
         if let Some(addr) = until {
             if addr > sim.pc_limit() {
                 bail!("until 地址 0x{addr:08x} 超出 {} 的 PC 可寻址范围", sim.arch.label());

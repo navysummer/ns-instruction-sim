@@ -488,6 +488,12 @@ pub fn analyze_run(
         }
         let pc_before = sim.program_counter();
         let result = sim.step();
+        // A breakpoint stops BEFORE the instruction executes; do not record it
+        // as covered/executed (matches `run`/`continue` step semantics).
+        if result == StepResult::Breakpoint {
+            analysis.result = step_result_label(result).to_string();
+            break;
+        }
         let read = |addr: u32| -> u8 { read_code_byte(sim, addr) };
         let text = ns_sim::disassemble_one_state(sim.arch, pc_before, &read, sim.arm_state());
         let width = ns_sim::instruction_size(sim.arch, pc_before, &read, sim.arm_state());

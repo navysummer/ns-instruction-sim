@@ -54,6 +54,17 @@ fn write_riscv_elf_code(path: &std::path::Path, code: &[u8]) {
 /// Write a minimal RISC-V ELF with a `.symtab`/`.strtab` so symbol lookups and
 /// `state --json` `pcSymbol` can be exercised end-to-end.
 fn write_riscv_elf_with_symbol(path: &std::path::Path, code: &[u8], symbol: &str) {
+    write_riscv_elf_with_symbol_at(path, code, symbol, 0x8000_0000);
+}
+
+/// Like [`write_riscv_elf_with_symbol`], but places the symbol at `sym_addr`
+/// (defaults to the entry address in the wrapper above).
+fn write_riscv_elf_with_symbol_at(
+    path: &std::path::Path,
+    code: &[u8],
+    symbol: &str,
+    sym_addr: u32,
+) {
     let mut elf = vec![0u8; 0x100];
     elf[0..4].copy_from_slice(b"\x7fELF");
     elf[4] = 1;
@@ -91,7 +102,7 @@ fn write_riscv_elf_with_symbol(path: &std::path::Path, code: &[u8], symbol: &str
     let mut symtab = vec![0u8; 16]; // null symbol
     let mut main_sym = vec![0u8; 16];
     main_sym[0..4].copy_from_slice(&1u32.to_le_bytes()); // st_name
-    main_sym[4..8].copy_from_slice(&0x8000_0000u32.to_le_bytes()); // st_value
+    main_sym[4..8].copy_from_slice(&sym_addr.to_le_bytes()); // st_value
     main_sym[8..12].copy_from_slice(&(code.len() as u32).to_le_bytes()); // st_size
     main_sym[12] = 0x12; // STB_GLOBAL | STT_FUNC
     main_sym[14..16].copy_from_slice(&1u16.to_le_bytes()); // st_shndx = .text
@@ -8585,8 +8596,8 @@ fn help_every_command() {
 fn help_every_param() {
     // Every CLI argument must appear (with its help text) in `--help`.
     let checks: &[(&[&str], &[&str])] = &[
-        (&["run"], &["--session", "--firmware", "--arch", "--base", "--max-steps", "--steps", "--until", "--until-condition", "--max-cycles", "--save-session", "--cycle-accurate", "--json", "--trace", "--trace-regs", "--source"]),
-        (&["continue"], &["--session", "--until", "--until-condition", "--max-steps", "--max-cycles", "--save", "--json", "--trace", "--trace-regs", "--source"]),
+        (&["run"], &["--session", "--firmware", "--arch", "--base", "--max-steps", "--steps", "--until", "--until-symbol", "--until-condition", "--max-cycles", "--save-session", "--cycle-accurate", "--json", "--trace", "--trace-regs", "--source"]),
+        (&["continue"], &["--session", "--until", "--until-symbol", "--until-condition", "--max-steps", "--max-cycles", "--save", "--json", "--trace", "--trace-regs", "--source"]),
         (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
         (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
         (&["bp", "list"], &["--session", "--symbols", "--json"]),
@@ -8599,13 +8610,13 @@ fn help_every_param() {
         (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--json"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
         (&["cycle", "set"], &["--session", "--count", "--json"]),
-        (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--regs", "--out", "--json"]),
+        (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--len", "--value", "--random", "--seed", "--json"]),
         (&["mem", "search"], &["--session", "--arch", "--addr", "--len", "--pattern", "--width", "--out", "--json"]),
-        (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--json"]),
-        (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--json"]),
+        (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
+        (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
         (&["mcp"], &["--session"]),
         (&["state"], &["--session", "--arch", "--firmware", "--base", "--json", "--fields", "--mem", "--mem-len", "--summary"]),
         (&["symbol", "nearest"], &["--session", "--addr", "--json"]),
@@ -9292,6 +9303,138 @@ fn mcp_symbol_nearest() {
     );
     assert!(!r["isError"].as_bool().unwrap(), "symbol_nearest none failed: {}", r);
     assert!(r["structuredContent"].is_null());
+
+    client.close();
+}
+
+#[test]
+fn run_until_symbol_stops() {
+    let dir = tmpdir();
+    let sess = dir.join("us.json");
+    let elf = dir.join("us.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    // Symbol `helper` at the `sw` instruction (0x80000008).
+    write_riscv_elf_with_symbol_at(&elf, &code, "helper", 0x8000_0008);
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--until-symbol", "helper", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "breakpoint");
+    assert_eq!(v["pc"], 0x8000_0008u64);
+    assert_eq!(v["cycleCount"], 2u64);
+
+    // Unknown symbol is an error.
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--until-symbol", "nope"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("符号未找到"));
+
+    // `--until` and `--until-symbol` conflict.
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--until", "0x80000008",
+               "--until-symbol", "helper"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be used with"));
+}
+
+#[test]
+fn continue_until_symbol_stops() {
+    let dir = tmpdir();
+    let sess = dir.join("cus.json");
+    let elf = dir.join("cus.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol_at(&elf, &code, "helper", 0x8000_0008);
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess.to_str().unwrap(),
+               "--until-symbol", "helper", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "breakpoint");
+    assert_eq!(v["pc"], 0x8000_0008u64);
+}
+
+#[test]
+fn analyze_until_symbol_stops() {
+    let dir = tmpdir();
+    let elf = dir.join("aus.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol_at(&elf, &code, "helper", 0x8000_0008);
+    for cmd in ["trace", "coverage", "profile"] {
+        let sess = dir.join(format!("aus-{cmd}-{}.json", std::process::id()));
+        let out = Command::new(bin())
+            .args([cmd, "--firmware", elf.to_str().unwrap(),
+                   "--session", sess.to_str().unwrap(), "--until-symbol", "helper", "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{cmd}: {}", String::from_utf8_lossy(&out.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["result"], "breakpoint", "{cmd}: {v}");
+        assert_eq!(v["steps"], 2u64, "{cmd}: {v}");
+    }
+}
+
+#[test]
+fn mcp_run_until_symbol() {
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-us-{}.json", std::process::id()));
+    let elf = dir.join("mcp-us.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol_at(&elf, &code, "helper", 0x8000_0008);
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    client.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+
+    let r = client.call_tool(
+        "run",
+        serde_json::json!({ "session": sess, "firmware": elf.to_str().unwrap(), "until_symbol": "helper" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "run failed: {}", r);
+    assert_eq!(r["structuredContent"]["lastResult"], "breakpoint");
+    assert_eq!(r["structuredContent"]["pc"], 0x8000_0008u64);
+
+    // Unknown symbol is a tool error.
+    let r = client.call_tool(
+        "run",
+        serde_json::json!({ "session": sess, "firmware": elf.to_str().unwrap(), "until_symbol": "nope" }),
+    );
+    assert!(r["isError"].as_bool().unwrap(), "unknown symbol must error");
 
     client.close();
 }

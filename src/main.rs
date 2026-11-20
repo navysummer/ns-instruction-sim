@@ -266,6 +266,9 @@ struct RunArgs {
     /// 运行到指定地址（临时断点，不持久化）。
     #[arg(long)]
     until: Option<String>,
+    /// 运行到指定符号地址（临时断点，不持久化；与 --until 互斥）。
+    #[arg(long, conflicts_with = "until")]
+    until_symbol: Option<String>,
     /// 运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`；到断点/停机/步数上限提前停止）。
     #[arg(long)]
     until_condition: Option<String>,
@@ -325,6 +328,9 @@ struct ContinueArgs {
     /// 运行到指定地址（临时断点，不持久化）。
     #[arg(long)]
     until: Option<String>,
+    /// 运行到指定符号地址（临时断点，不持久化；与 --until 互斥）。
+    #[arg(long, conflicts_with = "until")]
+    until_symbol: Option<String>,
     /// 运行到寄存器/表达式条件成立（每步后求值，如 `x1 == 5`；到断点/停机/步数上限提前停止）。
     #[arg(long)]
     until_condition: Option<String>,
@@ -1529,6 +1535,9 @@ struct AnalyzeArgs {
     /// 运行到指定地址（临时断点，不持久化）。
     #[arg(long)]
     until: Option<String>,
+    /// 运行到指定符号地址（临时断点，不持久化；与 --until 互斥）。
+    #[arg(long, conflicts_with = "until")]
+    until_symbol: Option<String>,
     /// trace 时附带每条指令执行后的寄存器快照（数据流追踪）。
     #[arg(long)]
     regs: bool,
@@ -2610,6 +2619,26 @@ fn save_session_with_watchpoints(
     session.save(path)
 }
 
+/// Resolve a `--until ADDR` or `--until-symbol NAME` stop target into an
+/// absolute address (symbols are matched case-insensitively after firmware
+/// load, so the simulator must already hold the symbol table).
+fn resolve_until(
+    sim: &Simulator,
+    until: &Option<String>,
+    until_symbol: &Option<String>,
+) -> Result<Option<u32>> {
+    if let Some(sym) = until_symbol {
+        let found = sim
+            .symbols
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(sym))
+            .ok_or_else(|| anyhow::anyhow!("符号未找到: {sym}"))?;
+        Ok(Some(found.address))
+    } else {
+        until.as_deref().map(parse_num).transpose()
+    }
+}
+
 fn cmd_run(args: RunArgs) -> Result<()> {
     let base = parse_num(&args.base)?;
     // If a session is given, load it (preserving peripherals, memory,
@@ -2626,7 +2655,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     sim.cycle_accurate = args.cycle_accurate;
 
     // `--until ADDR` installs a temporary breakpoint removed before saving.
-    let until_addr = args.until.as_deref().map(parse_num).transpose()?;
+    let until_addr = resolve_until(&sim, &args.until, &args.until_symbol)?;
     if let Some(addr) = until_addr {
         if addr > sim.pc_limit() {
             bail!("--until 地址 0x{addr:08x} 超出 {} 的 PC 可寻址范围", sim.arch.label());
@@ -2880,7 +2909,7 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
     let (mut sim, fw, _) = load_or_create(Some(&args.session), None, None, "0")?;
     // `--until ADDR` installs a temporary breakpoint that is removed before
     // the session is saved (unless the address was already a breakpoint).
-    let until_addr = args.until.as_deref().map(parse_num).transpose()?;
+    let until_addr = resolve_until(&sim, &args.until, &args.until_symbol)?;
     if let Some(addr) = until_addr {
         if addr > sim.pc_limit() {
             bail!("--until 地址 0x{addr:08x} 超出 {} 的 PC 可寻址范围", sim.arch.label());
@@ -5403,7 +5432,7 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
         &args.base,
     )?;
     // `--until ADDR` installs a temporary breakpoint removed before saving.
-    let until_addr = args.until.as_deref().map(parse_num).transpose()?;
+    let until_addr = resolve_until(&sim, &args.until, &args.until_symbol)?;
     if let Some(addr) = until_addr {
         if addr > sim.pc_limit() {
             bail!("until 地址 0x{addr:08x} 超出 {} 的 PC 可寻址范围", sim.arch.label());
