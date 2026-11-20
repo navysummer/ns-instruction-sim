@@ -39,6 +39,28 @@ fn default_true() -> bool {
     true
 }
 
+/// A persisted memory watchpoint: `step` / `run` / `continue` compare the
+/// watched byte range before and after every instruction and stop when it
+/// changes. `hit_count` stops on the N-th write (0 = every write), `once`
+/// auto-clears after the first stop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchState {
+    pub address: u32,
+    /// Number of watched bytes (1..64).
+    pub len: u32,
+    /// Stop on the N-th hit (0 = every hit).
+    #[serde(default)]
+    pub hit_count: u32,
+    #[serde(default)]
+    pub once: bool,
+    /// Whether the watchpoint is active (disabled ones are kept but inert).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Runtime hit counter (number of writes observed so far).
+    #[serde(default)]
+    pub hits: u64,
+}
+
 /// Firmware source recorded so the simulator can be rebuilt on resume.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirmwareState {
@@ -119,6 +141,11 @@ pub struct Session {
     #[serde(default)]
     pub arm_it_index: Option<u8>,
     pub breakpoints: Vec<BpState>,
+    /// Memory watchpoints (address, len, hit_count, hits, once, enabled).
+    /// Persisted like breakpoints so a debug session can keep watching a
+    /// variable across `step` / `continue` invocations.
+    #[serde(default)]
+    pub watchpoints: Vec<WatchState>,
     pub cycle_count: u64,
     pub halted: bool,
     pub uart_output: Vec<u8>,
@@ -206,6 +233,9 @@ impl Session {
                 .collect(),
             cycle_count: sim.cycle_count,
             halted: sim.halted,
+            // Watchpoints live in the session file only; they carry their own
+            // hit counters, so `capture` never overwrites them.
+            watchpoints: Vec::new(),
             uart_output: sim.peripherals.outputs.clone(),
             firmware,
             peripherals: PeriphState {

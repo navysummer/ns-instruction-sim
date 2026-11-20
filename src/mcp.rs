@@ -287,9 +287,49 @@ where
     Ok(result)
 }
 
-/// Full state JSON for a simulator (mirrors the CLI `state --json`).
-fn full_state(sim: &Simulator, fw: Option<&FirmwareState>) -> Value {
-    serde_json::to_value(crate::state_output(sim, StepResult::Advanced, fw)).unwrap_or(Value::Null)
+/// Like [`with_sim`], but the closure also receives the session's memory
+/// watchpoints tracker, so a written watch range stops the run and the
+/// watchpoints survive the persisted session.
+fn with_sim_watch<F>(server: &McpServer, args: &Map<String, Value>, f: F) -> Result<Value>
+where
+    F: FnOnce(&mut Simulator, Option<&FirmwareState>, &mut crate::WatchTracker) -> Result<Value>,
+{
+    let session_path = server.resolve_session(args);
+    let arch = s(args, "arch");
+    let firmware = s(args, "firmware");
+    let base = s(args, "base").unwrap_or_else(|| "0".to_string());
+    let (mut sim, fw, path) = crate::load_or_create(
+        session_path.as_deref(),
+        arch.as_deref(),
+        firmware.as_deref().map(Path::new),
+        &base,
+    )?;
+    let mut watch = crate::WatchTracker::from_session(path.as_deref())?;
+    let result = f(&mut sim, fw.as_ref(), &mut watch)?;
+    if let Some(p) = &path {
+        crate::save_session_with_watchpoints(p, &sim, fw, &watch)?;
+    }
+    Ok(result)
+}
+
+/// Full state JSON for a simulator (mirrors the CLI `state --json`). When a
+/// session file is known, its memory watchpoints are reported too (they live in
+/// the session, not in the simulator core).
+fn full_state(sim: &Simulator, fw: Option<&FirmwareState>, session_path: Option<&Path>) -> Value {
+    let mut value =
+        serde_json::to_value(crate::state_output(sim, StepResult::Advanced, fw)).unwrap_or(Value::Null);
+    if let Some(p) = session_path {
+        if p.exists() {
+            if let Ok(session) = Session::load(p) {
+                let wps: Vec<Value> =
+                    session.watchpoints.iter().map(crate::watch_json).collect();
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert("watchpoints".to_string(), json!(wps));
+                }
+            }
+        }
+    }
+    value
 }
 
 // ---------------------------------------------------------------------------
@@ -802,6 +842,51 @@ fn tools() -> Vec<Tool> {
             description: "清除全部断点。",
             schema: obj(&[("session", session.clone())], &["session"]),
             handler: tool_bp_clear_all,
+        },
+        Tool {
+            name: "watch_set",
+            description: "设置内存观察点：step/run/continue 在写入被监视范围时暂停。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("addr", addr.clone()),
+                    ("len", prop_num("监视字节数（1..64，默认 1）。")),
+                    ("hit_count", prop_num("第 N 次写入时暂停（0 = 每次写入）。")),
+                    ("once", prop_bool("一次性观察点：命中后自动禁用。")),
+                ],
+                &["addr"],
+            ),
+            handler: tool_watch_set,
+        },
+        Tool {
+            name: "watch_list",
+            description: "列出全部内存观察点（地址/长度/命中次数/一次性/启用/实际命中）。",
+            schema: obj(&[("session", session.clone())], &["session"]),
+            handler: tool_watch_list,
+        },
+        Tool {
+            name: "watch_clear",
+            description: "清除指定地址的内存观察点。",
+            schema: obj(&[("session", session.clone()), ("addr", addr.clone())], &["addr"]),
+            handler: tool_watch_clear,
+        },
+        Tool {
+            name: "watch_enable",
+            description: "启用指定地址的内存观察点。",
+            schema: obj(&[("session", session.clone()), ("addr", addr.clone())], &["addr"]),
+            handler: tool_watch_enable,
+        },
+        Tool {
+            name: "watch_disable",
+            description: "禁用指定地址的内存观察点（保留但不再暂停）。",
+            schema: obj(&[("session", session.clone()), ("addr", addr.clone())], &["addr"]),
+            handler: tool_watch_disable,
+        },
+        Tool {
+            name: "watch_clear_all",
+            description: "清除全部内存观察点。",
+            schema: obj(&[("session", session.clone())], &["session"]),
+            handler: tool_watch_clear_all,
         },
         Tool {
             name: "disasm",
@@ -1447,7 +1532,7 @@ fn tool_session_create(_server: &McpServer, args: &Map<String, Value>) -> Result
         });
     }
     Session::capture(&sim, fw.clone()).save(&path)?;
-    Ok(full_state(&sim, fw.as_ref()))
+    Ok(full_state(&sim, fw.as_ref(), Some(&path)))
 }
 
 fn tool_session_load(_server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
@@ -1458,19 +1543,19 @@ fn tool_session_load(_server: &McpServer, args: &Map<String, Value>) -> Result<V
     }
     let loaded = Session::load(path)?;
     let sim = loaded.apply(None)?;
-    Ok(full_state(&sim, loaded.firmware.as_ref()))
+    Ok(full_state(&sim, loaded.firmware.as_ref(), Some(Path::new(&session))))
 }
 
 fn tool_session_save(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    with_sim(server, args, true, |sim, fw, _| Ok(full_state(sim, fw)))
+    with_sim(server, args, true, |sim, fw, path| Ok(full_state(sim, fw, path)))
 }
 
 fn tool_state(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let fields = csv(args, "fields");
     let mem_addr = s(args, "mem").map(|x| parse_num(&x)).transpose()?;
     let mem_len = u(args, "mem_len").unwrap_or(64) as usize;
-    with_sim(server, args, false, |sim, fw, _| {
-        let mut value = full_state(sim, fw);
+    with_sim(server, args, false, |sim, fw, path| {
+        let mut value = full_state(sim, fw, path);
         if let Some(addr) = mem_addr {
             let mut bytes = Vec::with_capacity(mem_len);
             for i in 0..mem_len {
@@ -1491,26 +1576,46 @@ fn tool_state(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
 }
 
 fn tool_step(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    with_sim(server, args, true, |sim, fw, _| {
+    with_sim_watch(server, args, |sim, fw, watch| {
+        watch.snapshot(sim);
         let result = sim.step();
-        Ok(serde_json::to_value(crate::state_output(sim, result, fw))?)
+        Ok(serde_json::to_value(watch_step_output(sim, result, fw, watch))?)
     })
 }
 
 fn tool_step_over(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let max = u64(args, "max_steps").unwrap_or(100_000);
-    with_sim(server, args, true, |sim, fw, _| {
+    with_sim_watch(server, args, |sim, fw, watch| {
+        watch.snapshot(sim);
         let result = sim.step_over(max);
-        Ok(serde_json::to_value(crate::state_output(sim, result, fw))?)
+        Ok(serde_json::to_value(watch_step_output(sim, result, fw, watch))?)
     })
 }
 
 fn tool_step_out(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let max = u64(args, "max_steps").unwrap_or(100_000);
-    with_sim(server, args, true, |sim, fw, _| {
+    with_sim_watch(server, args, |sim, fw, watch| {
+        watch.snapshot(sim);
         let result = sim.step_out(max);
-        Ok(serde_json::to_value(crate::state_output(sim, result, fw))?)
+        Ok(serde_json::to_value(watch_step_output(sim, result, fw, watch))?)
     })
+}
+
+/// State output for a watch-aware step: a written watch range reports
+/// `lastResult="watchpoint"` and `watchHit=<address>`.
+fn watch_step_output(
+    sim: &Simulator,
+    result: StepResult,
+    fw: Option<&FirmwareState>,
+    watch: &mut crate::WatchTracker,
+) -> crate::StateOutput {
+    let hit = watch.check(sim);
+    let mut out = crate::state_output(sim, result, fw);
+    if hit.is_some() {
+        out.last_result = "watchpoint".to_string();
+    }
+    out.watch_hit = hit;
+    out
 }
 
 fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
@@ -1540,6 +1645,8 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let trace = b(args, "trace").unwrap_or(false) || b(args, "trace_regs").unwrap_or(false);
     let trace_regs = b(args, "trace_regs").unwrap_or(false);
     let max_cycles = u64(args, "max_cycles");
+    let mut watch =
+        crate::WatchTracker::from_session(server.resolve_session(args).as_deref())?;
     let reason;
     let mut trace_lines = Value::Null;
     let result = if trace {
@@ -1551,6 +1658,7 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
             cond.as_deref(),
             trace_regs,
             max_cycles,
+            Some(&mut watch),
         );
         reason = met;
         trace_lines = serde_json::to_value(&lines)?;
@@ -1563,6 +1671,7 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
                     u64(args, "max_steps").unwrap_or(1_000_000),
                     &expr,
                     max_cycles,
+                    Some(&mut watch),
                 );
                 reason = met;
                 r
@@ -1572,6 +1681,7 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
                     &mut sim,
                     u64(args, "steps").unwrap_or(u64(args, "max_steps").unwrap_or(1_000_000)),
                     max_cycles,
+                    Some(&mut watch),
                 );
                 reason = met;
                 r
@@ -1584,26 +1694,29 @@ fn tool_run(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
         }
     }
     let mut output = serde_json::to_value(crate::state_output(&sim, result, Some(&fw_state)))?;
-    match reason {
-        crate::StopReason::Condition => {
-            output["lastResult"] = Value::String("condition".to_string());
-        }
-        crate::StopReason::Cycles => {
-            output["lastResult"] = Value::String("cycles".to_string());
-        }
-        crate::StopReason::None => {}
-    }
+    annotate_stop(&mut output, reason, watch.hit());
     if trace {
         output["trace"] = trace_lines;
     }
     if let Some(p) = server.resolve_session(args) {
-        Session::capture(&sim, Some(fw_state)).save(&p)?;
+        crate::save_session_with_watchpoints(&p, &sim, Some(fw_state), &watch)?;
     }
     Ok(output)
 }
 
+/// Record why a bounded run stopped (`condition`/`cycles`/`watchpoint`) and the
+/// watchpoint address that tripped it, if any.
+fn annotate_stop(output: &mut Value, reason: crate::StopReason, hit: Option<u32>) {
+    if let Some(label) = reason.label() {
+        output["lastResult"] = Value::String(label.to_string());
+    }
+    if hit.is_some() {
+        output["watchHit"] = json!(hit);
+    }
+}
+
 fn tool_continue(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    with_sim(server, args, true, |sim, fw, _| {
+    with_sim_watch(server, args, |sim, fw, watch| {
         let until_addr = s(args, "until").map(|x| parse_num(&x)).transpose()?;
         if let Some(addr) = until_addr {
             if addr > sim.pc_limit() {
@@ -1625,6 +1738,7 @@ fn tool_continue(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
                 cond.as_deref(),
                 trace_regs,
                 max_cycles,
+                Some(watch),
             );
             reason = met;
             trace_lines = serde_json::to_value(&lines)?;
@@ -1637,6 +1751,7 @@ fn tool_continue(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
                         u64(args, "max_steps").unwrap_or(1_000_000),
                         &expr,
                         max_cycles,
+                        Some(watch),
                     );
                     reason = met;
                     r
@@ -1646,6 +1761,7 @@ fn tool_continue(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
                         sim,
                         u64(args, "max_steps").unwrap_or(1_000_000),
                         max_cycles,
+                        Some(watch),
                     );
                     reason = met;
                     r
@@ -1658,15 +1774,7 @@ fn tool_continue(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
             }
         }
         let mut output = serde_json::to_value(crate::state_output(sim, result, fw))?;
-        match reason {
-            crate::StopReason::Condition => {
-                output["lastResult"] = Value::String("condition".to_string());
-            }
-            crate::StopReason::Cycles => {
-                output["lastResult"] = Value::String("cycles".to_string());
-            }
-            crate::StopReason::None => {}
-        }
+        annotate_stop(&mut output, reason, watch.hit());
         if trace {
             output["trace"] = trace_lines;
         }
@@ -1856,9 +1964,9 @@ fn tool_mem_search(server: &McpServer, args: &Map<String, Value>) -> Result<Valu
 fn tool_mem_load(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let firmware = s(args, "firmware").ok_or_else(|| anyhow::anyhow!("缺少 firmware"))?;
     let base = parse_num(s(args, "base").as_deref().unwrap_or("0"))?;
-    with_sim(server, args, true, |sim, fw, _| {
+    with_sim(server, args, true, |sim, fw, path| {
         load_firmware_into(sim, Path::new(&firmware), base)?;
-        Ok(full_state(sim, fw))
+        Ok(full_state(sim, fw, path))
     })
 }
 
@@ -2124,6 +2232,107 @@ fn tool_bp_clear_all(server: &McpServer, args: &Map<String, Value>) -> Result<Va
     })
 }
 
+/// Load the session holding the memory watchpoints (creating it when absent)
+/// and save it back after the closure. Watchpoints live in the session file, so
+/// these tools edit the session directly instead of going through [`with_sim`].
+fn with_watch_session<F>(server: &McpServer, args: &Map<String, Value>, f: F) -> Result<Value>
+where
+    F: FnOnce(&mut Session) -> Result<Value>,
+{
+    let path = server
+        .resolve_session(args)
+        .ok_or_else(|| anyhow::anyhow!("缺少 session"))?;
+    if !path.exists() {
+        let (sim, fw, _) = crate::load_or_create(
+            Some(&path),
+            s(args, "arch").as_deref(),
+            s(args, "firmware").as_deref().map(Path::new),
+            s(args, "base").as_deref().unwrap_or("0"),
+        )?;
+        Session::capture(&sim, fw).save(&path)?;
+    }
+    let mut session = Session::load(&path)?;
+    let out = f(&mut session)?;
+    session.save(&path)?;
+    Ok(out)
+}
+
+fn tool_watch_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let addr = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
+    let len = u(args, "len").unwrap_or(1);
+    if !(1..=64).contains(&len) {
+        bail!("len 必须在 1..64");
+    }
+    let hit_count = u(args, "hit_count").unwrap_or(0);
+    let once = b(args, "once").unwrap_or(false);
+    with_watch_session(server, args, |session| {
+        // Replacing a watchpoint at the same address starts its hit count over.
+        session.watchpoints.retain(|w| w.address != addr);
+        let wp = crate::session::WatchState {
+            address: addr,
+            len,
+            hit_count,
+            once,
+            enabled: true,
+            hits: 0,
+        };
+        session.watchpoints.push(wp.clone());
+        let mut out = crate::watch_json(&wp);
+        out["count"] = json!(session.watchpoints.len());
+        Ok(out)
+    })
+}
+
+fn tool_watch_list(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    with_watch_session(server, args, |session| {
+        let watchpoints: Vec<Value> =
+            session.watchpoints.iter().map(crate::watch_json).collect();
+        Ok(json!({ "watchpoints": watchpoints }))
+    })
+}
+
+fn tool_watch_clear(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let addr = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
+    with_watch_session(server, args, |session| {
+        let before = session.watchpoints.len();
+        session.watchpoints.retain(|w| w.address != addr);
+        if session.watchpoints.len() == before {
+            bail!("观察点不存在 @ 0x{addr:08x}");
+        }
+        Ok(json!({ "address": addr, "removed": true, "count": session.watchpoints.len() }))
+    })
+}
+
+fn tool_watch_enable(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    set_watch(server, args, true)
+}
+
+fn tool_watch_disable(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    set_watch(server, args, false)
+}
+
+/// Enable/disable a watchpoint by address (shared by the two tools).
+fn set_watch(server: &McpServer, args: &Map<String, Value>, enable: bool) -> Result<Value> {
+    let addr = parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?)?;
+    with_watch_session(server, args, |session| {
+        let wp = session
+            .watchpoints
+            .iter_mut()
+            .find(|w| w.address == addr)
+            .ok_or_else(|| anyhow::anyhow!("观察点不存在 @ 0x{addr:08x}"))?;
+        wp.enabled = enable;
+        Ok(json!({ "address": addr, "enabled": enable }))
+    })
+}
+
+fn tool_watch_clear_all(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    with_watch_session(server, args, |session| {
+        let removed = session.watchpoints.len();
+        session.watchpoints.clear();
+        Ok(json!({ "removed": removed, "count": 0 }))
+    })
+}
+
 fn tool_disasm(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let arch_arg = s(args, "arch");
     let firmware = s(args, "firmware");
@@ -2331,8 +2540,8 @@ fn tool_interrupt_set(server: &McpServer, args: &Map<String, Value>) -> Result<V
 }
 
 fn tool_periph_status(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    with_sim(server, args, false, |sim, fw, _| {
-        let state = full_state(sim, fw);
+    with_sim(server, args, false, |sim, fw, path| {
+        let state = full_state(sim, fw, path);
         Ok(state.get("peripherals").cloned().unwrap_or(Value::Null))
     })
 }

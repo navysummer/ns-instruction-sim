@@ -142,6 +142,17 @@ ns-instruction-sim bp clear --session s.json --addr 0x80000004
 ns-instruction-sim bp disable --session s.json --addr 0x80000004
 ns-instruction-sim bp enable --session s.json --addr 0x80000004
 
+# 内存观察点（被写入时暂停，lastResult="watchpoint"、watchHit=<地址>）
+ns-instruction-sim watch set --session s.json --addr 0x20000000 --len 4
+ns-instruction-sim watch set --session s.json --addr 0x20000000 --len 4 --hit-count 2 --once --json
+ns-instruction-sim watch list --session s.json
+ns-instruction-sim watch list --session s.json --json
+ns-instruction-sim watch disable --session s.json --addr 0x20000000
+ns-instruction-sim watch enable --session s.json --addr 0x20000000
+ns-instruction-sim watch clear --session s.json --addr 0x20000000
+ns-instruction-sim watch clear-all --session s.json
+# step/run/continue 在写入被监视范围时暂停，`state --json` 含 watchpoints 数组
+
 # 反汇编 / 复位 / 状态 / 外设
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8
 ns-instruction-sim disasm --session arm.json --addr 0x0 --count 4 --arm-state thumb
@@ -261,7 +272,8 @@ print(rpc("tools/call", {"name": "step", "arguments": {"session": "s.json"}})["r
 等 `pub(crate)` 助手，不复制核心逻辑。新增 MCP 工具时在 `tools()` 列表添加 `Tool { name, description,
 schema, handler }`，并在 `tests/cli.rs` 增加 `mcp_*` 端到端用例。**每个新功能必须同时提供 MCP 工具**：
 CLI 侧已有的分析/设备/会话能力对应 `trace`/`coverage`/`profile`/`device_memory_map`/`session_info`/
-`session_diff`/`bp_modify`/`firmware_info`，其中 `trace` 等分析工具用 `analyze_schema()` 共享参数（含 `out` 落盘参数），
+`session_diff`/`bp_modify`/`watch_set`/`watch_list`/`watch_clear`/`watch_enable`/`watch_disable`/
+`watch_clear_all`/`firmware_info`，其中 `trace` 等分析工具用 `analyze_schema()` 共享参数（含 `out` 落盘参数），
 `session_diff` 复用 `session::session_diff()`，`session_info` 复用 `Session::info_value()`——
 核心逻辑只写在 CLI/`session.rs` 一侧，MCP 侧只做参数适配与序列化。
 

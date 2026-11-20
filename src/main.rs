@@ -77,6 +77,8 @@ enum Command {
     Mem(MemArgs),
     /// 管理断点。
     Bp(BpArgs),
+    /// 管理内存观察点（监视地址范围被写入时暂停）。
+    Watch(WatchArgs),
     /// 反汇编指令。
     Disasm(DisasmArgs),
     /// 重置仿真器。
@@ -756,6 +758,105 @@ enum BpSub {
         json: bool,
     },
     /// 禁用断点（保留在列表中但不再暂停）。
+    Disable {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Args)]
+struct WatchArgs {
+    #[command(subcommand)]
+    sub: WatchSub,
+}
+
+/// 内存观察点（watchpoint）管理。`step`/`run`/`continue` 在每条指令前后比较被监视
+/// 的字节范围，被写入时暂停（`lastResult="watchpoint"`，`watchHit` 报告地址）。
+#[derive(Subcommand)]
+enum WatchSub {
+    /// 设置内存观察点（地址 + 长度）。
+    Set {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 监视起始地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 监视起始地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 监视字节数（1..64，默认 1）。
+        #[arg(long, default_value = "1")]
+        len: u32,
+        /// 第 N 次写入时暂停（0 = 每次写入）。
+        #[arg(long, default_value = "0")]
+        hit_count: u32,
+        /// 一次性观察点：命中后自动禁用。
+        #[arg(long)]
+        once: bool,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
+    /// 列出内存观察点。
+    List {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
+    /// 清除观察点。
+    Clear {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
+    /// 清除全部观察点。
+    ClearAll {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
+    /// 启用观察点。
+    Enable {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
+    /// 禁用观察点（保留在列表中但不再暂停）。
     Disable {
         /// 会话文件路径（JSON）。
         #[arg(short, long)]
@@ -1499,6 +1600,7 @@ fn real_main() -> Result<()> {
         Command::Reg(RegArgs { sub }) => cmd_reg(sub),
         Command::Mem(MemArgs { sub }) => cmd_mem(sub),
         Command::Bp(BpArgs { sub }) => cmd_bp(sub),
+        Command::Watch(WatchArgs { sub }) => cmd_watch(sub),
         Command::Disasm(args) => cmd_disasm(args),
         Command::Reset(args) => cmd_reset(args),
         Command::State(args) => cmd_state(args),
@@ -1664,6 +1766,10 @@ pub(crate) struct StateOutput {
     /// Nearest ELF symbol at PC (name/address/size), if any.
     #[serde(rename = "pcSymbol")]
     pc_symbol: Option<PcSymbolOutput>,
+    /// Address of the memory write that tripped a watchpoint (null otherwise),
+    /// so an external caller can tell why the run stopped.
+    #[serde(rename = "watchHit")]
+    watch_hit: Option<u32>,
 }
 
 #[derive(serde::Serialize)]
@@ -1810,6 +1916,7 @@ pub(crate) fn state_output(sim: &Simulator, result: StepResult, firmware: Option
             address: s.address,
             size: s.size,
         }),
+        watch_hit: None,
     }
 }
 
@@ -2266,6 +2373,20 @@ enum StopReason {
     None,
     Condition,
     Cycles,
+    Watchpoint,
+}
+
+impl StopReason {
+    /// The stable `lastResult` label for a bounded stop, or `None` when the
+    /// run ended for an instruction-level reason (advance/breakpoint/halt).
+    fn label(self) -> Option<&'static str> {
+        match self {
+            StopReason::Condition => Some("condition"),
+            StopReason::Cycles => Some("cycles"),
+            StopReason::Watchpoint => Some("watchpoint"),
+            StopReason::None => None,
+        }
+    }
 }
 
 fn at_cycle_bound(sim: &Simulator, max_cycles: Option<u64>) -> bool {
@@ -2273,13 +2394,15 @@ fn at_cycle_bound(sim: &Simulator, max_cycles: Option<u64>) -> bool {
 }
 
 /// Run up to `max_steps` instructions, stopping early when `expr` evaluates
-/// true (checked at entry and after each step) or when the cycle counter
-/// reaches `max_cycles`. Returns `(result, reason)`.
+/// true (checked at entry and after each step), when the cycle counter reaches
+/// `max_cycles`, or when a memory watchpoint is written.
+/// Returns `(result, reason)`.
 pub(crate) fn run_until_condition(
     sim: &mut Simulator,
     max_steps: u64,
     expr: &str,
     max_cycles: Option<u64>,
+    mut watch: Option<&mut WatchTracker>,
 ) -> (StepResult, StopReason) {
     if ns_sim::eval_condition(expr, &sim.reg_view(), sim.program_counter(), sim.cycle_count) {
         return (StepResult::Advanced, StopReason::Condition);
@@ -2289,6 +2412,9 @@ pub(crate) fn run_until_condition(
     }
     let mut steps = 0u64;
     while steps < max_steps {
+        if let Some(w) = watch.as_deref_mut() {
+            w.snapshot(sim);
+        }
         let result = sim.step();
         if result != StepResult::Advanced {
             return (result, StopReason::None);
@@ -2300,24 +2426,34 @@ pub(crate) fn run_until_condition(
         if at_cycle_bound(sim, max_cycles) {
             return (StepResult::Advanced, StopReason::Cycles);
         }
+        if let Some(w) = watch.as_deref_mut() {
+            if w.check(sim).is_some() {
+                return (StepResult::Advanced, StopReason::Watchpoint);
+            }
+        }
     }
     (StepResult::Advanced, StopReason::None)
 }
 
 /// Run up to `max_steps` instructions, stopping early when the cycle counter
 /// reaches `max_cycles` (checked at entry and after each step; meaningful in
-/// cycle-accurate mode where one instruction may consume several cycles).
+/// cycle-accurate mode where one instruction may consume several cycles) or
+/// when a memory watchpoint is written.
 /// Returns `(result, reason)`.
 pub(crate) fn run_until_cycles(
     sim: &mut Simulator,
     max_steps: u64,
     max_cycles: Option<u64>,
+    mut watch: Option<&mut WatchTracker>,
 ) -> (StepResult, StopReason) {
     if at_cycle_bound(sim, max_cycles) {
         return (StepResult::Advanced, StopReason::Cycles);
     }
     let mut steps = 0u64;
     while steps < max_steps {
+        if let Some(w) = watch.as_deref_mut() {
+            w.snapshot(sim);
+        }
         let result = sim.step();
         if result != StepResult::Advanced {
             return (result, StopReason::None);
@@ -2326,8 +2462,131 @@ pub(crate) fn run_until_cycles(
         if at_cycle_bound(sim, max_cycles) {
             return (StepResult::Advanced, StopReason::Cycles);
         }
+        if let Some(w) = watch.as_deref_mut() {
+            if w.check(sim).is_some() {
+                return (StepResult::Advanced, StopReason::Watchpoint);
+            }
+        }
     }
     (StepResult::Advanced, StopReason::None)
+}
+
+/// The session's memory watchpoints plus the byte ranges snapshotted before
+/// the instruction currently being executed, so each step can be checked for
+/// a write. `None` watchpoints means "no session to watch against", in which
+/// case nothing changes and the saved session is left untouched.
+struct WatchTracker {
+    wps: Option<Vec<session::WatchState>>,
+    snap: Vec<Option<Vec<u8>>>,
+    /// Address of the write that tripped the most recent step (if any).
+    last_hit: Option<u32>,
+}
+
+impl WatchTracker {
+    /// A tracker with no watchpoints (a freshly created session).
+    fn empty() -> Self {
+        Self {
+            wps: Some(Vec::new()),
+            snap: Vec::new(),
+            last_hit: None,
+        }
+    }
+
+    /// Load the watchpoints persisted in `path` (an absent file yields an empty tracker).
+    fn from_session(path: Option<&Path>) -> Result<Self> {
+        let Some(path) = path else {
+            return Ok(Self::empty());
+        };
+        if !path.exists() {
+            return Ok(Self::empty());
+        }
+        let s = Session::load(path)?;
+        Ok(Self {
+            wps: Some(s.watchpoints),
+            snap: Vec::new(),
+            last_hit: None,
+        })
+    }
+
+    /// Read the watched byte ranges (the state before the next instruction).
+    fn snapshot(&mut self, sim: &Simulator) {
+        let Some(wps) = &self.wps else {
+            return;
+        };
+        self.snap.clear();
+        for wp in wps {
+            if !wp.enabled {
+                self.snap.push(None);
+                continue;
+            }
+            let mut bytes = Vec::with_capacity(wp.len as usize);
+            for i in 0..wp.len {
+                bytes.push(read_mem_byte(sim, wp.address.wrapping_add(i)));
+            }
+            self.snap.push(Some(bytes));
+        }
+    }
+
+    /// Compare the watched ranges with the snapshot taken before the step.
+    /// Returns the address of the first written byte and updates hit counters.
+    fn check(&mut self, sim: &Simulator) -> Option<u32> {
+        let Some(wps) = self.wps.as_mut() else {
+            return None;
+        };
+        let snap = std::mem::take(&mut self.snap);
+        let mut hit_addr = None;
+        for (wp, before) in wps.iter_mut().zip(snap) {
+            let Some(before) = before else {
+                continue;
+            };
+            if before.is_empty() {
+                continue;
+            }
+            let changed = before
+                .iter()
+                .enumerate()
+                .any(|(i, b)| *b != read_mem_byte(sim, wp.address.wrapping_add(i as u32)));
+            if !changed {
+                continue;
+            }
+            wp.hits += 1;
+            let hit = wp.hit_count == 0 || wp.hits >= wp.hit_count as u64;
+            if hit && hit_addr.is_none() {
+                hit_addr = Some(wp.address);
+            }
+            if hit && wp.once {
+                wp.enabled = false;
+            }
+        }
+        self.last_hit = hit_addr;
+        hit_addr
+    }
+
+    /// The address written by the instruction that tripped the last step.
+    fn hit(&self) -> Option<u32> {
+        self.last_hit
+    }
+
+    /// The current watchpoints, if this tracker came from a session.
+    fn state(&self) -> Option<Vec<session::WatchState>> {
+        self.wps.clone()
+    }
+}
+
+/// Persist the post-step session, carrying the watchpoints (and their runtime
+/// hit counters) that [`Session::capture`] does not model. A tracker without
+/// watchpoints leaves the session exactly as `capture` produced it.
+fn save_session_with_watchpoints(
+    path: &Path,
+    sim: &Simulator,
+    fw: Option<FirmwareState>,
+    watch: &WatchTracker,
+) -> Result<()> {
+    let mut session = Session::capture(sim, fw);
+    if let Some(wps) = watch.state() {
+        session.watchpoints = wps;
+    }
+    session.save(path)
 }
 
 fn cmd_run(args: RunArgs) -> Result<()> {
@@ -2356,23 +2615,24 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     // `--steps N` is a bounded "run exactly N instructions" mode; otherwise
     // run to completion with the `--max-steps` upper bound.
     let tracing = args.trace || args.trace_regs;
+    let mut watch = WatchTracker::from_session(args.session.as_deref())?;
     let reason;
     let result = if let Some(expr) = &args.until_condition {
         if tracing {
-            let (r, rsn) = trace_run(&mut sim, args.steps, args.max_steps, Some(expr), args.trace_regs, args.max_cycles);
+            let (r, rsn) = trace_run(&mut sim, args.steps, args.max_steps, Some(expr), args.trace_regs, args.max_cycles, Some(&mut watch));
             reason = rsn;
             r
         } else {
-            let (r, rsn) = run_until_condition(&mut sim, args.max_steps, expr, args.max_cycles);
+            let (r, rsn) = run_until_condition(&mut sim, args.max_steps, expr, args.max_cycles, Some(&mut watch));
             reason = rsn;
             r
         }
     } else if tracing {
-        let (r, rsn) = trace_run(&mut sim, args.steps, args.max_steps, None, args.trace_regs, args.max_cycles);
+        let (r, rsn) = trace_run(&mut sim, args.steps, args.max_steps, None, args.trace_regs, args.max_cycles, Some(&mut watch));
         reason = rsn;
         r
     } else {
-        let (r, rsn) = run_until_cycles(&mut sim, args.steps.unwrap_or(args.max_steps), args.max_cycles);
+        let (r, rsn) = run_until_cycles(&mut sim, args.steps.unwrap_or(args.max_steps), args.max_cycles, Some(&mut watch));
         reason = rsn;
         r
     };
@@ -2382,15 +2642,13 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         }
     }
     let mut output = state_output(&sim, result, fw_state.as_ref());
-    match reason {
-        StopReason::Condition => output.last_result = "condition".to_string(),
-        StopReason::Cycles => output.last_result = "cycles".to_string(),
-        StopReason::None => {}
+    if let Some(label) = reason.label() {
+        output.last_result = label.to_string();
     }
+    output.watch_hit = if reason == StopReason::Watchpoint { watch.hit() } else { None };
 
     if let Some(session_path) = args.save_session.as_ref().or_else(|| args.session.as_ref()) {
-        let session = Session::capture(&sim, fw_state);
-        session.save(session_path)?;
+        save_session_with_watchpoints(session_path, &sim, fw_state, &watch)?;
     }
 
     if args.json {
@@ -2451,6 +2709,7 @@ pub(crate) fn collect_trace_run(
     cond: Option<&str>,
     trace_regs: bool,
     max_cycles: Option<u64>,
+    mut watch: Option<&mut WatchTracker>,
 ) -> (StepResult, StopReason, Vec<TraceLine>) {
     let limit = steps.unwrap_or(max_steps);
     let mut count = 0u64;
@@ -2468,6 +2727,9 @@ pub(crate) fn collect_trace_run(
     loop {
         if count >= limit {
             return (StepResult::Advanced, StopReason::None, lines);
+        }
+        if let Some(w) = watch.as_deref_mut() {
+            w.snapshot(sim);
         }
         let pc_before = sim.program_counter();
         let regs_before = if trace_regs { reg_map(sim) } else { BTreeMap::new() };
@@ -2506,6 +2768,11 @@ pub(crate) fn collect_trace_run(
         if at_cycle_bound(sim, max_cycles) {
             return (StepResult::Advanced, StopReason::Cycles, lines);
         }
+        if let Some(w) = watch.as_deref_mut() {
+            if w.check(sim).is_some() {
+                return (StepResult::Advanced, StopReason::Watchpoint, lines);
+            }
+        }
     }
 }
 
@@ -2516,8 +2783,10 @@ fn trace_run(
     cond: Option<&str>,
     trace_regs: bool,
     max_cycles: Option<u64>,
+    watch: Option<&mut WatchTracker>,
 ) -> (StepResult, StopReason) {
-    let (result, reason, lines) = collect_trace_run(sim, steps, max_steps, cond, trace_regs, max_cycles);
+    let (result, reason, lines) =
+        collect_trace_run(sim, steps, max_steps, cond, trace_regs, max_cycles, watch);
     for (i, line) in lines.iter().enumerate() {
         let regs_changed = line
             .regs
@@ -2551,15 +2820,23 @@ fn cmd_step(args: StepArgs, kind: StepKind) -> Result<()> {
         args.firmware.as_deref(),
         &args.base,
     )?;
+    let mut watch = WatchTracker::from_session(session_path.as_deref())?;
+    // Snapshot the watched ranges before executing so the step can be checked
+    // for a write (covers step-over/step-out, which step internally).
+    watch.snapshot(&sim);
     let result = match kind {
         StepKind::Step => sim.step(),
         StepKind::StepOver => sim.step_over(args.max_steps),
         StepKind::StepOut => sim.step_out(args.max_steps),
     };
-    let output = state_output(&sim, result, fw.as_ref());
+    let watch_hit = watch.check(&sim);
+    let mut output = state_output(&sim, result, fw.as_ref());
+    if watch_hit.is_some() {
+        output.last_result = "watchpoint".to_string();
+    }
+    output.watch_hit = watch_hit;
     if let Some(sp) = &session_path {
-        let session = Session::capture(&sim, fw);
-        session.save(sp)?;
+        save_session_with_watchpoints(sp, &sim, fw, &watch)?;
     }
     if args.json {
         print_json(&output)?;
@@ -2590,23 +2867,24 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
     }
     let temp_bp = until_addr.map(|addr| sim.set_breakpoint(addr)).unwrap_or(false);
     let tracing = args.trace || args.trace_regs;
+    let mut watch = WatchTracker::from_session(Some(&args.session))?;
     let reason;
     let result = if let Some(expr) = &args.until_condition {
         if tracing {
-            let (r, rsn) = trace_run(&mut sim, None, args.max_steps, Some(expr), args.trace_regs, args.max_cycles);
+            let (r, rsn) = trace_run(&mut sim, None, args.max_steps, Some(expr), args.trace_regs, args.max_cycles, Some(&mut watch));
             reason = rsn;
             r
         } else {
-            let (r, rsn) = run_until_condition(&mut sim, args.max_steps, expr, args.max_cycles);
+            let (r, rsn) = run_until_condition(&mut sim, args.max_steps, expr, args.max_cycles, Some(&mut watch));
             reason = rsn;
             r
         }
     } else if tracing {
-        let (r, rsn) = trace_run(&mut sim, None, args.max_steps, None, args.trace_regs, args.max_cycles);
+        let (r, rsn) = trace_run(&mut sim, None, args.max_steps, None, args.trace_regs, args.max_cycles, Some(&mut watch));
         reason = rsn;
         r
     } else {
-        let (r, rsn) = run_until_cycles(&mut sim, args.max_steps, args.max_cycles);
+        let (r, rsn) = run_until_cycles(&mut sim, args.max_steps, args.max_cycles, Some(&mut watch));
         reason = rsn;
         r
     };
@@ -2616,14 +2894,12 @@ fn cmd_continue(args: ContinueArgs) -> Result<()> {
         }
     }
     let mut output = state_output(&sim, result, fw.as_ref());
-    match reason {
-        StopReason::Condition => output.last_result = "condition".to_string(),
-        StopReason::Cycles => output.last_result = "cycles".to_string(),
-        StopReason::None => {}
+    if let Some(label) = reason.label() {
+        output.last_result = label.to_string();
     }
+    output.watch_hit = if reason == StopReason::Watchpoint { watch.hit() } else { None };
     if args.save {
-        let session = Session::capture(&sim, fw);
-        session.save(&args.session)?;
+        save_session_with_watchpoints(&args.session, &sim, fw, &watch)?;
     }
     if args.json {
         print_json(&output)?;
@@ -3309,6 +3585,164 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
 
 /// Format a `; file:line` source annotation for `address`, using the DWARF
 /// line table and source files attached to the simulator (empty when none).
+fn watch_json(wp: &session::WatchState) -> serde_json::Value {
+    serde_json::json!({
+        "address": wp.address,
+        "len": wp.len,
+        "hitCount": wp.hit_count,
+        "once": wp.once,
+        "enabled": wp.enabled,
+        "hits": wp.hits,
+    })
+}
+
+/// Find a watchpoint by address, reporting a stable error when absent.
+fn watch_find(s: &mut Session, addr: u32) -> Result<&mut session::WatchState> {
+    s.watchpoints
+        .iter_mut()
+        .find(|w| w.address == addr)
+        .ok_or_else(|| anyhow::anyhow!("观察点不存在 @ 0x{addr:08x}"))
+}
+
+fn cmd_watch(sub: WatchSub) -> Result<()> {
+    match sub {
+        WatchSub::Set {
+            session,
+            addr,
+            addr_flag,
+            len,
+            hit_count,
+            once,
+            json,
+        } => {
+            let addr_num = parse_num(
+                &addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?,
+            )?;
+            if len == 0 || len > 64 {
+                bail!("--len 必须在 1..64");
+            }
+            let mut s = Session::load(&session)?;
+            // Replacing a watchpoint at the same address starts its hit count over.
+            s.watchpoints.retain(|w| w.address != addr_num);
+            let wp = session::WatchState {
+                address: addr_num,
+                len,
+                hit_count,
+                once,
+                enabled: true,
+                hits: 0,
+            };
+            s.watchpoints.push(wp.clone());
+            s.save(&session)?;
+            let mut out = watch_json(&wp);
+            out["count"] = serde_json::json!(s.watchpoints.len());
+            if json {
+                print_json(&out)?;
+            } else {
+                println!(
+                    "已设置观察点 @ 0x{addr_num:08x}（{len} 字节，共 {} 个）",
+                    s.watchpoints.len()
+                );
+            }
+            Ok(())
+        }
+        WatchSub::List { session, json } => {
+            let wps = if session.exists() {
+                Session::load(&session)?.watchpoints
+            } else {
+                Vec::new()
+            };
+            if json {
+                let items: Vec<_> = wps.iter().map(watch_json).collect();
+                print_json(&items)?;
+            } else if wps.is_empty() {
+                println!("(无观察点)");
+            } else {
+                for w in &wps {
+                    let state = if w.enabled { "enabled" } else { "disabled" };
+                    println!(
+                        "0x{a:08x}（{len} 字节）  {state}  hits={hits}{}",
+                        if w.once { "  once" } else { "" },
+                        a = w.address,
+                        len = w.len,
+                        hits = w.hits,
+                    );
+                }
+            }
+            Ok(())
+        }
+        WatchSub::Clear { session, addr, addr_flag, json } => {
+            let addr_num = parse_num(
+                &addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?,
+            )?;
+            let mut s = Session::load(&session)?;
+            let before = s.watchpoints.len();
+            s.watchpoints.retain(|w| w.address != addr_num);
+            if s.watchpoints.len() == before {
+                bail!("观察点不存在 @ 0x{addr_num:08x}");
+            }
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({ "address": addr_num, "removed": true }))?;
+            } else {
+                println!("已清除观察点 @ 0x{addr_num:08x}");
+            }
+            Ok(())
+        }
+        WatchSub::ClearAll { session, json } => {
+            let mut s = Session::load(&session)?;
+            let removed = s.watchpoints.len();
+            s.watchpoints.clear();
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({ "removed": removed, "count": 0 }))?;
+            } else {
+                println!("已清除 {removed} 个观察点");
+            }
+            Ok(())
+        }
+        WatchSub::Enable {
+            session,
+            addr,
+            addr_flag,
+            json,
+        } => set_watch_enabled(&session, addr, addr_flag, true, json),
+        WatchSub::Disable {
+            session,
+            addr,
+            addr_flag,
+            json,
+        } => set_watch_enabled(&session, addr, addr_flag, false, json),
+    }
+}
+
+/// Enable/disable a watchpoint by address (shared by `watch enable`/`disable`).
+fn set_watch_enabled(
+    session: &Path,
+    addr: Option<String>,
+    addr_flag: Option<String>,
+    enable: bool,
+    json: bool,
+) -> Result<()> {
+    let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+    let addr_num = parse_num(&addr)?;
+    let mut s = Session::load(session)?;
+    let wp = watch_find(&mut s, addr_num)?;
+    wp.enabled = enable;
+    s.save(session)?;
+    if json {
+        print_json(&serde_json::json!({ "address": addr_num, "enabled": enable }))?;
+    } else {
+        println!(
+            "已{}观察点 @ 0x{addr_num:08x}",
+            if enable { "启用" } else { "禁用" }
+        );
+    }
+    Ok(())
+}
+
+/// Format a `; file:line` source annotation for `address`, using the DWARF
+/// line table and source files attached to the simulator (empty when none).
 pub(crate) fn source_annotation(sim: &Simulator, address: u32) -> String {
     sim.line_for_address(address)
         .and_then(|(file, line)| sim.source_files.get(file).map(|f| (f, line)))
@@ -3499,6 +3933,19 @@ fn cmd_state(args: StateArgs) -> Result<()> {
     }
     if args.json {
         let mut value = serde_json::to_value(&output)?;
+        // Watchpoints live in the session file, not the simulator core; report
+        // them so an external caller gets the complete state snapshot.
+        if let Some(sp) = &args.session {
+            if sp.exists() {
+                if let Ok(s) = Session::load(sp) {
+                    let wps: Vec<serde_json::Value> =
+                        s.watchpoints.iter().map(watch_json).collect();
+                    if let Some(obj) = value.as_object_mut() {
+                        obj.insert("watchpoints".to_string(), serde_json::json!(wps));
+                    }
+                }
+            }
+        }
         if let Some(ma) = &args.mem {
             let addr = parse_num(ma)?;
             let mut bytes = Vec::with_capacity(args.mem_len);

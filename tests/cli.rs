@@ -8608,6 +8608,12 @@ fn help_every_param() {
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--json"]),
         (&["mcp"], &["--session"]),
         (&["state"], &["--session", "--arch", "--firmware", "--base", "--json", "--fields", "--mem", "--mem-len", "--summary"]),
+        (&["watch", "set"], &["--session", "--addr", "--len", "--hit-count", "--once", "--json"]),
+        (&["watch", "list"], &["--session", "--json"]),
+        (&["watch", "clear"], &["--session", "--addr", "--json"]),
+        (&["watch", "enable"], &["--session", "--addr", "--json"]),
+        (&["watch", "disable"], &["--session", "--addr", "--json"]),
+        (&["watch", "clear-all"], &["--session", "--json"]),
     ];
     for (args, needles) in checks {
         let out = Command::new(bin()).args(*args).arg("--help").output().unwrap();
@@ -8617,4 +8623,386 @@ fn help_every_param() {
             assert!(text.contains(needle), "missing param {needle} in {args:?} help");
         }
     }
+}
+
+#[test]
+fn watch_set_step_and_continue() {
+    let dir = tmpdir();
+    let elf = dir.join("watch.elf");
+    write_riscv_elf(&elf);
+    let sess = dir.join("watch.json");
+    // Execute the first instruction so the watchpoint is armed at a live PC.
+    let out = Command::new(bin())
+        .args([
+            "run",
+            "--firmware",
+            elf.to_str().unwrap(),
+            "--session",
+            sess.to_str().unwrap(),
+            "--max-steps",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // Set a 4-byte watchpoint on address 0x10 (written by `sw x1,16(x0)`).
+    let out = Command::new(bin())
+        .args([
+            "watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--len", "4", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["address"], 16u64);
+    assert_eq!(v["count"], 1u64);
+    assert_eq!(v["enabled"], true);
+
+    // The next instruction (`addi x2,x1,2`) does not write memory.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "advanced");
+    assert!(v["watchHit"].is_null());
+
+    // The `sw x1,16(x0)` writes 0x10..0x14 -> watchpoint stop.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "watchpoint");
+    assert_eq!(v["watchHit"], 16u64);
+    assert_eq!(v["pc"], 0x8000_000cu64);
+    assert_eq!(v["registers"]["ra"], 1u64);
+
+    // The runtime hit counter is persisted.
+    let out = Command::new(bin())
+        .args(["watch", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v[0]["hits"], 1u64);
+    assert_eq!(v[0]["len"], 4u64);
+
+    // `state --json` reports the watchpoints (full snapshot).
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["watchpoints"][0]["address"], 16u64);
+    assert_eq!(v["watchpoints"][0]["hits"], 1u64);
+
+    // `continue` runs to the ecall halt (no further writes to 0x10).
+    let out = Command::new(bin())
+        .args(["continue", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["halted"], true);
+    assert_eq!(v["pc"], 0x8000_0010u64);
+}
+
+#[test]
+fn watch_hit_count_and_once() {
+    // addi x1,x0,1 ; sw x1,16(x0) ; addi x1,x0,2 ; sw x1,16(x0) ; ecall
+    // (two writes to 0x10, the second with a DIFFERENT value so the watched
+    // bytes actually change on both writes).
+    let code: [u8; 20] = [
+        0x93, 0x00, 0x10, 0x00, // addi x1, x0, 1
+        0x23, 0x28, 0x10, 0x00, // sw x1, 16(x0)
+        0x93, 0x00, 0x20, 0x00, // addi x1, x0, 2
+        0x23, 0x28, 0x10, 0x00, // sw x1, 16(x0)
+        0x73, 0x00, 0x00, 0x00, // ecall
+    ];
+    let dir = tmpdir();
+    let elf = dir.join("twosw.elf");
+    write_riscv_elf_code(&elf, &code);
+    let sess = dir.join("twosw.json");
+    let out = Command::new(bin())
+        .args([
+            "run", "--firmware", elf.to_str().unwrap(), "--session", sess.to_str().unwrap(),
+            "--max-steps", "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // `--hit-count 2` stops on the second write (the first is observed but
+    // does not pause).
+    let out = Command::new(bin())
+        .args([
+            "watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--len", "4",
+            "--hit-count", "2", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["hitCount"], 2u64);
+    // First write: observed, hit counter 1, no pause.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "advanced");
+    assert!(v["watchHit"].is_null());
+    // The `addi x1,x0,2` between the two writes does not touch memory.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "advanced");
+    assert!(v["watchHit"].is_null());
+    // Second write (value 2): hit counter 2 -> pause.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "watchpoint");
+    assert_eq!(v["watchHit"], 16u64);
+    let out = Command::new(bin())
+        .args(["watch", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v[0]["hits"], 2u64);
+
+    // A `--once` watchpoint auto-disables after the first stop, so a second
+    // write to the same range no longer pauses.
+    let sess2 = dir.join("once.json");
+    let out = Command::new(bin())
+        .args([
+            "run", "--firmware", elf.to_str().unwrap(), "--session", sess2.to_str().unwrap(),
+            "--max-steps", "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args([
+            "watch", "set", "--session", sess2.to_str().unwrap(), "--addr", "0x10", "--len", "4",
+            "--once", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // First write stops and auto-disables.
+    let out = Command::new(bin())
+        .args(["step", "--session", sess2.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "watchpoint");
+    let out = Command::new(bin())
+        .args(["watch", "list", "--session", sess2.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v[0]["enabled"], false);
+    // The `addi x1,x0,2` then the second `sw` are both inert (disabled).
+    for _ in 0..2 {
+        let out = Command::new(bin())
+            .args(["step", "--session", sess2.to_str().unwrap(), "--json"])
+            .output()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["lastResult"], "advanced");
+        assert!(v["watchHit"].is_null());
+    }
+}
+
+#[test]
+fn watch_enable_disable_clear() {
+    let dir = tmpdir();
+    let elf = dir.join("w.elf");
+    write_riscv_elf(&elf);
+    let sess = dir.join("w.json");
+    let out = Command::new(bin())
+        .args([
+            "run", "--firmware", elf.to_str().unwrap(), "--session", sess.to_str().unwrap(),
+            "--max-steps", "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args([
+            "watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--len", "4", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Step to the `sw` (one non-writing instruction in between).
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    // Disable: the `sw` no longer pauses.
+    let out = Command::new(bin())
+        .args([
+            "watch", "disable", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["enabled"], false);
+    let out = Command::new(bin())
+        .args(["step", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "advanced");
+    assert!(v["watchHit"].is_null());
+    // Enable restores the stop.
+    let out = Command::new(bin())
+        .args([
+            "watch", "enable", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["watch", "list", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("enabled"));
+    // Clear removes it; clearing an absent watchpoint is an error.
+    let out = Command::new(bin())
+        .args([
+            "watch", "clear", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["removed"], true);
+    let out = Command::new(bin())
+        .args([
+            "watch", "clear", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("观察点不存在"));
+    // clear-all on an empty list reports zero removed and stays valid.
+    let out = Command::new(bin())
+        .args(["watch", "clear-all", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["removed"], 0u64);
+    // Reject an out-of-range length.
+    let out = Command::new(bin())
+        .args([
+            "watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--len", "65",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("1..64"));
+}
+
+#[test]
+fn mcp_watch_tools() {
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-watch-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    client.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+
+    let r = client.call_tool("session_create", serde_json::json!({ "session": sess, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create failed: {}", r);
+    // Place the 4-instruction program (addi x1, addi x2, sw x1,16(x0), ecall).
+    let r = client.call_tool(
+        "mem_write",
+        serde_json::json!({
+            "session": sess, "addr": "0x80000000",
+            "bytes": ["0x93", "0x00", "0x10", "0x00", "0x13", "0x81", "0x20", "0x00",
+                      "0x23", "0x28", "0x10", "0x00", "0x73", "0x00", "0x00", "0x00"],
+        }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write failed: {}", r);
+
+    // Set a watchpoint and read it back.
+    let r = client.call_tool(
+        "watch_set",
+        serde_json::json!({ "session": sess, "addr": "0x10", "len": 4 }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "watch_set failed: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 16u64);
+    assert_eq!(r["structuredContent"]["len"], 4u64);
+    let r = client.call_tool("watch_list", serde_json::json!({ "session": sess }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_list failed: {}", r);
+    assert_eq!(r["structuredContent"]["watchpoints"].as_array().unwrap().len(), 1);
+
+    // `continue` stops on the `sw` write (lastResult=watchpoint, watchHit).
+    let r = client.call_tool("continue", serde_json::json!({ "session": sess }));
+    assert!(!r["isError"].as_bool().unwrap(), "continue failed: {}", r);
+    assert_eq!(r["structuredContent"]["lastResult"], "watchpoint");
+    assert_eq!(r["structuredContent"]["watchHit"], 16u64);
+    assert_eq!(r["structuredContent"]["pc"], 0x8000_000cu64);
+
+    // `state` reports the watchpoints with the runtime hit counter.
+    let r = client.call_tool("state", serde_json::json!({ "session": sess }));
+    assert!(!r["isError"].as_bool().unwrap(), "state failed: {}", r);
+    assert_eq!(r["structuredContent"]["watchpoints"][0]["hits"], 1u64);
+
+    // Disable: the ecall halt runs without a watchpoint stop.
+    let r = client.call_tool(
+        "watch_disable",
+        serde_json::json!({ "session": sess, "addr": "0x10" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "watch_disable failed: {}", r);
+    let r = client.call_tool("continue", serde_json::json!({ "session": sess }));
+    assert!(!r["isError"].as_bool().unwrap(), "continue failed: {}", r);
+    assert_eq!(r["structuredContent"]["halted"], true);
+    let r = client.call_tool("watch_list", serde_json::json!({ "session": sess }));
+    assert_eq!(r["structuredContent"]["watchpoints"][0]["enabled"], false);
+
+    // Re-enable, then clear; clearing an absent watchpoint is an error.
+    let r = client.call_tool(
+        "watch_enable",
+        serde_json::json!({ "session": sess, "addr": "0x10" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "watch_enable failed: {}", r);
+    let r = client.call_tool(
+        "watch_clear",
+        serde_json::json!({ "session": sess, "addr": "0x10" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "watch_clear failed: {}", r);
+    assert_eq!(r["structuredContent"]["removed"], true);
+    let r = client.call_tool(
+        "watch_clear",
+        serde_json::json!({ "session": sess, "addr": "0x10" }),
+    );
+    assert!(r["isError"].as_bool().unwrap(), "clearing absent watch must error");
+    let r = client.call_tool("watch_clear_all", serde_json::json!({ "session": sess }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_clear_all failed: {}", r);
+    assert_eq!(r["structuredContent"]["removed"], 0u64);
+
+    // Out-of-range length is a tool error.
+    let r = client.call_tool(
+        "watch_set",
+        serde_json::json!({ "session": sess, "addr": "0x10", "len": 65 }),
+    );
+    assert!(r["isError"].as_bool().unwrap(), "len 65 must error");
+
+    client.close();
 }

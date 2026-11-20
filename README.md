@@ -53,6 +53,16 @@ ns-instruction-sim bp modify --session s.json --addr 0x80000004 --condition "x1 
 ns-instruction-sim bp disable --session s.json --addr 0x80000004
 ns-instruction-sim bp list --session s.json --symbols
 ns-instruction-sim bp list --session s.json --symbols --json
+
+# 内存观察点（被写入时暂停，lastResult="watchpoint"、watchHit=<地址>）
+ns-instruction-sim watch set --session s.json --addr 0x20000000 --len 4
+ns-instruction-sim watch set --session s.json --addr 0x20000000 --len 4 --hit-count 2 --once --json
+ns-instruction-sim watch list --session s.json --json
+ns-instruction-sim watch disable --session s.json --addr 0x20000000
+ns-instruction-sim watch enable --session s.json --addr 0x20000000
+ns-instruction-sim watch clear --session s.json --addr 0x20000000
+ns-instruction-sim watch clear-all --session s.json
+
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8
 ns-instruction-sim disasm --session arm.json --addr 0x0 --count 4 --arm-state thumb
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 8 --raw

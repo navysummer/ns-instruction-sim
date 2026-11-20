@@ -120,9 +120,10 @@ ns-instruction-sim/
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `load` / `dump` / `region` / `copy` | 内存读/写/填充（含确定性伪随机）/搜索模式（`search` 的 `--pattern` 按 `--width` `byte`/`half`/`word`/`dword` 解释为小端整数值，可直接按字/双字常量搜索）/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验）/复制内存区域（源→目标，重叠范围按 memmove 语义） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --src --dst --name --format --width --out --json` | hex/C/JSON |
 | `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数；`list --symbols` 用 ELF 符号注释断点地址） | `--addr --symbol --line --condition --hit-count --once --symbols --session --json` | 表/JSON |
+| `watch` | `set` / `list` / `clear` / `clear-all` / `enable` / `disable` | 内存观察点管理（`step`/`run`/`continue` 在每条指令前后比较被监视字节范围，被写入时暂停并报 `lastResult="watchpoint"`、`watchHit=<地址>`；支持长度/命中次数/一次性/启用禁用；命中计数持久化） | `--addr --len --hit-count --once --session --json` | 表/JSON |
 | `disasm` | — | 反汇编 N 条（可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON；`--firmware` 直接加载固件反汇编，无需先建会话，架构从 ELF 推导） | `--firmware --base --arch --addr --symbol --count --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
-| `state` | — | 完整状态（JSON/文本/字段子集/单行摘要；`--mem` 附带指定起始地址的内存快照，人读模式输出 hex dump） | `--session --arch --firmware --base --mem --mem-len --json --fields --summary` | 状态/JSON/摘要 |
+| `state` | — | 完整状态（JSON/文本/字段子集/单行摘要；`--mem` 附带指定起始地址的内存快照，人读模式输出 hex dump；JSON 含 `watchpoints` 完整观察点快照） | `--session --arch --firmware --base --mem --mem-len --json --fields --summary` | 状态/JSON/摘要 |
 | `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费）；`reg-dump --fields` 附带每个寄存器的 SVD 位域解码（位偏移/宽度/当前值/描述） | `--uart-base --gpio-base --pin --value --index --enabled --prescaler --auto-reload --addr --name --len --bytes --input --file --device --peripheral --register --field --fields --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `line` / `addr` | ELF 符号与源行号映射 | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` / `set` | 周期计数/指令周期估算/外设推进/设置周期计数（模拟时间流逝/超时） | `--addr --cycles --count --session --json` | 值/JSON |
@@ -151,10 +152,13 @@ ns-instruction-sim/
    16 位 PC 架构为 0xFFFF，其余为 u32::MAX）、
    `peripherals`（UART 输出/`uartInput`（未消费的注入输入字节）/GPIO/定时器/看门狗/中断/`externalRegs`）、
    `csr`（mstatus/mtvec/mepc/mcause/mie/mhartid）、`breakpoints`（地址/条件/命中次数/一次性/启用状态/实际命中）、
+   `watchpoints`（内存观察点：地址/长度/命中次数/一次性/启用状态/实际命中；`state --json`）、
+   `watchHit`（本步触发观察点的地址，未触发为 null）、
    `firmware`（path/base/format，无则 null）、`pcSymbol`（最近 ELF 符号 name/address/size，无则 null）），
    字段名不随版本随意变动。
 3. **错误**：一律写 stderr，格式 `错误: <消息>`，进程退出码 `1`。成功的 `--json` 退出码 `0`。
 4. **会话文件**：JSON，含 `arch`、`pc`、`cycle_count`、`registers`、`memory`、`breakpoints`、
+   `watchpoints`（地址/长度/命中次数/一次性/启用状态/实际命中）、
    `memory_overlay`（显式内存写，跨架构重放）、`peripherals`（含 `external_regs` 与
    `uart_input` 未消费输入字节）、`csr`、`firmware`（路径/格式/基址）。
    缺失路径时自动新建临时会话。
@@ -194,6 +198,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    （`mem_search` 支持 `width` 参数，`pattern` 值按 `byte`/`half`/`word`/`dword` 小端展开）、
    `bp_set/modify/clear/list/enable/disable/clear_all`
    （`bp_list` 支持 `symbols` 参数）、
+   `watch_set/list/clear/enable/disable/clear_all`（内存观察点；`watch_set` 支持
+   `len`/`hit_count`/`once`，`state` 返回 `watchpoints` 数组），
    `disasm`、`reset`、`cycle_get/estimate/tick/set`、`interrupt_take/pending/set`、
    `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`
    （`periph_reg_dump` 默认返回 `fields` 位域解码，`fields: false` 省略）、
@@ -288,6 +294,16 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   未加 `--symbols` 时 `symbol` 为 null。
 - `mcp_bp_list_symbols`：MCP `bp_list {"symbols":true}` 返回符号注释，缺省为 null。
 - `bp_set_out_of_range_rejected`：16 位 PC 架构（mcs51/c166/avr）越界断点地址被拒绝，不静默回绕；`--until` 同校验。
+- `watch_set_step_and_continue`：`watch set` 后 `step` 在写入被监视范围时暂停
+  （`lastResult="watchpoint"`、`watchHit=<地址>`），命中计数持久化，`state --json` 含
+  `watchpoints`，`continue` 在无新写入时正常走到停机。
+- `watch_hit_count_and_once`：`--hit-count N` 只在第 N 次写入时暂停（前面的写入被观测但不暂停）、
+  `--once` 命中后自动禁用（后续写入不再暂停）。
+- `watch_enable_disable_clear`：`disable` 使观察点惰性（不再暂停）、`enable` 恢复、`clear` 移除；
+  清除不存在的观察点与 `--len` 越界（>64）均报错；`clear-all` 在空列表时报告 0 个移除。
+- `mcp_watch_tools`：MCP `watch_set/list/clear/enable/disable/clear_all` 与 `state` 的
+  `watchpoints` 数组；`continue` 停在观察点（`lastResult`/`watchHit`），`watch_set` 的 `len>64`
+  以 `isError:true` 返回。
 - `periph_timer_config_and_uart_write`：定时器配置与 UART 寄存器写输出。
 - `periph_uart_input_injects_and_firmware_reads`：`periph uart --bytes/--input` 注入输入字节，
   固件从 UART 数据寄存器读取（FIFO 消费、跨会话持久化），`state --json` 的
@@ -708,8 +724,9 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff`、`device memory-map`）的
   `--help` 与 `-h` 均退出 0 且含 `Usage:`。
 - `help_every_param`：`run`/`bp set`/`mem read`/`reg set`/`periph reg-write`/`watchdog config`/
-  `trace`/`coverage`/`profile`/`mcp` 的 `--help` 包含每个参数的帮助文本
-  （`--session`、`--firmware`、`--arch`、`--addr`、`--condition`、`--once`、`--steps`、`--until` 等）。
+  `watch set`/`watch list`/`trace`/`coverage`/`profile`/`mcp` 的 `--help` 包含每个参数的帮助文本
+  （`--session`、`--firmware`、`--arch`、`--addr`、`--condition`、`--once`、`--steps`、`--until`、
+  `--len`、`--hit-count` 等）。
 
 ### 5.2 反汇编宽度
 
