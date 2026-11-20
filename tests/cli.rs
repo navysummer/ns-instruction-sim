@@ -9040,6 +9040,67 @@ fn session_patch_fields() {
 }
 
 #[test]
+fn session_patch_arm_state() {
+    let dir = tmpdir();
+    let sess = dir.join("arm-state-patch.json");
+    Command::new(bin())
+        .args(["state", "--arch", "arm", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    // Set Thumb mode, xPSR (T bit) and an active IT block in one invocation.
+    let out = Command::new(bin())
+        .args(["session", "patch", "--file", sess.to_str().unwrap(),
+               "--arm-state", "thumb", "--xpsr", "0x01000000", "--it", "8,0,0", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["arch"], "arm");
+    assert_eq!(json["armState"], "thumb");
+    assert_eq!(json["armXpsr"], 0x0100_0000u64);
+    // `state --json` reflects the persisted ARM state.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["armState"], "thumb");
+    assert_eq!(json["armXpsr"], 0x0100_0000u64);
+    assert_eq!(json["armItState"]["mask"], 8u64);
+    assert_eq!(json["armItState"]["cond"], 0u64);
+    // Switching back to A32 clears the Thumb bit (set_arm_state re-derives it).
+    let out = Command::new(bin())
+        .args(["session", "patch", "--file", sess.to_str().unwrap(), "--arm-state", "a32"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["armState"], "a32");
+    // Invalid `--it` format and non-ARM sessions are errors.
+    let out = Command::new(bin())
+        .args(["session", "patch", "--file", sess.to_str().unwrap(), "--it", "8,0"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let rsess = dir.join("riscv-state-patch.json");
+    Command::new(bin())
+        .args(["state", "--arch", "riscv", "--session", rsess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["session", "patch", "--file", rsess.to_str().unwrap(), "--xpsr", "0x1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("仅 ARM"));
+}
+
+#[test]
 fn device_memory_map_and_address_lookup() {
     // JSON view with an address lookup.
     let out = Command::new(bin())
@@ -9338,6 +9399,43 @@ fn mcp_session_patch() {
 }
 
 #[test]
+fn mcp_session_patch_arm_state() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-armstate-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "arm" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    // Set Thumb mode, xPSR (T bit) and an active IT block.
+    let r = client.call_tool("session_patch", serde_json::json!({
+        "session": s, "arm_state": "thumb", "xpsr": "0x01000000",
+        "it_mask": 8, "it_cond": 0, "it_index": 0,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_patch: {}", r);
+    assert_eq!(r["structuredContent"]["armState"], "thumb", "{}", r);
+    assert_eq!(r["structuredContent"]["armXpsr"], 0x0100_0000u64, "{}", r);
+    // `state` reflects the persisted ARM state.
+    let r = client.call_tool("state", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "state: {}", r);
+    assert_eq!(r["structuredContent"]["armState"], "thumb", "{}", r);
+    assert_eq!(r["structuredContent"]["armXpsr"], 0x0100_0000u64, "{}", r);
+    assert_eq!(r["structuredContent"]["armItState"]["mask"], 8u64, "{}", r);
+    // Non-ARM sessions reject ARM state fields.
+    let rsess = dir.join(format!("mcp-armstate-riscv-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&rsess);
+    let rs = rsess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": rs, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create riscv: {}", r);
+    let r = client.call_tool("session_patch", serde_json::json!({ "session": rs, "arm_state": "thumb" }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    let r = client.call_tool("session_patch", serde_json::json!({ "session": rs, "it_mask": 8 }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn help_every_command() {
     let commands: &[&[&str]] = &[
         &["version"],
@@ -9408,7 +9506,7 @@ fn help_every_param() {
         (&["interrupt", "vector"], &["--session", "--json"]),
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
-        (&["session", "patch"], &["--file", "--pc", "--cycle", "--halted", "--reg", "--csr", "--json"]),
+        (&["session", "patch"], &["--file", "--pc", "--cycle", "--halted", "--reg", "--csr", "--arm-state", "--xpsr", "--it", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
         (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--pattern", "--width", "--out", "--json"]),

@@ -1368,6 +1368,11 @@ fn tools() -> Vec<Tool> {
                             "description": "CSR 赋值对象（名称 → 数值）。",
                         }),
                     ),
+                    ("arm_state", prop_str("ARM 指令集状态：a32 或 thumb（仅 ARM 会话）。")),
+                    ("xpsr", prop_str("ARM xPSR 值（仅 ARM 会话；含 N/Z/C/V 条件标志与 Thumb 位）。")),
+                    ("it_mask", prop_num("ARM If-Then 块掩码（仅 ARM 会话；0 表示无活动 IT 块）。")),
+                    ("it_cond", prop_num("ARM If-Then 块条件码（仅 ARM 会话）。")),
+                    ("it_index", prop_num("ARM If-Then 块索引（仅 ARM 会话）。")),
                 ],
                 &["session"],
             ),
@@ -3582,6 +3587,7 @@ fn tool_session_diff(_: &McpServer, args: &Map<String, Value>) -> Result<Value> 
 fn tool_session_patch(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let path = server.resolve_session(args).ok_or_else(|| anyhow::anyhow!("缺少 session"))?;
     let mut session = Session::load(&path)?;
+    let is_arm = session.arch.eq_ignore_ascii_case("arm");
     if let Some(pc) = s(args, "pc") {
         session.pc = parse_num(&pc)?;
     }
@@ -3594,6 +3600,39 @@ fn tool_session_patch(server: &McpServer, args: &Map<String, Value>) -> Result<V
     let regs = name_value_map(args.get("registers"), "registers")?;
     let csrs = name_value_map(args.get("csr"), "csr")?;
     crate::apply_session_patch(&mut session, &regs, &csrs)?;
+    if let Some(state) = s(args, "arm_state") {
+        if !is_arm {
+            bail!("仅 ARM 会话支持 arm_state");
+        }
+        match state.as_str() {
+            "a32" => session.arm_arm_state = Some(true),
+            "thumb" => session.arm_arm_state = Some(false),
+            other => bail!("arm_state 必须是 a32 或 thumb，得到 {other}"),
+        }
+    }
+    if let Some(xpsr) = s(args, "xpsr") {
+        if !is_arm {
+            bail!("仅 ARM 会话支持 xpsr");
+        }
+        session.arm_xpsr = Some(parse_num(&xpsr)?);
+    }
+    let it_mask = u(args, "it_mask");
+    let it_cond = u(args, "it_cond");
+    let it_index = u(args, "it_index");
+    if it_mask.is_some() || it_cond.is_some() || it_index.is_some() {
+        if !is_arm {
+            bail!("仅 ARM 会话支持 it_mask/it_cond/it_index");
+        }
+        let mask = it_mask.unwrap_or(0);
+        let cond = it_cond.unwrap_or(0);
+        let index = it_index.unwrap_or(0);
+        if mask > 0xff || index > 0xff {
+            bail!("it_mask/it_index 必须在 0..=255");
+        }
+        session.arm_it_mask = Some(mask as u8);
+        session.arm_it_cond = Some(cond);
+        session.arm_it_index = Some(index as u8);
+    }
     session.save(&path)?;
     Ok(session.info_value(Some(&path)))
 }

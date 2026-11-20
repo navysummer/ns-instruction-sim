@@ -1707,6 +1707,15 @@ struct SessionPatchArgs {
     /// CSR 赋值（空格分隔，如 `mtvec=0x80000010`）。
     #[arg(long, value_delimiter = ' ', num_args = 1..)]
     csr: Vec<String>,
+    /// ARM 指令集状态：`a32` 或 `thumb`（仅 ARM 会话）。
+    #[arg(long, value_parser = ["a32", "thumb"])]
+    arm_state: Option<String>,
+    /// ARM xPSR 值（仅 ARM 会话；含 N/Z/C/V 条件标志与 Thumb 位）。
+    #[arg(long)]
+    xpsr: Option<String>,
+    /// ARM If-Then 块状态 `mask,cond,index`（仅 ARM 会话；mask=0 表示无活动 IT 块）。
+    #[arg(long)]
+    it: Option<String>,
     /// 输出 JSON。
     #[arg(long)]
     json: bool,
@@ -6002,6 +6011,7 @@ fn cmd_session_diff(args: SessionDiffArgs) -> Result<()> {
 /// `session patch`: apply scalar/register/CSR changes to a persisted session.
 fn cmd_session_patch(args: SessionPatchArgs) -> Result<()> {
     let mut s = Session::load(&args.file)?;
+    let is_arm = s.arch.eq_ignore_ascii_case("arm");
     if let Some(pc) = args.pc.as_deref() {
         s.pc = parse_num(pc)?;
     }
@@ -6026,6 +6036,36 @@ fn cmd_session_patch(args: SessionPatchArgs) -> Result<()> {
         csrs.push((name.to_string(), parse_num(val)?));
     }
     apply_session_patch(&mut s, &regs, &csrs)?;
+    if let Some(state) = &args.arm_state {
+        if !is_arm {
+            bail!("仅 ARM 会话支持 --arm-state");
+        }
+        s.arm_arm_state = Some(state == "a32");
+    }
+    if let Some(x) = args.xpsr.as_deref() {
+        if !is_arm {
+            bail!("仅 ARM 会话支持 --xpsr");
+        }
+        s.arm_xpsr = Some(parse_num(x)?);
+    }
+    if let Some(it) = args.it.as_deref() {
+        if !is_arm {
+            bail!("仅 ARM 会话支持 --it");
+        }
+        let parts: Vec<&str> = it.split(',').collect();
+        if parts.len() != 3 {
+            bail!("--it 格式应为 mask,cond,index");
+        }
+        let mask = parse_num(parts[0])?;
+        let cond = parse_num(parts[1])?;
+        let index = parse_num(parts[2])?;
+        if mask > 0xff || index > 0xff {
+            bail!("--it 的 mask/index 必须在 0..=255");
+        }
+        s.arm_it_mask = Some(mask as u8);
+        s.arm_it_cond = Some(cond);
+        s.arm_it_index = Some(index as u8);
+    }
     s.save(&args.file)?;
     let value = s.info_value(Some(&args.file));
     if args.json {

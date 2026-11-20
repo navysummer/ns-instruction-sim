@@ -131,7 +131,7 @@ ns-instruction-sim/
 | `interrupt` | `take` / `pending` / `vector` / `set` | 中断触发/查询/向量表/置线；`vector` 返回 mtvec 基址与模式（`direct`/`vectored`）及每行目标地址 | `--line --value --session --json` | 值/JSON |
 | `watchdog` | `status` / `feed` / `config` / `reset` | 看门狗查询/喂狗/配置/强制复位 | `--enabled --timeout --base --entry --session --json` | 表/JSON |
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
-| `session` | `info` / `diff` / `patch` | 会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）或比较两个会话的全部差异；`patch` 直接修改 PC/周期/停机/寄存器/CSR 并保存 | `--file` / `--a --b --limit` / `--pc --cycle --halted --reg --csr [--json]` | 文本/JSON |
+| `session` | `info` / `diff` / `patch` | 会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）或比较两个会话的全部差异；`patch` 直接修改 PC/周期/停机/寄存器/CSR 并保存，ARM 会话还可设置指令集状态（`--arm-state`）、xPSR（`--xpsr`）与 If-Then 块（`--it mask,cond,index`） | `--file` / `--a --b --limit` / `--pc --cycle --halted --reg --csr --arm-state --xpsr --it [--json]` | 文本/JSON |
 | `firmware` | `info` | 固件元信息（格式/大小/架构/入口/符号表/源文件/首条指令反汇编），ELF 自动检测架构 | `--firmware --arch [--json]` | 文本/JSON |
 | `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期/寄存器快照；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --regs --out --json` | 轨迹/JSON |
 | `coverage` | — | 运行并统计执行覆盖（各 PC 执行次数、唯一 PC 数；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --json` | 覆盖表/JSON |
@@ -224,7 +224,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `device_memory_map`（设备内存区域与地址所属区域）、`device_lookup`（按地址反查区域/外设/寄存器）、
    `session_info`（会话元信息）、
    `session_diff`（两个会话文件的完整差异：标量/寄存器/断点/内存）、
-   `session_patch`（直接修改会话的 PC/周期/停机/寄存器/CSR 并保存）、
+   `session_patch`（直接修改会话的 PC/周期/停机/寄存器/CSR 并保存；ARM 会话支持
+   `arm_state`/`xpsr`/`it_mask`/`it_cond`/`it_index` 设置执行状态）、
    `firmware_info`（固件元信息：格式/架构/入口/符号表/首条指令）补齐设备与会话维度的工具。
 
 ---
@@ -767,6 +768,11 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   与 CSR 并保存，随后 `reg get`/`csr get` 读回一致；未知寄存器报错。
 - `mcp_session_patch`：MCP `session_patch` 的 `pc`/`cycle_count`/`halted`/`registers`/`csr`
   参数修改后 `reg_get`/`csr_get` 读回一致，未知寄存器以 `isError:true` 返回。
+- `session_patch_arm_state`：`session patch --arm-state/--xpsr/--it` 在 ARM 会话设置指令集
+  状态/xPSR/If-Then 块并持久化（`state --json` 读回 `armState`/`armXpsr`/`armItState`），
+  `--arm-state a32` 清除 Thumb 位；`--it` 格式错误与非 ARM 会话均报错。
+- `mcp_session_patch_arm_state`：MCP `session_patch` 的 `arm_state`/`xpsr`/`it_mask`/`it_cond`/
+  `it_index` 设置后 `state` 读回一致；非 ARM 会话的 `arm_state`/`it_mask` 以 `isError:true` 返回。
 - `device_memory_map_and_address_lookup`：`device memory-map` 列出 FLASH/RAM/PERIPHERALS 区域
   （`access`/`start`/`end`/`size`），`--addr` 解析所属区域；越界地址与未知设备报错。
 - `device_lookup_resolves_register`：`device lookup` 按地址反查区域/外设/寄存器

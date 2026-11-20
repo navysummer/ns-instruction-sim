@@ -122,6 +122,7 @@ ns-instruction-sim disasm --session s.json --symbol main --count 16 --json
 ns-instruction-sim session info --file s.json --json
 ns-instruction-sim session diff --a s.json --b s2.json --json
 ns-instruction-sim session patch --file s.json --pc 0x80000010 --cycle 42 --reg x1=0x55 --csr mtvec=0x80000010 --json
+ns-instruction-sim session patch --file arm.json --arm-state thumb --xpsr 0x01000000 --it 8,0,0 --json
 
 # 设备 / SVD 文件解析
 ns-instruction-sim device list
