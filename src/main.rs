@@ -252,6 +252,8 @@ enum SessionSub {
     Diff(SessionDiffArgs),
     /// 直接修改会话字段（PC/周期/停机标志/寄存器/CSR）并保存。
     Patch(SessionPatchArgs),
+    /// 合并两个会话（A 为基准、B 的运行时状态优先），写出到新会话文件。
+    Merge(SessionMergeArgs),
 }
 
 #[derive(Subcommand)]
@@ -1867,6 +1869,26 @@ struct SessionPatchArgs {
     json: bool,
 }
 
+/// Session arguments for the `session merge` subcommand.
+#[derive(Args)]
+struct SessionMergeArgs {
+    /// 基准会话文件（JSON）；合并结果保留其固件/外设结构。
+    #[arg(short, long)]
+    a: PathBuf,
+    /// 叠加会话文件（JSON）；其运行时状态（PC/周期/寄存器/内存/断点等）优先。
+    #[arg(short, long)]
+    b: PathBuf,
+    /// 合并结果写出路径（JSON）。
+    #[arg(short = 'o', long)]
+    out: PathBuf,
+    /// 保留 A 的寄存器文件（缺省 B 的寄存器优先）。
+    #[arg(long)]
+    regs_keep: bool,
+    /// 输出 JSON（合并摘要）。
+    #[arg(long)]
+    json: bool,
+}
+
 fn main() {
     if let Err(e) = real_main() {
         eprintln!("错误: {e}");
@@ -1939,6 +1961,7 @@ fn real_main() -> Result<()> {
         Command::Session(SessionArgs { sub: SessionSub::Info(args) }) => cmd_session_info(args),
         Command::Session(SessionArgs { sub: SessionSub::Diff(args) }) => cmd_session_diff(args),
         Command::Session(SessionArgs { sub: SessionSub::Patch(args) }) => cmd_session_patch(args),
+        Command::Session(SessionArgs { sub: SessionSub::Merge(args) }) => cmd_session_merge(args),
         Command::Firmware { sub: FirmwareSub::Info { firmware, arch, json } } => {
             cmd_firmware_info(&firmware, arch.as_deref(), json)
         }
@@ -6760,6 +6783,38 @@ fn cmd_session_patch(args: SessionPatchArgs) -> Result<()> {
             s.halted
         );
         println!("寄存器 {} 个  CSR 已更新", s.registers.len());
+    }
+    Ok(())
+}
+
+/// `session merge`: combine two sessions into a new one (B's runtime wins).
+fn cmd_session_merge(args: SessionMergeArgs) -> Result<()> {
+    let a = Session::load(&args.a)?;
+    let b = Session::load(&args.b)?;
+    let merged = session::merge_sessions(&a, &b, args.regs_keep)?;
+    merged.save(&args.out)?;
+    let value = merged.info_value(Some(&args.out));
+    if args.json {
+        print_json(&value)?;
+    } else {
+        println!(
+            "已合并会话 {}（A={} + B={}）→ 架构 {}  PC 0x{:08x}  周期 {}  停机 {}",
+            args.out.display(),
+            args.a.display(),
+            args.b.display(),
+            merged.arch,
+            merged.pc,
+            merged.cycle_count,
+            merged.halted
+        );
+        println!(
+            "寄存器 {} 个  断点 {} 个  观察点 {} 个  内存覆盖字节 {}  外部寄存器 {}",
+            merged.registers.len(),
+            merged.breakpoints.len(),
+            merged.watchpoints.len(),
+            merged.memory_overlay.len(),
+            merged.peripherals.external_regs.len()
+        );
     }
     Ok(())
 }

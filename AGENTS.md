@@ -133,6 +133,7 @@ ns-instruction-sim/
 | `watchdog` | `status` / `feed` / `config` / `reset` | 看门狗查询/喂狗/配置/强制复位 | `--enabled --timeout --base --entry --session --json` | 表/JSON |
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
 | `session` | `info` / `diff` / `patch` | 会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）或比较两个会话的全部差异；`patch` 直接修改 PC/周期/停机/寄存器/CSR 并保存，ARM 会话还可设置指令集状态（`--arm-state`）、xPSR（`--xpsr`）与 If-Then 块（`--it mask,cond,index`） | `--file` / `--a --b --limit` / `--pc --cycle --halted --reg --csr --arm-state --xpsr --it [--json]` | 文本/JSON |
+| `session` | `merge` | 合并两个会话（A 为基准、B 的运行时状态优先；寄存器/内存/断点/观察点/外部寄存器/定时器按地址并集 B 胜出，UART 输入输出与看门狗取 B 非空值，GPIO 事件拼接、IRQ 行并集；`--regs-keep` 保留 A 的寄存器文件） | `--a --b --out [--regs-keep] [--json]` | 文本/JSON |
 | `firmware` | `info` | 固件元信息（格式/大小/架构/入口/符号表/源文件/首条指令反汇编），ELF 自动检测架构 | `--firmware --arch [--json]` | 文本/JSON |
 | `firmware` | `verify` | 计算/校验固件镜像完整性校验和（CRC32/CRC16-CCITT/Adler32/FNV-1a/加和），基于原始文件字节；`--expected` 按 `--algo`（缺省 crc32）比对，不匹配非零退出 | `--firmware --arch --algo --expected [--json]` | 文本/JSON |
 | `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期/寄存器快照；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`；`--top N` 仅返回前 N 条轨迹） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --top --regs --out --json` | 轨迹/JSON |
@@ -238,6 +239,7 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `device_peripherals`（按 `filter` 名称子串列出设备外设概览：名称/基址/寄存器数/描述）、
    `session_info`（会话元信息）、
    `session_diff`（两个会话文件的完整差异：标量/寄存器/断点/内存）、
+   `session_merge`（合并两个会话：A 为基准、B 的运行时状态优先；`regs_keep` 保留 A 的寄存器文件）、
    `session_patch`（直接修改会话的 PC/周期/停机/寄存器/CSR 并保存；ARM 会话支持
    `arm_state`/`xpsr`/`it_mask`/`it_cond`/`it_index` 设置执行状态）、
    `firmware_info`（固件元信息：格式/架构/入口/符号表/首条指令）补齐设备与会话维度的工具。
@@ -836,6 +838,11 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `session_info_and_diff`：`session info`（人读 + `--json`：arch/pc/cycleCount/breakpoints/
   memoryOverlayBytes/peripherals.uartBase）与 `session diff --a/--b`（`same`、`summary` 各类计数、
   含 scalar/register/breakpoint/memory 四类差异、`--limit 1` 截断计数、缺失会话报错）。
+- `session_merge_command`：`session merge` 以 A 为基准、B 的运行时状态（PC/周期）优先，
+  寄存器并集 B 胜出、断点/内存覆盖并集（2 断点、8 字节）、`--regs-keep` 保留 A 的寄存器文件、
+  架构不一致与缺失会话报错。
+- `mcp_session_merge`：MCP `session_merge` 的 `a`/`b`/`out` 合并后 `reg_set` 读回一致，
+  `regs_keep` 保留 A 寄存器、缺参/架构不一致以 `isError:true` 返回。
 - `session_patch_fields`：`session patch --pc/--cycle/--halted/--reg/--csr` 一次修改标量、寄存器
   与 CSR 并保存，随后 `reg get`/`csr get` 读回一致；未知寄存器报错。
 - `mcp_session_patch`：MCP `session_patch` 的 `pc`/`cycle_count`/`halted`/`registers`/`csr`
@@ -893,7 +900,7 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `mcp_session_and_memory_map_tools`：MCP `session_info` / `session_diff` / `device_memory_map` /
   `device_lookup` 工具端到端（`device_lookup` 解析 GPIOA.CRL 寄存器与位域，含缺参/未知设备
   错误路径）与 `trace` 的 `out` 参数把轨迹写入文件并回报 `file`/`bytes`。
-- `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff`、`device memory-map`、
+- `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff/patch/merge`、`device memory-map`、
   `device lookup`、`device peripherals`、`firmware info/verify`、
   `watch set/list/modify/clear/clear-all/enable/disable`）的
   `--help` 与 `-h` 均退出 0 且含 `Usage:`。

@@ -1472,6 +1472,20 @@ fn tools() -> Vec<Tool> {
             ),
             handler: tool_session_patch,
         },
+        Tool {
+            name: "session_merge",
+            description: "合并两个会话（A 为基准、B 的运行时状态优先），写出到新会话文件并返回合并摘要。",
+            schema: obj(
+                &[
+                    ("a", prop_str("基准会话文件（JSON）；合并结果保留其固件/外设结构。")),
+                    ("b", prop_str("叠加会话文件（JSON）；其运行时状态（PC/周期/寄存器/内存/断点等）优先。")),
+                    ("out", prop_str("合并结果写出路径（JSON）。")),
+                    ("regs_keep", prop_bool("保留 A 的寄存器文件（缺省 false：B 的寄存器优先）。")),
+                ],
+                &["a", "b", "out"],
+            ),
+            handler: tool_session_merge,
+        },
     ]
 }
 
@@ -4061,6 +4075,18 @@ fn tool_session_patch(server: &McpServer, args: &Map<String, Value>) -> Result<V
     }
     session.save(&path)?;
     Ok(session.info_value(Some(&path)))
+}
+
+/// Merge two sessions into a new one (`session merge`).
+fn tool_session_merge(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let a = s(args, "a").ok_or_else(|| anyhow::anyhow!("缺少 a"))?;
+    let b_path = s(args, "b").ok_or_else(|| anyhow::anyhow!("缺少 b"))?;
+    let out = s(args, "out").ok_or_else(|| anyhow::anyhow!("缺少 out"))?;
+    let sa = Session::load(Path::new(&a))?;
+    let sb = Session::load(Path::new(&b_path))?;
+    let merged = crate::session::merge_sessions(&sa, &sb, b(args, "regs_keep").unwrap_or(false))?;
+    merged.save(Path::new(&out))?;
+    Ok(merged.info_value(Some(Path::new(&out))))
 }
 
 /// Parse a JSON object of `name → value` pairs into ordered assignments.

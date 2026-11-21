@@ -541,6 +541,147 @@ pub fn register_index_by_name(arch: Arch) -> BTreeMap<String, usize> {
 /// `kind` (`scalar` / `register` / `breakpoint` / `memory`) plus the two
 /// values; the list is ordered (scalars, registers, breakpoints, memory) and
 /// capped at `limit` entries so huge sessions stay printable.
+/// Merge two sessions into one.
+///
+/// `a` is the base session and `b` is the overlay whose runtime state takes
+/// priority. The architectures must match. Merge policy:
+///
+/// * PC / cycle count / halted flag / ARM state come from `b`.
+/// * Registers, memory (`memory` + `memory_overlay`), breakpoints, watchpoints,
+///   external SVD registers and timers are unioned by key with `b` winning on
+///   conflicts.
+/// * UART input/output and the watchdog come from `b` when `b` has a value,
+///   otherwise they are kept from `a` (so a config session merged over a
+///   runtime session keeps its setup).
+/// * GPIO output-change events are concatenated (`a` then `b`); pending IRQ
+///   lines are unioned.
+/// * Peripheral base addresses use `b` when non-zero (configured), else `a`.
+/// * CSR fields use `b` when non-zero, else `a`.
+pub fn merge_sessions(a: &Session, b: &Session, regs_from_a: bool) -> Result<Session> {
+    if !a.arch.eq_ignore_ascii_case(&b.arch) {
+        bail!(
+            "会话架构不一致: A={} B={}",
+            a.arch,
+            b.arch
+        );
+    }
+    let mut out = a.clone();
+
+    // Scalar runtime state: b wins.
+    out.pc = b.pc;
+    out.cycle_count = b.cycle_count;
+    out.halted = b.halted;
+    if b.arm_xpsr.is_some() {
+        out.arm_xpsr = b.arm_xpsr;
+    }
+    if b.arm_arm_state.is_some() {
+        out.arm_arm_state = b.arm_arm_state;
+    }
+    if b.arm_it_mask.is_some() {
+        out.arm_it_mask = b.arm_it_mask;
+        out.arm_it_cond = b.arm_it_cond;
+        out.arm_it_index = b.arm_it_index;
+    }
+
+    // Registers: union by index, b wins.
+    let mut regs: BTreeMap<usize, u32> = if regs_from_a {
+        a.registers.iter().copied().collect()
+    } else {
+        b.registers.iter().copied().collect()
+    };
+    if !regs_from_a {
+        for (i, v) in &a.registers {
+            regs.entry(*i).or_insert(*v);
+        }
+    }
+    out.registers = regs.into_iter().collect();
+
+    // Memory (backing + overlay): union by address, b wins.
+    out.memory = merge_bytes(&a.memory, &b.memory);
+    out.memory_overlay = merge_bytes(&a.memory_overlay, &b.memory_overlay);
+
+    // Breakpoints and watchpoints: union by address, b wins.
+    let mut bps: BTreeMap<u32, BpState> = a.breakpoints.iter().map(|x| (x.address, x.clone())).collect();
+    for x in &b.breakpoints {
+        bps.insert(x.address, x.clone());
+    }
+    out.breakpoints = bps.into_values().collect();
+    let mut wps: BTreeMap<u32, WatchState> = a.watchpoints.iter().map(|x| (x.address, x.clone())).collect();
+    for x in &b.watchpoints {
+        wps.insert(x.address, x.clone());
+    }
+    out.watchpoints = wps.into_values().collect();
+
+    // Peripherals: b wins where configured, else a; collections union.
+    let pa = &a.peripherals;
+    let pb = &b.peripherals;
+    out.peripherals.uart_base = if pb.uart_base != 0 { pb.uart_base } else { pa.uart_base };
+    out.peripherals.gpio_base = if pb.gpio_base != 0 { pb.gpio_base } else { pa.gpio_base };
+    out.peripherals.timer_base = if pb.timer_base != 0 { pb.timer_base } else { pa.timer_base };
+    out.peripherals.gpio_out = pb.gpio_out;
+    out.peripherals.gpio_dir = pb.gpio_dir;
+    out.peripherals.gpio_in = pb.gpio_in;
+    out.uart_output = if b.uart_output.is_empty() {
+        a.uart_output.clone()
+    } else {
+        b.uart_output.clone()
+    };
+    out.peripherals.uart_input = if pb.uart_input.is_empty() {
+        pa.uart_input.clone()
+    } else {
+        pb.uart_input.clone()
+    };
+    let mut events = pa.gpio_events.clone();
+    events.extend(pb.gpio_events.iter().copied());
+    out.peripherals.gpio_events = events;
+    let mut timers: BTreeMap<u32, (u32, bool, u32, u32, u32, usize, u64)> =
+        pa.timers.iter().map(|t| (t.0, *t)).collect();
+    for t in &pb.timers {
+        timers.insert(t.0, *t);
+    }
+    out.peripherals.timers = timers.into_values().collect();
+    out.peripherals.watchdog = if pb.watchdog.is_some() { pb.watchdog } else { pa.watchdog };
+    let mut irq: Vec<usize> = pa.irq_pending.clone();
+    for &line in &pb.irq_pending {
+        if !irq.contains(&line) {
+            irq.push(line);
+        }
+    }
+    irq.sort_unstable();
+    out.peripherals.irq_pending = irq;
+    out.peripherals.external_regs = merge_external_regs(&pa.external_regs, &pb.external_regs);
+
+    // CSR: b wins per field when non-zero, else a.
+    let ca = &a.csr;
+    let cb = &b.csr;
+    out.csr.mstatus = if cb.mstatus != 0 { cb.mstatus } else { ca.mstatus };
+    out.csr.mtvec = if cb.mtvec != 0 { cb.mtvec } else { ca.mtvec };
+    out.csr.mepc = if cb.mepc != 0 { cb.mepc } else { ca.mepc };
+    out.csr.mcause = if cb.mcause != 0 { cb.mcause } else { ca.mcause };
+    out.csr.mie = if cb.mie != 0 { cb.mie } else { ca.mie };
+    out.csr.mhartid = if cb.mhartid != 0 { cb.mhartid } else { ca.mhartid };
+
+    Ok(out)
+}
+
+/// Merge two `(address, value)` byte maps; `b` wins on conflicts.
+fn merge_bytes(a: &[(u32, u8)], b: &[(u32, u8)]) -> Vec<(u32, u8)> {
+    let mut map: BTreeMap<u32, u8> = a.iter().copied().collect();
+    for (k, v) in b {
+        map.insert(*k, *v);
+    }
+    map.into_iter().collect()
+}
+
+/// Merge two `(address, value)` register maps; `b` wins on conflicts.
+fn merge_external_regs(a: &[(u32, u32)], b: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    let mut map: BTreeMap<u32, u32> = a.iter().copied().collect();
+    for (k, v) in b {
+        map.insert(*k, *v);
+    }
+    map.into_iter().collect()
+}
+
 pub fn session_diff(a_path: &Path, b_path: &Path, limit: usize) -> Result<serde_json::Value> {
     let a = Session::load(a_path)?;
     let b = Session::load(b_path)?;

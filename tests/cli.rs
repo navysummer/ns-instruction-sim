@@ -7248,7 +7248,7 @@ fn mcp_handshake_and_list_tools() {
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "bp_hits", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
         "watch_disable", "watch_clear_all", "watch_hits",
-        "session_info", "session_diff", "device_memory_map", "device_lookup", "device_peripherals", "firmware_info", "firmware_verify",
+        "session_info", "session_diff", "session_merge", "device_memory_map", "device_lookup", "device_peripherals", "firmware_info", "firmware_verify",
         "periph_reg_dump",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
@@ -9712,6 +9712,89 @@ fn session_info_and_diff() {
 }
 
 #[test]
+fn session_merge_command() {
+    let dir = tmpdir();
+    let a = dir.join(format!("merge-a-{}.json", std::process::id()));
+    let b = dir.join(format!("merge-b-{}.json", std::process::id()));
+    let out = dir.join(format!("merge-out-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&a);
+    let _ = std::fs::remove_file(&b);
+    let _ = std::fs::remove_file(&out);
+    let a = a.to_str().unwrap();
+    let b = b.to_str().unwrap();
+    let out = out.to_str().unwrap();
+
+    let run = |args: &[&str]| {
+        let r = Command::new(bin()).args(args).output().unwrap();
+        assert!(r.status.success(), "{}: {}", args.join(" "), String::from_utf8_lossy(&r.stderr));
+    };
+    // Base session A: one register, one memory write, one breakpoint.
+    run(&["state", "--arch", "riscv", "--session", a]);
+    run(&["reg", "set", "--session", a, "x1", "0x1111"]);
+    run(&["mem", "write", "--session", a, "--addr", "0x80000000", "--bytes", "0x13", "0x00", "0x00", "0x00"]);
+    run(&["bp", "set", "--session", a, "--addr", "0x80000000"]);
+    // Overlay B: diverges registers/memory/PC/breakpoints (fresh session, no
+    // breakpoint at its PC so the patch-driven state is deterministic).
+    run(&["state", "--arch", "riscv", "--session", b]);
+    run(&["reg", "set", "--session", b, "x1", "0x9999"]);
+    run(&["reg", "set", "--session", b, "x2", "0x2222"]);
+    run(&["mem", "write", "--session", b, "--addr", "0x80000004", "--bytes", "0x13", "0x00", "0x00", "0x00"]);
+    run(&["session", "patch", "--file", b, "--pc", "0x80000004", "--cycle", "1"]);
+    run(&["bp", "set", "--session", b, "--addr", "0x80000004"]);
+
+    // Default merge: B's scalar runtime + registers win; collections union.
+    let r = Command::new(bin()).args(["session", "merge", "--a", a, "--b", b, "--out", out, "--json"]).output().unwrap();
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&r.stdout).unwrap();
+    assert_eq!(json["arch"], "riscv");
+    assert_eq!(json["pc"], 0x8000_0004u64); // B stepped once
+    assert_eq!(json["cycleCount"], 1u64);
+    assert_eq!(json["breakpoints"], 2u64); // union of A and B
+    assert_eq!(json["memoryOverlayBytes"], 8u64); // 4 (A) + 4 (B)
+    let m: serde_json::Value = serde_json::from_slice(&std::fs::read(out).unwrap()).unwrap();
+    let regs: std::collections::BTreeMap<u64, u64> = m["registers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r[0].as_u64().unwrap(), r[1].as_u64().unwrap()))
+        .collect();
+    assert_eq!(regs[&1], 0x9999); // B wins
+    assert_eq!(regs[&2], 0x2222);
+    let addrs: Vec<u64> = m["breakpoints"].as_array().unwrap().iter().map(|x| x["address"].as_u64().unwrap()).collect();
+    assert!(addrs.contains(&0x8000_0000) && addrs.contains(&0x8000_0004), "{addrs:?}");
+    let overlay: Vec<u64> = m["memory_overlay"].as_array().unwrap().iter().map(|x| x[0].as_u64().unwrap()).collect();
+    assert!(overlay.contains(&0x8000_0000) && overlay.contains(&0x8000_0004), "{overlay:?}");
+
+    // --regs-keep preserves A's register file while B's scalar state wins.
+    let out2 = dir.join(format!("merge-out2-{}.json", std::process::id()));
+    let out2 = out2.to_str().unwrap();
+    let r = Command::new(bin()).args(["session", "merge", "--a", a, "--b", b, "--out", out2, "--regs-keep", "--json"]).output().unwrap();
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let m2: serde_json::Value = serde_json::from_slice(&std::fs::read(out2).unwrap()).unwrap();
+    let regs2: std::collections::BTreeMap<u64, u64> = m2["registers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r[0].as_u64().unwrap(), r[1].as_u64().unwrap()))
+        .collect();
+    assert_eq!(regs2[&1], 0x1111); // A kept
+    assert_eq!(regs2[&2], 0); // B's x2 not applied
+
+    // Architecture mismatch is a real error.
+    let arm = dir.join(format!("merge-arm-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&arm);
+    let arm = arm.to_str().unwrap();
+    run(&["state", "--arch", "arm", "--session", arm]);
+    let r = Command::new(bin()).args(["session", "merge", "--a", a, "--b", arm, "--out", out2]).output().unwrap();
+    assert!(!r.status.success());
+    assert!(String::from_utf8_lossy(&r.stderr).contains("架构不一致"));
+
+    // Missing session files are real errors.
+    let r = Command::new(bin()).args(["session", "merge", "--a", a, "--b", "/tmp/nsim-does-not-exist.json", "--out", out2]).output().unwrap();
+    assert!(!r.status.success());
+}
+
+#[test]
 fn session_patch_fields() {
     let dir = tmpdir();
     let sess = dir.join("patch.json");
@@ -10333,6 +10416,61 @@ fn mcp_session_patch_arm_state() {
 }
 
 #[test]
+fn mcp_session_merge() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let a = dir.join(format!("mcp-merge-a-{}.json", std::process::id()));
+    let b = dir.join(format!("mcp-merge-b-{}.json", std::process::id()));
+    let out = dir.join(format!("mcp-merge-out-{}.json", std::process::id()));
+    for p in [&a, &b, &out] {
+        let _ = std::fs::remove_file(p);
+    }
+    let a = a.to_str().unwrap();
+    let b = b.to_str().unwrap();
+    let out = out.to_str().unwrap();
+
+    let r = client.call_tool("session_create", serde_json::json!({ "session": a, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "create a: {}", r);
+    let r = client.call_tool("reg_set", serde_json::json!({ "session": a, "name": "x1", "value": "0x1111" }));
+    assert!(!r["isError"].as_bool().unwrap(), "reg_set a: {}", r);
+    let r = client.call_tool("session_create", serde_json::json!({ "session": b, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "create b: {}", r);
+    let r = client.call_tool("reg_set", serde_json::json!({ "session": b, "name": "x2", "value": "0x2222" }));
+    assert!(!r["isError"].as_bool().unwrap(), "reg_set b: {}", r);
+
+    // Merge: B's registers win by default; A's with regs_keep.
+    let r = client.call_tool("session_merge", serde_json::json!({ "a": a, "b": b, "out": out }));
+    assert!(!r["isError"].as_bool().unwrap(), "merge: {}", r);
+    assert_eq!(r["structuredContent"]["arch"], "riscv", "{}", r);
+    let merged: serde_json::Value = serde_json::from_slice(&std::fs::read(out).unwrap()).unwrap();
+    let regs: std::collections::BTreeMap<u64, u64> = merged["registers"]
+        .as_array().unwrap().iter()
+        .map(|r| (r[0].as_u64().unwrap(), r[1].as_u64().unwrap())).collect();
+    assert_eq!(regs[&2], 0x2222);
+
+    let r = client.call_tool("session_merge", serde_json::json!({ "a": a, "b": b, "out": out, "regs_keep": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "merge keep: {}", r);
+    let merged: serde_json::Value = serde_json::from_slice(&std::fs::read(out).unwrap()).unwrap();
+    let regs: std::collections::BTreeMap<u64, u64> = merged["registers"]
+        .as_array().unwrap().iter()
+        .map(|r| (r[0].as_u64().unwrap(), r[1].as_u64().unwrap())).collect();
+    assert_eq!(regs[&1], 0x1111);
+
+    // Missing a/b/out and architecture mismatch are tool errors.
+    let r = client.call_tool("session_merge", serde_json::json!({ "a": a, "b": b }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    let arm = dir.join(format!("mcp-merge-arm-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&arm);
+    let arm = arm.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": arm, "arch": "arm" }));
+    assert!(!r["isError"].as_bool().unwrap());
+    let r = client.call_tool("session_merge", serde_json::json!({ "a": a, "b": arm, "out": out }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn help_every_command() {
     let commands: &[&[&str]] = &[
         &["version"],
@@ -10359,7 +10497,7 @@ fn help_every_command() {
         &["watchdog", "reset"],
         &["csr", "list"], &["csr", "get"], &["csr", "set"],
         &["trace"], &["coverage"], &["profile"],
-        &["session", "info"], &["session", "diff"], &["session", "patch"], &["device", "memory-map"],
+        &["session", "info"], &["session", "diff"], &["session", "patch"], &["session", "merge"], &["device", "memory-map"],
         &["firmware", "info"], &["firmware", "verify"],
         &["mcp"],
     ];
@@ -10411,6 +10549,7 @@ fn help_every_param() {
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["firmware", "verify"], &["--firmware", "--arch", "--algo", "--expected", "--json"]),
         (&["session", "patch"], &["--file", "--pc", "--cycle", "--halted", "--reg", "--csr", "--arm-state", "--xpsr", "--it", "--json"]),
+        (&["session", "merge"], &["--a", "--b", "--out", "--regs-keep", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
         (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--pattern", "--width", "--out", "--json"]),
