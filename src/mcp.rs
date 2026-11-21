@@ -1337,13 +1337,14 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "device_lookup",
-            description: "按地址反查设备外设/寄存器（SVD 目录）。",
+            description: "按地址或外设/寄存器名反查设备外设/寄存器（SVD 目录）。",
             schema: obj(
                 &[
                     ("device", prop_str("内置设备键，如 stm32f103c8。")),
                     ("addr", prop_str("查询地址（十六进制/十进制）。")),
+                    ("name", prop_str("外设/寄存器名（PERIPH 或 PERIPH.REG）。")),
                 ],
-                &["device", "addr"],
+                &["device"],
             ),
             handler: tool_device_lookup,
         },
@@ -3663,8 +3664,7 @@ fn tool_device_memory_map(_: &McpServer, args: &Map<String, Value>) -> Result<Va
 
 fn tool_device_lookup(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let device = s(args, "device").ok_or_else(|| anyhow::anyhow!("缺少 device"))?;
-    let addr = s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr"))?;
-    crate::device_lookup_value(&device, &addr)
+    crate::device_lookup_by(&device, s(args, "addr").as_deref(), s(args, "name").as_deref())
 }
 
 /// Show the metadata of one session file (`session info`).

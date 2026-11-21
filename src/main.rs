@@ -211,13 +211,16 @@ enum DeviceSub {
         #[arg(long)]
         json: bool,
     },
-    /// 按地址反查设备外设/寄存器（SVD 目录）。
+    /// 按地址或外设/寄存器名反查设备（SVD 目录）。
     Lookup {
         /// 目标设备键（如 stm32f103c8）。
         device: String,
-        /// 查询地址（十六进制或十进制）。
-        #[arg(short, long)]
-        addr: String,
+        /// 查询地址（十六进制或十进制；与 --name 二选一）。
+        #[arg(short, long, conflicts_with = "name")]
+        addr: Option<String>,
+        /// 外设/寄存器名（`PERIPH` 或 `PERIPH.REG`；与 --addr 二选一）。
+        #[arg(long)]
+        name: Option<String>,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -1802,8 +1805,8 @@ fn real_main() -> Result<()> {
         Command::Device { sub: DeviceSub::MemoryMap { device, addr, json } } => {
             cmd_device_memory_map(&device, addr.as_deref(), json)
         }
-        Command::Device { sub: DeviceSub::Lookup { device, addr, json } } => {
-            cmd_device_lookup(&device, &addr, json)
+        Command::Device { sub: DeviceSub::Lookup { device, addr, name, json } } => {
+            cmd_device_lookup(&device, addr.as_deref(), name.as_deref(), json)
         }
         Command::Run(args) => cmd_run(args),
         Command::Step(args) => cmd_step(args, StepKind::Step),
@@ -2581,10 +2584,10 @@ fn cmd_device_memory_map(device: &str, addr: Option<&str>, json: bool) -> Result
     Ok(())
 }
 
-/// Resolve an address to the device region/peripheral/register it belongs to
-/// (`device lookup`), using the built-in SVD catalog.
-fn cmd_device_lookup(device: &str, addr: &str, json: bool) -> Result<()> {
-    let value = device_lookup_value(device, addr)?;
+/// Resolve a device address or `PERIPH[.REG]` name to the region/peripheral/
+/// register it belongs to (`device lookup`), using the built-in SVD catalog.
+fn cmd_device_lookup(device: &str, addr: Option<&str>, name: Option<&str>, json: bool) -> Result<()> {
+    let value = device_lookup_by(device, addr, name)?;
     if json {
         print_json(&value)?;
         return Ok(());
@@ -2607,6 +2610,21 @@ fn cmd_device_lookup(device: &str, addr: &str, json: bool) -> Result<()> {
         println!("  （地址不在任何内存区域/外设中）");
     }
     Ok(())
+}
+
+/// Shared CLI/MCP dispatch for `device lookup`: exactly one of `--addr`/`name`
+/// must be provided.
+pub(crate) fn device_lookup_by(
+    device: &str,
+    addr: Option<&str>,
+    name: Option<&str>,
+) -> Result<serde_json::Value> {
+    match (addr, name) {
+        (Some(a), None) => device_lookup_value(device, a),
+        (None, Some(n)) => device_lookup_name_value(device, n),
+        (Some(_), Some(_)) => bail!("--addr 与 --name 只能二选一"),
+        (None, None) => bail!("请提供 --addr 或 --name"),
+    }
 }
 
 /// Resolve an address to the device region/peripheral/register it belongs to
@@ -2683,6 +2701,75 @@ pub(crate) fn device_lookup_value(device: &str, addr: &str) -> Result<serde_json
         "description": reg_desc,
         "fields": reg_fields,
         "found": found,
+    }))
+}
+
+/// Resolve a `PERIPH` or `PERIPH.REG` name to the same lookup shape as
+/// [`device_lookup_value`].
+fn device_lookup_name_value(device: &str, name: &str) -> Result<serde_json::Value> {
+    let dev = ns_device::device_for_target(device)
+        .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {device}"))?;
+    let (p, r) = if let Some((periph, reg)) = name.split_once('.') {
+        let p = dev.peripheral(periph).ok_or_else(|| {
+            let names: Vec<&str> = dev.sorted_peripherals().iter().map(|p| p.name.as_str()).collect();
+            anyhow::anyhow!("设备 {device} 无外设: {periph}（可用: {}）", names.join("/"))
+        })?;
+        let r = p
+            .registers
+            .iter()
+            .find(|r| r.name == reg)
+            .ok_or_else(|| anyhow::anyhow!("外设 {periph} 无寄存器: {reg}"))?;
+        (Some(p), Some(r))
+    } else {
+        let p = dev.peripheral(name).ok_or_else(|| {
+            let names: Vec<&str> = dev.sorted_peripherals().iter().map(|p| p.name.as_str()).collect();
+            anyhow::anyhow!("设备 {device} 无外设: {name}（可用: {}）", names.join("/"))
+        })?;
+        (Some(p), None)
+    };
+    let a = r.map(|r| r.address).unwrap_or_else(|| p.unwrap().base_address) as u64;
+    let region = ns_device::memory_map(device)
+        .iter()
+        .find(|r| a >= r.start && a < r.start.saturating_add(r.size))
+        .map(|r| r.name.clone());
+    let p = p.unwrap();
+    let (reg_name, reg_addr, reg_size, reg_offset, reg_desc, reg_fields) = if let Some(r) = r {
+        let fields: Vec<_> = r
+            .fields
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "name": f.name,
+                    "bitOffset": f.bit_offset,
+                    "bitWidth": f.bit_width,
+                    "description": f.description,
+                })
+            })
+            .collect();
+        (
+            Some(r.name.clone()),
+            Some(r.address),
+            Some(r.size),
+            Some(0u64),
+            Some(r.description.clone()),
+            Some(fields),
+        )
+    } else {
+        (None, None, None, None, Some(p.description.clone()), None)
+    };
+    Ok(serde_json::json!({
+        "device": device,
+        "address": a,
+        "region": region,
+        "peripheral": Some(p.name.clone()),
+        "peripheralBase": p.base_address,
+        "register": reg_name,
+        "registerAddress": reg_addr,
+        "registerSize": reg_size,
+        "registerOffset": reg_offset,
+        "description": reg_desc,
+        "fields": reg_fields,
+        "found": true,
     }))
 }
 

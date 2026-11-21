@@ -9330,6 +9330,62 @@ fn device_lookup_resolves_register() {
 }
 
 #[test]
+fn device_lookup_by_name() {
+    // PERIPH.REG resolves to the register with its fields.
+    let out = Command::new(bin())
+        .args(["device", "lookup", "stm32f103c8", "--name", "GPIOA.CRL", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["device"], "stm32f103c8");
+    assert_eq!(json["address"], 0x4001_0800u64);
+    assert_eq!(json["region"], "PERIPHERALS");
+    assert_eq!(json["peripheral"], "GPIOA");
+    assert_eq!(json["peripheralBase"], 0x4001_0800u64);
+    assert_eq!(json["register"], "CRL");
+    assert_eq!(json["registerAddress"], 0x4001_0800u64);
+    assert_eq!(json["registerOffset"], 0u64);
+    assert_eq!(json["found"], true);
+    assert!(json["fields"].as_array().unwrap().iter().any(|f| f["name"] == "MODE0"));
+
+    // Human output names the peripheral and register.
+    let out = Command::new(bin())
+        .args(["device", "lookup", "stm32f103c8", "--name", "GPIOA.CRL"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("GPIOA") && text.contains("CRL"), "{text}");
+
+    // A bare PERIPH resolves to the peripheral (no register).
+    let out = Command::new(bin())
+        .args(["device", "lookup", "stm32f103c8", "--name", "GPIOA", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["peripheral"], "GPIOA");
+    assert_eq!(json["peripheralBase"], 0x4001_0800u64);
+    assert!(json["register"].is_null());
+    assert!(json["fields"].is_null());
+    assert_eq!(json["found"], true);
+
+    // Unknown peripheral / register / device are errors.
+    for name in ["NOPE", "GPIOA.NOPE", "NOPE.CRL"] {
+        let out = Command::new(bin())
+            .args(["device", "lookup", "stm32f103c8", "--name", name])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{name} should fail");
+    }
+    // Neither --addr nor --name is an error.
+    let out = Command::new(bin()).args(["device", "lookup", "stm32f103c8"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--addr 或 --name"));
+}
+
+#[test]
 fn disasm_and_trace_write_files() {
     let dir = tmpdir();
     let sess = dir.join(format!("outfile-{}.json", std::process::id()));
@@ -9461,6 +9517,36 @@ fn mcp_session_and_memory_map_tools() {
     assert_eq!(sc["register"], "CRL");
     assert_eq!(sc["registerAddress"], 0x4001_0800u64);
     assert_eq!(sc["fields"][0]["name"], "MODE0");
+    // `device_lookup` also accepts a PERIPH.REG name.
+    let r = client.call_tool(
+        "device_lookup",
+        serde_json::json!({ "device": "stm32f103c8", "name": "GPIOA.CRL" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "device_lookup by name: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["peripheral"], "GPIOA");
+    assert_eq!(sc["register"], "CRL");
+    assert_eq!(sc["registerAddress"], 0x4001_0800u64);
+    assert_eq!(sc["fields"][0]["name"], "MODE0");
+    // A bare PERIPH resolves to the peripheral.
+    let r = client.call_tool(
+        "device_lookup",
+        serde_json::json!({ "device": "stm32f103c8", "name": "GPIOA" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "device_lookup peripheral: {}", r);
+    assert_eq!(r["structuredContent"]["peripheral"], "GPIOA");
+    assert!(r["structuredContent"]["register"].is_null());
+    // Unknown name / both addr+name are errors.
+    let r = client.call_tool(
+        "device_lookup",
+        serde_json::json!({ "device": "stm32f103c8", "name": "NOPE" }),
+    );
+    assert!(r["isError"].as_bool().unwrap());
+    let r = client.call_tool(
+        "device_lookup",
+        serde_json::json!({ "device": "stm32f103c8", "addr": "0x40010800", "name": "GPIOA.CRL" }),
+    );
+    assert!(r["isError"].as_bool().unwrap());
     // Missing addr / unknown device are errors.
     let r = client.call_tool("device_lookup", serde_json::json!({ "device": "stm32f103c8" }));
     assert!(r["isError"].as_bool().unwrap());
@@ -9629,7 +9715,7 @@ fn help_every_param() {
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
         (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--pattern", "--width", "--out", "--json"]),
-        (&["device", "lookup"], &["--addr", "--json"]),
+        (&["device", "lookup"], &["--addr", "--name", "--json"]),
         (&["periph", "timer"], &["--session", "--index", "--enabled", "--prescaler", "--auto-reload", "--counter", "--update-count", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
