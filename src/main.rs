@@ -1019,6 +1019,30 @@ enum WatchSub {
         #[arg(long)]
         json: bool,
     },
+    /// 设置观察点的运行时命中计数（预置 hits；命中次数观察点按新计数继续）。
+    Hits {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// ELF 符号名（数据符号地址；与 --addr 二选一）。
+        #[arg(long = "symbol")]
+        symbol: Option<String>,
+        /// 目标命中计数（位置参数或 --count）。
+        #[arg(index = 2)]
+        count: Option<String>,
+        /// 目标命中计数（--count 形式，十进制）。
+        #[arg(long = "count", conflicts_with = "count")]
+        count_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -1982,8 +2006,7 @@ pub(crate) fn load_or_create(
     // Persist a freshly-created session so subsequent commands can operate on
     // it (e.g. `state --arch riscv --session s.json` then `run --session s.json`).
     if let Some(sp) = session_path {
-        let s = Session::capture(&sim, fw.clone());
-        s.save(sp)?;
+        save_session_preserving_watchpoints(sp, &sim, fw.clone())?;
     }
     Ok((sim, fw, session_path.map(|p| p.to_path_buf())))
 }
@@ -3041,6 +3064,23 @@ fn save_session_with_watchpoints(
     session.save(path)
 }
 
+/// Save a simulator state while preserving the persisted memory watchpoints
+/// (with their runtime hit counters). `Session::capture` deliberately clears
+/// watchpoints because they are session-only state, so memory-mutating
+/// commands (`mem write`/`fill`/`load`/`copy`) must re-inject them.
+pub(crate) fn save_session_preserving_watchpoints(
+    path: &Path,
+    sim: &Simulator,
+    fw: Option<FirmwareState>,
+) -> Result<()> {
+    let mut session = Session::capture(sim, fw);
+    if path.exists() {
+        let old = Session::load(path)?;
+        session.watchpoints = old.watchpoints;
+    }
+    session.save(path)
+}
+
 /// Resolve a `--until ADDR` or `--until-symbol NAME` stop target into an
 /// absolute address (symbols are matched case-insensitively after firmware
 /// load, so the simulator must already hold the symbol table).
@@ -3448,8 +3488,7 @@ fn cmd_reg(sub: RegSub) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("未知寄存器: {name}"))?;
             let val = parse_num(&value)?;
             sim.write_reg(idx, val);
-            let session_out = Session::capture(&sim, fw);
-            session_out.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({ "name": name, "index": idx, "value": val }))?;
             } else {
@@ -3605,8 +3644,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                 let a = addr_num.wrapping_add(i as u32);
                 write_mem_byte(&mut sim, a, *b);
             }
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({
                     "address": addr_num,
@@ -3672,8 +3710,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                 let a = addr_num.wrapping_add(i as u32);
                 write_mem_byte(&mut sim, a, *b);
             }
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({
                     "address": addr_num,
@@ -3780,8 +3817,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                 base: base_num,
                 format: detect_format(&firmware).label().to_string(),
             });
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({
                     "firmware": firmware.to_string_lossy(),
@@ -3894,8 +3930,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             for (i, b) in bytes.iter().enumerate() {
                 write_mem_byte(&mut sim, dst.wrapping_add(i as u32), *b);
             }
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({ "src": src, "dst": dst, "len": len }))?;
             } else {
@@ -4023,8 +4058,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             } else {
                 sim.set_breakpoint_ex(addr_num, cond.clone(), hit_count);
             }
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             let once = once;
             if json {
                 print_json(&serde_json::json!({
@@ -4067,8 +4101,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             let cond = condition.unwrap_or(cond);
             let hits = hit_count.unwrap_or(hits);
             sim.update_breakpoint(addr_num, cond.clone(), hits);
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             let live = sim
                 .breakpoints
                 .iter()
@@ -4098,8 +4131,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             let addr_num = parse_num(&addr)?;
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             let removed = sim.clear_breakpoint(addr_num);
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({
                     "address": addr_num,
@@ -4114,8 +4146,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             let count = sim.breakpoints.len();
             sim.breakpoints.clear();
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({ "cleared": count }))?;
             } else {
@@ -4131,8 +4162,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             if !found {
                 bail!("断点不存在 @ 0x{:08x}", addr_num);
             }
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({ "address": addr_num, "enabled": true }))?;
             } else {
@@ -4148,8 +4178,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             if !found {
                 bail!("断点不存在 @ 0x{:08x}", addr_num);
             }
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({ "address": addr_num, "enabled": false }))?;
             } else {
@@ -4191,8 +4220,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                 bail!("断点不存在 @ 0x{addr_num:08x}");
             }
             sim.set_breakpoint_hits(addr_num, count_val);
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({
                     "address": addr_num,
@@ -4456,6 +4484,40 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
             }
             Ok(())
         }
+        WatchSub::Hits { session, addr, addr_flag, symbol, count, count_flag, json } => {
+            let count_val = count_flag
+                .or(count)
+                .ok_or_else(|| anyhow::anyhow!("缺少命中计数"))?
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("非法命中计数"))?;
+            let mut s = Session::load(&session)?;
+            let addr_num = if let Some(sym) = symbol.as_deref() {
+                let sim = s.apply(None)?;
+                sim.symbols
+                    .iter()
+                    .find(|s| s.name == sym)
+                    .ok_or_else(|| anyhow::anyhow!("符号未找到: {sym}"))?
+                    .address
+            } else {
+                parse_num(
+                    &addr_flag
+                        .or(addr)
+                        .ok_or_else(|| anyhow::anyhow!("缺少地址"))?,
+                )?
+            };
+            let wp = watch_find(&mut s, addr_num)?;
+            wp.hits = count_val;
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr_num,
+                    "hits": count_val,
+                }))?;
+            } else {
+                println!("观察点命中计数已设置 @ 0x{addr_num:08x} -> {}", count_val);
+            }
+            Ok(())
+        }
     }
 }
 
@@ -4633,8 +4695,7 @@ fn cmd_reset(args: ResetArgs) -> Result<()> {
         None => default_reset_entry(&sim, fw.as_ref())?,
     };
     sim.reset(entry);
-    let s = Session::capture(&sim, fw);
-    s.save(&args.session)?;
+    save_session_preserving_watchpoints(&args.session, &sim, fw)?;
     if args.json {
         print_json(&serde_json::json!({
             "pc": sim.program_counter(),
@@ -5147,8 +5208,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 "gpioBase": sim.peripherals.gpio_base,
                 "timerBase": sim.peripherals.timer_base,
             });
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&out)?;
             } else {
@@ -5204,8 +5264,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 "peripherals": periphs.len(),
                 "force": force,
             });
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&out)?;
             } else {
@@ -5248,8 +5307,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 if clear {
                     sim.peripherals.outputs.clear();
                 }
-                let s = Session::capture(&sim, fw);
-                s.save(&session)?;
+                save_session_preserving_watchpoints(&session, &sim, fw)?;
             }
             let text = String::from_utf8_lossy(&sim.peripherals.outputs).into_owned();
             let len = sim.peripherals.outputs.len();
@@ -5339,8 +5397,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             if clear_events {
                 sim.peripherals.gpio_events.clear();
             }
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             let gpio_events: Vec<serde_json::Value> = sim
                 .peripherals
                 .gpio_events
@@ -5481,8 +5538,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 "irqLine": t.irq_line,
                 "updateCount": t.update_count,
             });
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&out)?;
             } else {
@@ -5633,8 +5689,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             for (i, b) in data.iter().enumerate() {
                 sim.peripheral_write_reg(addr_num.wrapping_add(i as u32), *b);
             }
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({ "address": addr_num, "written": data.len() }))?;
             } else {
@@ -5686,8 +5741,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             for (i, b) in bytes.iter().enumerate() {
                 sim.peripheral_write_reg(addr.wrapping_add(i as u32), *b);
             }
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({
                     "address": addr,
@@ -5885,8 +5939,7 @@ fn cmd_cycle(sub: CycleSub) -> Result<()> {
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             sim.tick_peripherals_for(cycles);
             sim.cycle_count = sim.cycle_count.saturating_add(cycles);
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({ "cycles": cycles, "cycleCount": sim.cycle_count }))?;
             } else {
@@ -5899,8 +5952,7 @@ fn cmd_cycle(sub: CycleSub) -> Result<()> {
             let count = parse_num(&count)?;
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             sim.cycle_count = count as u64;
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({ "cycleCount": sim.cycle_count }))?;
             } else {
@@ -5916,8 +5968,7 @@ fn cmd_interrupt(sub: InterruptSub) -> Result<()> {
         InterruptSub::Take { session, json } => {
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             let taken = sim.take_interrupt();
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({ "taken": taken, "pc": sim.program_counter(), "mcause": sim.csr.mcause }))?;
             } else if taken {
@@ -5996,8 +6047,7 @@ fn cmd_interrupt(sub: InterruptSub) -> Result<()> {
             }
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             sim.peripherals.irq_pending[line] = value == 1;
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({ "line": line, "value": value }))?;
             } else {
@@ -6018,8 +6068,7 @@ fn cmd_interrupt(sub: InterruptSub) -> Result<()> {
             for p in sim.peripherals.irq_pending.iter_mut() {
                 *p = false;
             }
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({
                     "cleared": before.len(),
@@ -6070,8 +6119,7 @@ fn cmd_watchdog(sub: WatchdogSub) -> Result<()> {
                 w.elapsed = 0;
             }
             sim.write_u32(base, 0xAA55);
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({
                     "fed": true,
@@ -6102,8 +6150,7 @@ fn cmd_watchdog(sub: WatchdogSub) -> Result<()> {
                 });
                 (out, w.base, w.enabled, w.timeout_cycles)
             };
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&out)?;
             } else {
@@ -6139,8 +6186,7 @@ fn cmd_watchdog(sub: WatchdogSub) -> Result<()> {
                 .transpose()?
                 .unwrap_or(default_reset_entry(&sim, fw.as_ref())?);
             sim.reset(entry_num);
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             let w = sim.peripherals.watchdog.as_ref().unwrap();
             if json {
                 print_json(&serde_json::json!({
@@ -6224,8 +6270,7 @@ fn cmd_csr(sub: CsrSub) -> Result<()> {
             if !csr_field_mut(&name, &mut sim, val) {
                 bail!("未知 CSR: {name}");
             }
-            let s = Session::capture(&sim, fw);
-            s.save(&session)?;
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
             if json {
                 print_json(&serde_json::json!({ "name": name, "value": val }))?;
             } else {

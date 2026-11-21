@@ -7247,7 +7247,7 @@ fn mcp_handshake_and_list_tools() {
         "cycle_get", "cycle_set", "interrupt_take", "interrupt_clear", "periph_status", "periph_config", "periph_gpio", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "bp_hits", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
-        "watch_disable", "watch_clear_all",
+        "watch_disable", "watch_clear_all", "watch_hits",
         "session_info", "session_diff", "device_memory_map", "device_lookup", "firmware_info",
         "periph_reg_dump",
     ] {
@@ -10087,7 +10087,7 @@ fn help_every_command() {
         &["bp", "list"], &["bp", "set"], &["bp", "modify"], &["bp", "clear"], &["bp", "clear-all"],
         &["bp", "enable"], &["bp", "disable"], &["bp", "hits"],
         &["watch", "set"], &["watch", "list"], &["watch", "modify"], &["watch", "clear"], &["watch", "clear-all"],
-        &["watch", "enable"], &["watch", "disable"],
+        &["watch", "enable"], &["watch", "disable"], &["watch", "hits"],
         &["disasm"], &["reset"], &["state"],
         &["periph", "status"], &["periph", "config"], &["periph", "svd-load"],
         &["periph", "uart"], &["periph", "gpio"], &["periph", "timer"],
@@ -10131,6 +10131,7 @@ fn help_every_param() {
         (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
         (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
         (&["bp", "hits"], &["--session", "--addr", "--symbol", "--count", "--json"]),
+        (&["watch", "hits"], &["--session", "--addr", "--symbol", "--count", "--json"]),
         (&["bp", "list"], &["--session", "--symbols", "--json"]),
         (&["mem", "read"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--width", "--ascii", "--string", "--out", "--json"]),
         (&["mem", "region"], &["--session", "--arch", "--device", "--region", "--offset", "--len", "--json"]),
@@ -10655,6 +10656,165 @@ fn mcp_watch_modify() {
     assert!(r["isError"].as_bool().unwrap(), "absent watch must error");
     let r = client.call_tool("watch_modify", serde_json::json!({ "session": s, "addr": "0x10", "len": 65 }));
     assert!(r["isError"].as_bool().unwrap(), "len 65 must error");
+    client.close();
+}
+
+#[test]
+fn watch_hits_sets_runtime_counter() {
+    let code: [u8; 12] = [
+        0x93, 0x00, 0x10, 0x00, // addi x1, x0, 1
+        0x23, 0x28, 0x10, 0x00, // sw x1, 16(x0)
+        0x73, 0x00, 0x00, 0x00, // ecall
+    ];
+    let dir = tmpdir();
+    let elf = dir.join("whits.elf");
+    write_riscv_elf_code(&elf, &code);
+    let sess = dir.join("whits.json");
+    let run = |args: &[&str]| {
+        let out = Command::new(bin()).args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}: {}",
+            args.first().copied().unwrap_or(""),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    run(&["run", "--firmware", elf.to_str().unwrap(), "--session", sess.to_str().unwrap(), "--max-steps", "1"]);
+    // A watchpoint that only pauses on its second write.
+    run(&["watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--len", "4", "--hit-count", "2"]);
+    // First write: one hit, no pause.
+    let out = run(&["step", "--session", sess.to_str().unwrap(), "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "advanced", "{v}");
+    // Change the watched bytes so the next write is a real change (the
+    // watchpoint compares before/after values, not write events).
+    run(&["mem", "write", "--session", sess.to_str().unwrap(), "--addr", "0x10",
+         "--bytes", "0xAA", "0xBB", "0xCC", "0xDD"]);
+
+    // `watch hits` pre-arms the runtime counter (positional + --count forms).
+    let out = run(&["watch", "hits", "--session", sess.to_str().unwrap(), "0x10", "1", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["address"], 0x10u64);
+    assert_eq!(v["hits"], 1u64, "{v}");
+    let out = run(&["watch", "list", "--session", sess.to_str().unwrap(), "--json"]);
+    let list: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(list[0]["hits"], 1u64, "{list}");
+
+    run(&["reset", "--session", sess.to_str().unwrap(), "--entry", "0x80000000"]);
+    // Second pass: the pre-armed counter reaches the threshold and pauses.
+    run(&["step", "--session", sess.to_str().unwrap()]);
+    let out = run(&["step", "--session", sess.to_str().unwrap(), "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "watchpoint", "{v}");
+    assert_eq!(v["watchHit"], 0x10u64, "{v}");
+
+    // Missing count, a missing watchpoint and a missing address all fail.
+    let out = Command::new(bin())
+        .args(["watch", "hits", "--session", sess.to_str().unwrap(), "--addr", "0x10"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin())
+        .args(["watch", "hits", "--session", sess.to_str().unwrap(), "--addr", "0x9999", "--count", "1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin())
+        .args(["watch", "hits", "--session", sess.to_str().unwrap(), "--count", "1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mem_write_preserves_watchpoints() {
+    let dir = tmpdir();
+    let sess = dir.join("wp-preserve.json");
+    bootstrap(&sess);
+    let run = |args: &[&str]| {
+        let out = Command::new(bin()).args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}: {}",
+            args.first().copied().unwrap_or(""),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    run(&["watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x10", "--len", "4", "--hit-count", "2"]);
+    // A memory-mutating command must not destroy the persisted watchpoints.
+    run(&["mem", "write", "--session", sess.to_str().unwrap(), "--addr", "0x20", "--bytes", "0xde", "0xad"]);
+    let out = run(&["watch", "list", "--session", sess.to_str().unwrap(), "--json"]);
+    let list: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!(list[0]["address"], 0x10u64, "{list}");
+    assert_eq!(list[0]["hitCount"], 2u64, "{list}");
+    // Breakpoint and register writes also preserve watchpoints.
+    run(&["bp", "set", "--session", sess.to_str().unwrap(), "--addr", "0x80000000"]);
+    run(&["reg", "set", "--session", sess.to_str().unwrap(), "--name", "x1", "--value", "5"]);
+    let out = run(&["watch", "list", "--session", sess.to_str().unwrap(), "--json"]);
+    let list: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!(list[0]["address"], 0x10u64, "{list}");
+}
+
+#[test]
+fn mcp_watch_hits_tool() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-whits-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("watch_set", serde_json::json!({
+        "session": s, "addr": "0x10", "len": 4, "hit_count": 2,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_set: {}", r);
+
+    // Set the runtime hit counter and read it back via watch_list.
+    let r = client.call_tool("watch_hits", serde_json::json!({
+        "session": s, "addr": "0x10", "count": 5,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_hits: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x10u64);
+    assert_eq!(r["structuredContent"]["hits"], 5u64);
+    let r = client.call_tool("watch_list", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_list: {}", r);
+    assert_eq!(r["structuredContent"]["watchpoints"][0]["hits"], 5u64);
+
+    // Missing count and a missing watchpoint are errors.
+    let r = client.call_tool("watch_hits", serde_json::json!({ "session": s, "addr": "0x10" }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    let r = client.call_tool("watch_hits", serde_json::json!({ "session": s, "addr": "0x9999", "count": 1 }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
+fn mcp_mem_write_preserves_watchpoints() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-wp-preserve-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("watch_set", serde_json::json!({
+        "session": s, "addr": "0x10", "len": 4, "hit_count": 2,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_set: {}", r);
+    // A memory write (via with_sim) must preserve the watchpoint.
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "addr": "0x20", "bytes": ["0xde", "0xad"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write: {}", r);
+    let r = client.call_tool("watch_list", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_list: {}", r);
+    let wps = &r["structuredContent"]["watchpoints"];
+    assert_eq!(wps.as_array().unwrap().len(), 1, "{}", r);
+    assert_eq!(wps[0]["address"], 0x10u64, "{}", r);
     client.close();
 }
 

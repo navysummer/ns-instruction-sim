@@ -281,7 +281,7 @@ where
     let result = f(&mut sim, fw.as_ref(), path.as_deref())?;
     if mutate {
         if let Some(p) = &path {
-            Session::capture(&sim, fw).save(p)?;
+            crate::save_session_preserving_watchpoints(p, &sim, fw)?;
         }
     }
     Ok(result)
@@ -953,6 +953,20 @@ fn tools() -> Vec<Tool> {
                 &["session", "addr"],
             ),
             handler: tool_watch_modify,
+        },
+        Tool {
+            name: "watch_hits",
+            description: "设置观察点的运行时命中计数（预置 hits；命中次数观察点按新计数继续）。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("addr", addr.clone()),
+                    ("symbol", prop_str("ELF 数据符号名（与 addr 二选一）。")),
+                    ("count", prop_num("目标命中计数。")),
+                ],
+                &["count"],
+            ),
+            handler: tool_watch_hits,
         },
         Tool {
             name: "disasm",
@@ -2748,6 +2762,33 @@ fn tool_watch_modify(server: &McpServer, args: &Map<String, Value>) -> Result<Va
             wp.once = o;
         }
         Ok(crate::watch_json(wp))
+    })
+}
+
+fn tool_watch_hits(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let count = u64(args, "count").ok_or_else(|| anyhow::anyhow!("缺少 count"))?;
+    let addr = if let Some(sym) = s(args, "symbol") {
+        let path = server
+            .resolve_session(args)
+            .ok_or_else(|| anyhow::anyhow!("缺少 session"))?;
+        let session = Session::load(&path)?;
+        let sim = session.apply(None)?;
+        sim.symbols
+            .iter()
+            .find(|x| x.name == sym)
+            .ok_or_else(|| anyhow::anyhow!("符号未找到: {sym}"))?
+            .address
+    } else {
+        parse_num(&s(args, "addr").ok_or_else(|| anyhow::anyhow!("缺少 addr 或 symbol"))?)?
+    };
+    with_watch_session(server, args, |session| {
+        let wp = session
+            .watchpoints
+            .iter_mut()
+            .find(|w| w.address == addr)
+            .ok_or_else(|| anyhow::anyhow!("观察点不存在 @ 0x{addr:08x}"))?;
+        wp.hits = count;
+        Ok(json!({ "address": addr, "hits": count }))
     })
 }
 
