@@ -199,7 +199,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    均响应内存观察点，被写入时 `lastResult`/`result="watchpoint"` 且返回 `watchHit`；
    均支持 `until`/`until_symbol` 停止目标）、`reg_list/get/set`、
    `mem_read/write/fill/search/load/dump/region/copy`
-   （`mem_search` 支持 `width` 参数，`pattern` 值按 `byte`/`half`/`word`/`dword` 小端展开）、
+   （`mem_search` 支持 `width` 参数，`pattern` 值按 `byte`/`half`/`word`/`dword` 小端展开，
+   返回 `count`/`patternTokens`；`mem_search`/`mem_dump` 支持 `out` 把结果写入文件并返回 `file`/`bytes`）、
    `mem_read/write/fill/search` 支持 `device`/`region`/`offset` 按设备命名区域寻址（与 `addr` 互斥）、
    `mem_read/write/fill/search` 支持 `symbol` 按 ELF 数据符号起始地址寻址（与 `addr`/`device` 互斥）、
    `mem_read` 支持 `ascii`/`string` 返回 `text`（NUL 结尾字符串或 ASCII 视图）、
@@ -420,6 +421,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `mem_region_dump`：`mem region --device --region` 按目录内存映射解析命名区域（FLASH/RAM/PERIPHERALS），
   偏移/长度校验、区域基址/字节数组 JSON 输出、写后读回一致；未知区域与越界偏移均报错。
 - `mcp_mem_region`：MCP `mem_region` 返回区域基址/长度/字节，未知区域以 `isError:true` 返回。
+- `mcp_mem_search_out_and_count`：MCP `mem_search` 支持 `out` 把 JSON 写入文件并返回
+  `count`/`file`/`bytes`；缺省内联返回 `count`/`matches`。
+- `mcp_mem_dump_out`：MCP `mem_dump` 支持 `out` 把渲染结果（C 数组）写入文件并返回
+  `file`/`bytes`。
 - `mem_region_addressing_read_write_fill_search`：`mem read/write/fill/search --device+--region+--offset`
   按设备命名区域寻址（RAM @ 0x20000000），写/填后读回一致、搜索命中；缺 region、未知区域、
   `--addr` 与区域并存均报错。

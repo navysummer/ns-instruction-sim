@@ -171,6 +171,9 @@ RX、RL78。详见 [AGENTS.md](AGENTS.md)（开发规范）与 [skill.md](skill.
 ns-instruction-sim mcp --session s.json
 ```
 
+`mem_search` 与 `mem_dump` 工具支持 `out` 参数把结果写入文件（并返回 `file`/`bytes`）；
+`mem_search` 还返回 `count`/`patternTokens` 机器字段，便于脚本消费。
+
 ## 帮助
 
 每个命令与子命令、每个参数都有 `--help` / `-h` 帮助文本，任何层级均可查看用法：

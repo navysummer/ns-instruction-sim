@@ -734,6 +734,7 @@ fn tools() -> Vec<Tool> {
                     ("len", prop_num("搜索长度（默认 256）。")),
                     ("pattern", prop_arr("搜索模式值（整数，宽度由 width 决定）。")),
                     ("width", prop_str("模式宽度：byte/half/word/dword（默认 byte）。")),
+                    ("out", prop_str("把匹配结果写入文件（JSON）；缺省直接返回结果。")),
                 ],
                 &["pattern"],
             ),
@@ -764,6 +765,7 @@ fn tools() -> Vec<Tool> {
                     ("len", prop_num("长度（字节，默认 64）。")),
                     ("name", prop_str("C 数组名（仅 format=c）。")),
                     ("format", prop_str("输出格式：c/hex/dump。")),
+                    ("out", prop_str("把渲染结果写入文件；缺省直接在 text 中返回。")),
                 ],
                 &["addr"],
             ),
@@ -2194,7 +2196,31 @@ fn tool_mem_search(server: &McpServer, args: &Map<String, Value>) -> Result<Valu
                 }
             }
         }
-        Ok(json!({ "address": addr_num, "width": width, "matches": matches }))
+        let value = json!({
+            "address": addr_num,
+            "width": width,
+            "patternTokens": pattern.len(),
+            "count": matches.len(),
+            "matches": matches,
+        });
+        // Optional `out` writes the same payload to a file and reports it.
+        if let Some(out) = s(args, "out") {
+            let text = serde_json::to_string_pretty(&value)?;
+            std::fs::write(&out, &text)
+                .with_context(|| format!("写入 {out} 失败"))?;
+            let mut map = match value {
+                Value::Object(m) => m,
+                other => {
+                    let mut m = Map::new();
+                    m.insert("result".to_string(), other);
+                    m
+                }
+            };
+            map.insert("file".to_string(), Value::String(out));
+            map.insert("bytes".to_string(), Value::from(text.len()));
+            return Ok(Value::Object(map));
+        }
+        Ok(value)
     })
 }
 
@@ -2302,14 +2328,32 @@ fn tool_mem_dump(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
             }
             other => bail!("不支持的内存导出格式: {other}（支持 c/hex/dump）"),
         };
-        Ok(json!({
+        let value = json!({
             "address": addr_num,
             "len": len,
             "format": format,
             "name": name,
             "bytes": bytes,
             "text": rendered,
-        }))
+        });
+        // Optional `out` writes the rendered text (C array / Intel HEX / dump)
+        // to a file and reports it, mirroring the CLI `--out`.
+        if let Some(out) = s(args, "out") {
+            std::fs::write(&out, &rendered)
+                .with_context(|| format!("写入 {out} 失败"))?;
+            let mut map = match value {
+                Value::Object(m) => m,
+                other => {
+                    let mut m = Map::new();
+                    m.insert("result".to_string(), other);
+                    m
+                }
+            };
+            map.insert("file".to_string(), Value::String(out));
+            map.insert("bytes".to_string(), Value::from(rendered.len()));
+            return Ok(Value::Object(map));
+        }
+        Ok(value)
     })
 }
 

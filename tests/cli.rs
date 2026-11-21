@@ -8643,6 +8643,70 @@ fn mcp_mem_search_width() {
 }
 
 #[test]
+fn mcp_mem_search_out_and_count() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let sess = dir.join("mcp-searchout.json");
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "arch": "riscv", "addr": "0x20000000",
+        "bytes": ["0xde", "0xad", "0xbe", "0xef"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write: {}", r);
+    // `out` writes the JSON payload to a file and reports count/file/bytes.
+    let out_file = dir.join("mcp-search.json");
+    let r = client.call_tool("mem_search", serde_json::json!({
+        "session": s, "addr": "0x20000000", "len": 16,
+        "pattern": ["0xde", "0xad"], "out": out_file.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_search out: {}", r);
+    assert_eq!(r["structuredContent"]["count"], 1u64);
+    assert_eq!(r["structuredContent"]["file"], out_file.to_str().unwrap());
+    assert!(r["structuredContent"]["bytes"].as_u64().unwrap() > 0);
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&out_file).unwrap()).unwrap();
+    assert_eq!(saved["count"], 1u64);
+    assert_eq!(saved["matches"][0], 0x2000_0000u64);
+    // Without `out` the payload is returned in place (still has count).
+    let r = client.call_tool("mem_search", serde_json::json!({
+        "session": s, "addr": "0x20000000", "len": 16,
+        "pattern": ["0xbe", "0xef"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_search inline: {}", r);
+    assert_eq!(r["structuredContent"]["count"], 1u64);
+    assert_eq!(r["structuredContent"]["matches"][0], 0x2000_0002u64);
+    client.close();
+}
+
+#[test]
+fn mcp_mem_dump_out() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let sess = dir.join("mcp-dumpout.json");
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "arch": "riscv", "addr": "0x20000000",
+        "bytes": ["0xde", "0xad", "0xbe", "0xef"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write: {}", r);
+    // `out` writes the rendered C array text to a file.
+    let out_file = dir.join("mcp-dump.c");
+    let r = client.call_tool("mem_dump", serde_json::json!({
+        "session": s, "addr": "0x20000000", "len": 4,
+        "format": "c", "name": "blob", "out": out_file.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_dump out: {}", r);
+    assert_eq!(r["structuredContent"]["file"], out_file.to_str().unwrap());
+    assert!(r["structuredContent"]["bytes"].as_u64().unwrap() > 0);
+    let text = std::fs::read_to_string(&out_file).unwrap();
+    assert!(text.contains("const uint8_t blob[4]"), "file: {text}");
+    assert!(text.contains("0xde"), "file: {text}");
+    client.close();
+}
+
+#[test]
 fn run_until_condition_stops() {
     let dir = tmpdir();
     let elf = dir.join("cond.elf");

@@ -306,6 +306,7 @@ CLI 侧已有的分析/设备/会话能力对应 `trace`/`coverage`/`profile`/`d
 `watch_clear_all`/`firmware_info`，其中 `trace` 等分析工具用 `analyze_schema()` 共享参数（含 `out` 落盘参数），
 `session_diff` 复用 `session::session_diff()`，`session_info` 复用 `Session::info_value()`——
 核心逻辑只写在 CLI/`session.rs` 一侧，MCP 侧只做参数适配与序列化。
+`mem_search`/`mem_dump` 同样支持 `out` 落盘参数（`mem_search` 返回 `count`/`patternTokens`）。
 
 ## 5. 新增子命令流程（必须遵循）
 
