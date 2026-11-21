@@ -7248,7 +7248,7 @@ fn mcp_handshake_and_list_tools() {
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "bp_hits", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
         "watch_disable", "watch_clear_all", "watch_hits",
-        "session_info", "session_diff", "device_memory_map", "device_lookup", "firmware_info",
+        "session_info", "session_diff", "device_memory_map", "device_lookup", "device_peripherals", "firmware_info",
         "periph_reg_dump",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
@@ -9883,6 +9883,102 @@ fn device_lookup_by_name() {
 }
 
 #[test]
+fn device_peripherals_list() {
+    // Lightweight overview lists every peripheral with its base/register count.
+    let out = Command::new(bin())
+        .args(["device", "peripherals", "stm32f103c8", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["device"], "stm32f103c8");
+    assert!(json["count"].as_u64().unwrap() > 0);
+    let names: Vec<&str> = json["peripherals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["name"].as_str())
+        .collect();
+    assert!(names.contains(&"GPIOA"), "{names:?}");
+    let gpioa = json["peripherals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "GPIOA")
+        .unwrap();
+    assert_eq!(gpioa["baseAddress"], 0x4001_0800u64);
+    assert!(gpioa["registerCount"].as_u64().unwrap() > 0);
+    assert!(gpioa["firstRegister"].as_u64().unwrap() >= 0x4001_0800u64);
+
+    // `--filter` narrows by name substring (case-insensitive).
+    let out = Command::new(bin())
+        .args(["device", "peripherals", "stm32f103c8", "--filter", "gpio", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["count"].as_u64().unwrap() > 0);
+    for p in json["peripherals"].as_array().unwrap() {
+        let n = p["name"].as_str().unwrap().to_ascii_lowercase();
+        assert!(n.contains("gpio"), "{} not gpio", p["name"]);
+    }
+
+    // Human output names the peripheral and its register count.
+    let out = Command::new(bin())
+        .args(["device", "peripherals", "stm32f103c8", "--filter", "GPIOA"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("GPIOA") && text.contains("个寄存器"), "{text}");
+    // Unknown device is an error.
+    let out = Command::new(bin())
+        .args(["device", "peripherals", "nope"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mcp_device_peripherals() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let r = client.call_tool("device_peripherals", serde_json::json!({ "device": "stm32f103c8" }));
+    assert!(!r["isError"].as_bool().unwrap(), "device_peripherals: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["device"], "stm32f103c8");
+    assert!(sc["count"].as_u64().unwrap() > 0);
+    let names: Vec<&str> = sc["peripherals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["name"].as_str())
+        .collect();
+    assert!(names.contains(&"GPIOA"), "{names:?}");
+    let gpioa = sc["peripherals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "GPIOA")
+        .unwrap();
+    assert_eq!(gpioa["baseAddress"], 0x4001_0800u64);
+    assert!(gpioa["registerCount"].as_u64().unwrap() > 0);
+    // Filter narrows the result.
+    let r = client.call_tool("device_peripherals", serde_json::json!({
+        "device": "stm32f103c8", "filter": "gpio",
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "filtered: {}", r);
+    for p in r["structuredContent"]["peripherals"].as_array().unwrap() {
+        let n = p["name"].as_str().unwrap().to_ascii_lowercase();
+        assert!(n.contains("gpio"), "{n}");
+    }
+    // Unknown device is a tool error.
+    let r = client.call_tool("device_peripherals", serde_json::json!({ "device": "nope" }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn disasm_and_trace_write_files() {
     let dir = tmpdir();
     let sess = dir.join(format!("outfile-{}.json", std::process::id()));
@@ -10141,7 +10237,7 @@ fn help_every_command() {
         &["version"],
         &["arch", "list"],
         &["device", "list"], &["device", "info"], &["device", "lookup"], &["device", "linker"],
-        &["device", "startup"], &["device", "init"], &["device", "svd"],
+        &["device", "startup"], &["device", "init"], &["device", "svd"], &["device", "peripherals"],
         &["run"], &["step"], &["step-over"], &["step-out"], &["continue"],
         &["reg", "list"], &["reg", "get"], &["reg", "set"],
         &["mem", "read"], &["mem", "write"], &["mem", "fill"], &["mem", "search"],
@@ -10217,6 +10313,7 @@ fn help_every_param() {
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
         (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--pattern", "--width", "--out", "--json"]),
         (&["device", "lookup"], &["--addr", "--name", "--json"]),
+        (&["device", "peripherals"], &["--filter", "--json"]),
         (&["periph", "timer"], &["--session", "--index", "--enabled", "--prescaler", "--auto-reload", "--counter", "--update-count", "--list", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--top", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--top", "--json"]),

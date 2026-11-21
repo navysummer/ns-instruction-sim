@@ -1397,6 +1397,18 @@ fn tools() -> Vec<Tool> {
             handler: tool_device_lookup,
         },
         Tool {
+            name: "device_peripherals",
+            description: "列出设备全部外设（名称/基址/寄存器数/描述，不含寄存器明细）。",
+            schema: obj(
+                &[
+                    ("device", prop_str("内置设备键，如 stm32f103c8。")),
+                    ("filter", prop_str("按名称子串过滤外设。")),
+                ],
+                &["device"],
+            ),
+            handler: tool_device_peripherals,
+        },
+        Tool {
             name: "session_info",
             description: "显示会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）。",
             schema: obj(
@@ -3924,6 +3936,38 @@ fn tool_device_memory_map(_: &McpServer, args: &Map<String, Value>) -> Result<Va
 fn tool_device_lookup(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let device = s(args, "device").ok_or_else(|| anyhow::anyhow!("缺少 device"))?;
     crate::device_lookup_by(&device, s(args, "addr").as_deref(), s(args, "name").as_deref())
+}
+
+fn tool_device_peripherals(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let device = s(args, "device").ok_or_else(|| anyhow::anyhow!("缺少 device"))?;
+    let filter = s(args, "filter");
+    let dev = ns_device::device_for_target(&device)
+        .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {device}"))?;
+    let needle = filter.map(|f| f.to_ascii_lowercase());
+    let items: Vec<Value> = dev
+        .sorted_peripherals()
+        .iter()
+        .filter(|p| {
+            needle
+                .as_ref()
+                .map_or(true, |n| p.name.to_ascii_lowercase().contains(n))
+        })
+        .map(|p| {
+            json!({
+                "name": p.name,
+                "baseAddress": p.base_address,
+                "description": p.description,
+                "registerCount": p.registers.len(),
+                "firstRegister": p.registers.first().map(|r| r.address).unwrap_or(p.base_address),
+                "lastRegister": p.registers.last().map(|r| r.address).unwrap_or(p.base_address),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "device": device,
+        "count": items.len(),
+        "peripherals": items,
+    }))
 }
 
 /// Show the metadata of one session file (`session info`).

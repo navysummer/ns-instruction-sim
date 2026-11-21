@@ -225,6 +225,17 @@ enum DeviceSub {
         #[arg(long)]
         json: bool,
     },
+    /// 列出设备全部外设（名称/基址/寄存器数/描述，不含寄存器明细）。
+    Peripherals {
+        /// 目标设备键（如 stm32f103c8）。
+        device: String,
+        /// 按名称子串过滤外设（可选）。
+        #[arg(long)]
+        filter: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -1886,6 +1897,9 @@ fn real_main() -> Result<()> {
         Command::Device { sub: DeviceSub::Lookup { device, addr, name, json } } => {
             cmd_device_lookup(&device, addr.as_deref(), name.as_deref(), json)
         }
+        Command::Device { sub: DeviceSub::Peripherals { device, filter, json } } => {
+            cmd_device_peripherals(&device, filter.as_deref(), json)
+        }
         Command::Run(args) => cmd_run(args),
         Command::Step(args) => cmd_step(args, StepKind::Step),
         Command::StepOver(args) => cmd_step(args, StepKind::StepOver),
@@ -2686,6 +2700,55 @@ fn cmd_device_lookup(device: &str, addr: Option<&str>, name: Option<&str>, json:
     }
     if !value["found"].as_bool().unwrap_or(false) {
         println!("  （地址不在任何内存区域/外设中）");
+    }
+    Ok(())
+}
+
+/// List all peripherals of a device with a lightweight overview (`device
+/// peripherals`): name, base address, register count and description, without
+/// dumping every register.
+fn cmd_device_peripherals(device: &str, filter: Option<&str>, json: bool) -> Result<()> {
+    let dev = ns_device::device_for_target(device)
+        .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {device}"))?;
+    let needle = filter.map(|f| f.to_ascii_lowercase());
+    let items: Vec<serde_json::Value> = dev
+        .sorted_peripherals()
+        .iter()
+        .filter(|p| {
+            needle
+                .as_ref()
+                .map_or(true, |n| p.name.to_ascii_lowercase().contains(n))
+        })
+        .map(|p| {
+            serde_json::json!({
+                "name": p.name,
+                "baseAddress": p.base_address,
+                "description": p.description,
+                "registerCount": p.registers.len(),
+                "firstRegister": p.registers.first().map(|r| r.address).unwrap_or(p.base_address),
+                "lastRegister": p.registers.last().map(|r| r.address).unwrap_or(p.base_address),
+            })
+        })
+        .collect();
+    if json {
+        print_json(&serde_json::json!({
+            "device": device,
+            "count": items.len(),
+            "peripherals": items,
+        }))?;
+        return Ok(());
+    }
+    if items.is_empty() {
+        println!("(无外设)");
+    }
+    for p in &items {
+        println!(
+            "  {:<24} 0x{:08x}  {} 个寄存器  {}",
+            p["name"].as_str().unwrap_or(""),
+            p["baseAddress"].as_u64().unwrap_or(0),
+            p["registerCount"].as_u64().unwrap_or(0),
+            p["description"].as_str().unwrap_or(""),
+        );
     }
     Ok(())
 }

@@ -262,6 +262,7 @@ ns-instruction-sim device memory-map stm32f103c8 --addr 0x40010000 --json
 ns-instruction-sim device lookup stm32f103c8 --addr 0x40010800 --json
 ns-instruction-sim device lookup stm32f103c8 --name GPIOA.CRL --json
 ns-instruction-sim device lookup stm32f103c8 --name GPIOA
+ns-instruction-sim device peripherals stm32f103c8 --filter gpio --json
 
 # 反汇编落盘（清单文件）
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 64 --out listing.lst
