@@ -133,9 +133,9 @@ ns-instruction-sim/
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
 | `session` | `info` / `diff` / `patch` | 会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）或比较两个会话的全部差异；`patch` 直接修改 PC/周期/停机/寄存器/CSR 并保存，ARM 会话还可设置指令集状态（`--arm-state`）、xPSR（`--xpsr`）与 If-Then 块（`--it mask,cond,index`） | `--file` / `--a --b --limit` / `--pc --cycle --halted --reg --csr --arm-state --xpsr --it [--json]` | 文本/JSON |
 | `firmware` | `info` | 固件元信息（格式/大小/架构/入口/符号表/源文件/首条指令反汇编），ELF 自动检测架构 | `--firmware --arch [--json]` | 文本/JSON |
-| `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期/寄存器快照；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --regs --out --json` | 轨迹/JSON |
-| `coverage` | — | 运行并统计执行覆盖（各 PC 执行次数、唯一 PC 数；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --json` | 覆盖表/JSON |
-| `profile` | — | 运行并统计指令助记符直方图（`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --json` | 直方图/JSON |
+| `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期/寄存器快照；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`；`--top N` 仅返回前 N 条轨迹） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --top --regs --out --json` | 轨迹/JSON |
+| `coverage` | — | 运行并统计执行覆盖（各 PC 执行次数、唯一 PC 数；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`；`--top N` 按命中次数降序仅返回前 N 个 PC，`uniquePcs` 仍为全量） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --top --json` | 覆盖表/JSON |
+| `profile` | — | 运行并统计指令助记符直方图（`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`；`--top N` 按计数降序仅返回前 N 种助记符，`uniqueMnemonics` 仍为全量） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --top --json` | 直方图/JSON |
 | `mcp` | — | 启动 MCP（Model Context Protocol）stdio 服务器，供大模型通过工具调用完整驱动仿真 | `--session`（默认会话文件） | JSON-RPC 2.0 / 工具结果 |
 
 > `trace` / `coverage` / `profile` / `disasm` 均支持 `--out FILE`，把 JSON 或文本结果直接写入文件
@@ -227,7 +227,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `events`/`clear_events` 查询/清空输出变化事件日志（均持久化））、
    `symbol_list/at/nearest/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
    `trace`、`coverage`、`profile` 与 CLI 同名子命令一一对应（`analyze_schema` 共享参数），
-   返回结构化轨迹/覆盖/直方图 JSON，并支持 `out` 参数把结果写入文件；
+   返回结构化轨迹/覆盖/直方图 JSON，并支持 `top` 参数（trace 按顺序、coverage/profile 按次数降序）
+   与 `out` 参数把结果写入文件；
    `device_memory_map`（设备内存区域与地址所属区域）、`device_lookup`（按地址或 `PERIPH[.REG]` 名反查区域/外设/寄存器）、
    `session_info`（会话元信息）、
    `session_diff`（两个会话文件的完整差异：标量/寄存器/断点/内存）、
@@ -795,9 +796,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   均成功，验证 MCP 工具在全部架构上可用。
 - `analyze_trace_coverage_profile`：`trace` 输出结构化指令轨迹（`pc`/`text`/`bytes`/`source`/
   `cycle`，RISC-V `addi zero, zero, 0` 精确 2 条并推进 0x80000004）；`coverage` 统计唯一 PC 与
-  各 PC 命中次数；`profile` 统计助记符直方图（同一 NOP 计 2 次）；人读轨迹含 PC 列。
+  各 PC 命中次数；`profile` 统计助记符直方图（同一 NOP 计 2 次）；`--top 1` 截断 trace、
+  按次数保留 coverage/profile 前 1 条（`uniquePcs`/`uniqueMnemonics` 仍为全量）；人读轨迹含 PC 列。
 - `mcp_trace_coverage_profile`：MCP `trace`/`coverage`/`profile` 工具返回同等结构化结果，
-  且 `until` 越界（16 位 PC 架构 mcs51 的 `0x10000`）以 `isError:true` 返回。
+  `top` 参数同样截断结果，且 `until` 越界（16 位 PC 架构 mcs51 的 `0x10000`）以 `isError:true` 返回。
 - `session_info_and_diff`：`session info`（人读 + `--json`：arch/pc/cycleCount/breakpoints/
   memoryOverlayBytes/peripherals.uartBase）与 `session diff --a/--b`（`same`、`summary` 各类计数、
   含 scalar/register/breakpoint/memory 四类差异、`--limit 1` 截断计数、缺失会话报错）。

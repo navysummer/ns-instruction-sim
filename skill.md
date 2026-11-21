@@ -246,6 +246,7 @@ ns-instruction-sim firmware info --firmware app.elf --json
 ns-instruction-sim trace --session s.json --until 0x8000000c --out trace.json
 ns-instruction-sim coverage --session s.json --steps 5000 --json
 ns-instruction-sim profile --session s.json --steps 5000
+ns-instruction-sim coverage --session s.json --steps 5000 --top 10 --json
 
 # 会话元信息与两个会话的差异对比
 ns-instruction-sim session info --file s.json --json

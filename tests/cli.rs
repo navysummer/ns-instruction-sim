@@ -7414,6 +7414,16 @@ fn analyze_trace_coverage_profile() {
     assert_eq!(json["trace"].as_array().unwrap().len(), 2);
     assert_eq!(json["trace"][0]["pc"], 0x8000_0000u64);
     assert_eq!(json["trace"][0]["text"], "addi zero, zero, 0");
+    // `--top` limits the returned trace entries (execution order).
+    let _ = Command::new(bin()).args(["reset", "--session", s]).output();
+    let out = Command::new(bin())
+        .args(["trace", "--session", s, "--steps", "2", "--top", "1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["steps"], 2);
+    assert_eq!(json["trace"].as_array().unwrap().len(), 1);
 
     // coverage: two distinct PCs.
     let _ = Command::new(bin()).args(["reset", "--session", s]).output();
@@ -7425,6 +7435,16 @@ fn analyze_trace_coverage_profile() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["uniquePcs"], 2);
     assert_eq!(json["steps"], 2);
+    // `--top` keeps only the highest-hit entries (full uniquePcs still reported).
+    let _ = Command::new(bin()).args(["reset", "--session", s]).output();
+    let out = Command::new(bin())
+        .args(["coverage", "--session", s, "--steps", "2", "--top", "1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["uniquePcs"], 2);
+    assert_eq!(json["coverage"].as_array().unwrap().len(), 1);
 
     // profile: one mnemonic counted twice.
     let _ = Command::new(bin()).args(["reset", "--session", s]).output();
@@ -7437,6 +7457,16 @@ fn analyze_trace_coverage_profile() {
     assert_eq!(json["uniqueMnemonics"], 1);
     assert_eq!(json["histogram"][0]["mnemonic"], "addi zero, zero, 0");
     assert_eq!(json["histogram"][0]["count"], 2);
+    // `--top` keeps the highest-count mnemonic.
+    let _ = Command::new(bin()).args(["reset", "--session", s]).output();
+    let out = Command::new(bin())
+        .args(["profile", "--session", s, "--steps", "2", "--top", "1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["uniqueMnemonics"], 1);
+    assert_eq!(json["histogram"].as_array().unwrap().len(), 1);
 
     // Human-readable trace output contains the PC column.
     let _ = Command::new(bin()).args(["reset", "--session", s]).output();
@@ -7475,12 +7505,23 @@ fn mcp_trace_coverage_profile() {
     assert_eq!(trace[0]["pc"], 0x8000_0000u64);
     assert_eq!(trace[0]["text"], "addi zero, zero, 0");
     assert_eq!(trace[1]["pc"], 0x8000_0004u64);
+    // `top` limits returned trace entries.
+    let _ = client.call_tool("reset", serde_json::json!({ "session": s }));
+    let r = client.call_tool("trace", serde_json::json!({ "session": s, "steps": 2, "top": 1 }));
+    assert!(!r["isError"].as_bool().unwrap(), "trace top: {}", r);
+    assert_eq!(r["structuredContent"]["trace"].as_array().unwrap().len(), 1);
 
     // coverage reports distinct PCs (reset first so the run starts at entry).
     let _ = client.call_tool("reset", serde_json::json!({ "session": s }));
     let r = client.call_tool("coverage", serde_json::json!({ "session": s, "steps": 2 }));
     assert!(!r["isError"].as_bool().unwrap(), "coverage: {}", r);
     assert_eq!(r["structuredContent"]["uniquePcs"], 2);
+    // `top` limits coverage entries while reporting the full uniquePcs.
+    let _ = client.call_tool("reset", serde_json::json!({ "session": s }));
+    let r = client.call_tool("coverage", serde_json::json!({ "session": s, "steps": 2, "top": 1 }));
+    assert!(!r["isError"].as_bool().unwrap(), "coverage top: {}", r);
+    assert_eq!(r["structuredContent"]["uniquePcs"], 2);
+    assert_eq!(r["structuredContent"]["coverage"].as_array().unwrap().len(), 1);
 
     // profile reports the mnemonic histogram.
     let _ = client.call_tool("reset", serde_json::json!({ "session": s }));
@@ -7489,6 +7530,12 @@ fn mcp_trace_coverage_profile() {
     assert_eq!(r["structuredContent"]["uniqueMnemonics"], 1);
     assert_eq!(r["structuredContent"]["histogram"][0]["mnemonic"], "addi zero, zero, 0");
     assert_eq!(r["structuredContent"]["histogram"][0]["count"], 2);
+    // `top` keeps the highest-count mnemonic.
+    let _ = client.call_tool("reset", serde_json::json!({ "session": s }));
+    let r = client.call_tool("profile", serde_json::json!({ "session": s, "steps": 2, "top": 1 }));
+    assert!(!r["isError"].as_bool().unwrap(), "profile top: {}", r);
+    assert_eq!(r["structuredContent"]["uniqueMnemonics"], 1);
+    assert_eq!(r["structuredContent"]["histogram"].as_array().unwrap().len(), 1);
 
     // An out-of-range `until` is rejected (16-bit-PC core: anything above
     // 0xFFFF is unreachable for mcs51).
@@ -9900,7 +9947,7 @@ fn help_every_param() {
         (&["cycle", "set"], &["--session", "--count", "--json"]),
         (&["interrupt", "vector"], &["--session", "--json"]),
         (&["interrupt", "clear"], &["--session", "--json"]),
-        (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--regs", "--out", "--json"]),
+        (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--top", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["session", "patch"], &["--file", "--pc", "--cycle", "--halted", "--reg", "--csr", "--arm-state", "--xpsr", "--it", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
@@ -9908,8 +9955,8 @@ fn help_every_param() {
         (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--pattern", "--width", "--out", "--json"]),
         (&["device", "lookup"], &["--addr", "--name", "--json"]),
         (&["periph", "timer"], &["--session", "--index", "--enabled", "--prescaler", "--auto-reload", "--counter", "--update-count", "--list", "--json"]),
-        (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
-        (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
+        (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--top", "--json"]),
+        (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--top", "--json"]),
         (&["mcp"], &["--session"]),
         (&["state"], &["--session", "--arch", "--firmware", "--base", "--json", "--fields", "--mem", "--mem-len", "--summary"]),
         (&["symbol", "nearest"], &["--session", "--addr", "--json"]),

@@ -124,6 +124,7 @@ ns-instruction-sim firmware info --firmware app.elf --json
 ns-instruction-sim trace --session s.json --steps 200 --out trace.json
 ns-instruction-sim coverage --session s.json --steps 2000 --json
 ns-instruction-sim profile --session s.json --steps 2000
+ns-instruction-sim coverage --session s.json --steps 2000 --top 10 --json
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 64 --out listing.lst
 ns-instruction-sim disasm --session s.json --addr 0x80000000 --count 64 --labels --json
 ns-instruction-sim disasm --session s.json --symbol main --count 16 --json

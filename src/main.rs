@@ -1704,6 +1704,9 @@ struct AnalyzeArgs {
     /// 运行到指定符号地址（临时断点，不持久化；与 --until 互斥）。
     #[arg(long, conflicts_with = "until")]
     until_symbol: Option<String>,
+    /// 仅保留/返回前 N 条结果（trace 按执行顺序；coverage/profile 按次数降序）。
+    #[arg(long)]
+    top: Option<usize>,
     /// trace 时附带每条指令执行后的寄存器快照（数据流追踪）。
     #[arg(long)]
     regs: bool,
@@ -6488,6 +6491,41 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
         save_session_with_watchpoints(sp, &sim, fw, &watch)?;
     }
     let arch_name = session::arch_name(sim.arch);
+    let top = args.top;
+    let mut trace_payload = analysis.trace.clone();
+    let mut coverage_items: Vec<serde_json::Value> = analysis
+        .coverage
+        .iter()
+        .map(|(pc, hits)| serde_json::json!({ "pc": pc, "hits": hits }))
+        .collect();
+    let mut profile_items: Vec<serde_json::Value> = analysis
+        .histogram
+        .iter()
+        .map(|(mnemonic, count)| serde_json::json!({ "mnemonic": mnemonic, "count": count }))
+        .collect();
+    if let Some(n) = top {
+        if matches!(&kind, AnalyzeKind::Trace) {
+            trace_payload.truncate(n);
+        }
+        if matches!(&kind, AnalyzeKind::Coverage) {
+            coverage_items.sort_by(|a, b| {
+                b["hits"]
+                    .as_u64()
+                    .cmp(&a["hits"].as_u64())
+                    .then(a["pc"].as_u64().cmp(&b["pc"].as_u64()))
+            });
+            coverage_items.truncate(n);
+        }
+        if matches!(&kind, AnalyzeKind::Profile) {
+            profile_items.sort_by(|a, b| {
+                b["count"]
+                    .as_u64()
+                    .cmp(&a["count"].as_u64())
+                    .then(a["mnemonic"].as_str().cmp(&b["mnemonic"].as_str()))
+            });
+            profile_items.truncate(n);
+        }
+    }
     let payload: serde_json::Value = match kind {
         AnalyzeKind::Trace => serde_json::json!({
             "arch": arch_name,
@@ -6495,40 +6533,26 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
             "cycleCount": analysis.cycle_count,
             "result": analysis.result,
             "watchHit": analysis.watch_hit,
-            "trace": &analysis.trace,
+            "trace": trace_payload,
         }),
-        AnalyzeKind::Coverage => {
-            let items: Vec<_> = analysis
-                .coverage
-                .iter()
-                .map(|(pc, hits)| serde_json::json!({ "pc": pc, "hits": hits }))
-                .collect();
-            serde_json::json!({
-                "arch": arch_name,
-                "steps": analysis.steps,
-                "cycleCount": analysis.cycle_count,
-                "result": analysis.result,
-                "watchHit": analysis.watch_hit,
-                "uniquePcs": items.len(),
-                "coverage": items,
-            })
-        }
-        AnalyzeKind::Profile => {
-            let items: Vec<_> = analysis
-                .histogram
-                .iter()
-                .map(|(mnemonic, count)| serde_json::json!({ "mnemonic": mnemonic, "count": count }))
-                .collect();
-            serde_json::json!({
-                "arch": arch_name,
-                "steps": analysis.steps,
-                "cycleCount": analysis.cycle_count,
-                "result": analysis.result,
-                "watchHit": analysis.watch_hit,
-                "uniqueMnemonics": items.len(),
-                "histogram": items,
-            })
-        }
+        AnalyzeKind::Coverage => serde_json::json!({
+            "arch": arch_name,
+            "steps": analysis.steps,
+            "cycleCount": analysis.cycle_count,
+            "result": analysis.result,
+            "watchHit": analysis.watch_hit,
+            "uniquePcs": analysis.coverage.len(),
+            "coverage": coverage_items,
+        }),
+        AnalyzeKind::Profile => serde_json::json!({
+            "arch": arch_name,
+            "steps": analysis.steps,
+            "cycleCount": analysis.cycle_count,
+            "result": analysis.result,
+            "watchHit": analysis.watch_hit,
+            "uniqueMnemonics": analysis.histogram.len(),
+            "histogram": profile_items,
+        }),
     };
     if args.json {
         emit_out(args.out.as_deref(), &serde_json::to_string_pretty(&payload)?)?;
@@ -6537,7 +6561,7 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
     let mut text = String::new();
     match kind {
         AnalyzeKind::Trace => {
-            for e in &analysis.trace {
+            for e in &trace_payload {
                 let bytes: String =
                     e.bytes.iter().map(|b| format!("{b:02x} ")).collect();
                 let src = if e.source.is_empty() {
@@ -6560,8 +6584,12 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
                 analysis.result,
                 analysis.cycle_count
             ));
-            for (pc, hits) in &analysis.coverage {
-                text.push_str(&format!("  0x{pc:08x} x{hits}\n"));
+            for item in &coverage_items {
+                text.push_str(&format!(
+                    "  0x{:08x} x{}\n",
+                    item["pc"].as_u64().unwrap_or(0),
+                    item["hits"].as_u64().unwrap_or(0)
+                ));
             }
         }
         AnalyzeKind::Profile => {
@@ -6572,8 +6600,12 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
                 analysis.result,
                 analysis.cycle_count
             ));
-            for (mnemonic, count) in &analysis.histogram {
-                text.push_str(&format!("  {mnemonic:<40} x{count}\n"));
+            for item in &profile_items {
+                text.push_str(&format!(
+                    "  {:<40} x{}\n",
+                    item["mnemonic"].as_str().unwrap_or(""),
+                    item["count"].as_u64().unwrap_or(0)
+                ));
             }
         }
     }

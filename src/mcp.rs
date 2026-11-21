@@ -382,6 +382,7 @@ fn analyze_schema() -> Value {
             ("max_cycles", prop_num("运行到周期计数达到该值即停止（含 cycle-accurate 预估；result=\"cycles\"）。")),
             ("until", prop_str("运行到指定地址（临时断点）。")),
             ("until_symbol", prop_str("运行到指定符号地址（临时断点）。")),
+            ("top", prop_num("仅保留/返回前 N 条结果（trace 按执行顺序；coverage/profile 按次数降序）。")),
             ("regs", prop_bool("trace 时附带每条指令执行后的寄存器快照。")),
             ("out", prop_str("把结果写入文件（JSON）；缺省直接返回结果。")),
         ],
@@ -3620,6 +3621,7 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
     let collect_trace = matches!(kind, AnalyzeTool::Trace);
     let collect_regs = b(args, "regs").unwrap_or(false);
     let max_cycles = u64(args, "max_cycles");
+    let top = u(args, "top").map(|n| n as usize);
     with_sim_watch(server, args, |sim, _, watch| {
         let until_arg = s(args, "until");
         let until_sym = s(args, "until_symbol");
@@ -3652,6 +3654,12 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
             }
         }
         let arch_name = arch_name(sim.arch);
+        let mut trace_payload = analysis.trace;
+        if let Some(n) = top {
+            if matches!(&kind, AnalyzeTool::Trace) {
+                trace_payload.truncate(n);
+            }
+        }
         let value = match kind {
             AnalyzeTool::Trace => json!({
                 "arch": arch_name,
@@ -3659,15 +3667,24 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
                 "cycleCount": analysis.cycle_count,
                 "result": analysis.result,
                 "watchHit": analysis.watch_hit,
-                "trace": analysis.trace,
+                "trace": trace_payload,
             }),
             AnalyzeTool::Coverage => {
-                let items: Vec<Value> = analysis
+                let mut items: Vec<Value> = analysis
                     .coverage
                     .iter()
                     .map(|(pc, hits)| json!({ "pc": pc, "hits": hits }))
                     .collect();
-                let unique = items.len();
+                let unique = analysis.coverage.len();
+                if let Some(n) = top {
+                    items.sort_by(|a, b| {
+                        b["hits"]
+                            .as_u64()
+                            .cmp(&a["hits"].as_u64())
+                            .then(a["pc"].as_u64().cmp(&b["pc"].as_u64()))
+                    });
+                    items.truncate(n);
+                }
                 json!({
                     "arch": arch_name,
                     "steps": analysis.steps,
@@ -3679,12 +3696,21 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
                 })
             }
             AnalyzeTool::Profile => {
-                let items: Vec<Value> = analysis
+                let mut items: Vec<Value> = analysis
                     .histogram
                     .iter()
                     .map(|(mnemonic, count)| json!({ "mnemonic": mnemonic, "count": count }))
                     .collect();
-                let unique = items.len();
+                let unique = analysis.histogram.len();
+                if let Some(n) = top {
+                    items.sort_by(|a, b| {
+                        b["count"]
+                            .as_u64()
+                            .cmp(&a["count"].as_u64())
+                            .then(a["mnemonic"].as_str().cmp(&b["mnemonic"].as_str()))
+                    });
+                    items.truncate(n);
+                }
                 json!({
                     "arch": arch_name,
                     "steps": analysis.steps,
