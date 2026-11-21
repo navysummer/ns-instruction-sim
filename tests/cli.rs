@@ -9850,7 +9850,7 @@ fn help_every_param() {
         (&["state"], &["--session", "--arch", "--firmware", "--base", "--json", "--fields", "--mem", "--mem-len", "--summary"]),
         (&["symbol", "nearest"], &["--session", "--addr", "--json"]),
         (&["watch", "set"], &["--session", "--addr", "--symbol", "--device", "--region", "--offset", "--len", "--hit-count", "--once", "--json"]),
-        (&["watch", "list"], &["--session", "--json"]),
+        (&["watch", "list"], &["--session", "--symbols", "--json"]),
         (&["watch", "clear"], &["--session", "--addr", "--json"]),
         (&["watch", "enable"], &["--session", "--addr", "--json"]),
         (&["watch", "disable"], &["--session", "--addr", "--json"]),
@@ -10442,6 +10442,56 @@ fn watch_set_by_symbol() {
 }
 
 #[test]
+fn watch_list_symbols() {
+    let dir = tmpdir();
+    let elf = dir.join("watch-list-sym.elf");
+    write_riscv_elf_with_symbol_at(&elf, &[0x93, 0x00, 0x10, 0x00], "gv", 0x8000_0008);
+    let sess = dir.join("watch-list-sym.json");
+    let out = Command::new(bin())
+        .args(["state", "--arch", "riscv", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Two watchpoints: one at a symbol address, one at a plain address.
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(), "--symbol", "gv", "--len", "4"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(), "--addr", "0x80000000", "--len", "2"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // With `--symbols`, JSON items carry the ELF symbol (null when none).
+    let out = Command::new(bin())
+        .args(["watch", "list", "--session", sess.to_str().unwrap(), "--symbols", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let items: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let arr = items.as_array().unwrap();
+    assert!(arr.iter().any(|w| w["address"] == 0x8000_0008u64 && w["symbol"] == "gv"), "{arr:?}");
+    assert!(arr.iter().any(|w| w["address"] == 0x8000_0000u64 && w["symbol"].is_null()), "{arr:?}");
+    // Human-readable output appends the symbol name.
+    let out = Command::new(bin())
+        .args(["watch", "list", "--session", sess.to_str().unwrap(), "--symbols"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("gv"), "{text}");
+    // Without `--symbols`, JSON symbol is null.
+    let out = Command::new(bin())
+        .args(["watch", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let items: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(items.as_array().unwrap().iter().all(|w| w["symbol"].is_null()));
+}
+
+#[test]
 fn watch_set_by_region() {
     let dir = tmpdir();
     let sess = dir.join("watch-region.json");
@@ -10508,6 +10558,16 @@ fn mcp_watch_set_by_symbol() {
     }));
     assert!(!r["isError"].as_bool().unwrap(), "watch_set: {}", r);
     assert_eq!(r["structuredContent"]["address"], 0x8000_0008u64, "{}", r);
+    // `watch_list` with `symbols: true` annotates the watchpoint address.
+    let r = client.call_tool("watch_list", serde_json::json!({ "session": s, "symbols": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_list symbols: {}", r);
+    let wp = &r["structuredContent"]["watchpoints"][0];
+    assert_eq!(wp["address"], 0x8000_0008u64, "{}", r);
+    assert_eq!(wp["symbol"], "gv", "{}", r);
+    // Without `symbols`, the symbol field is null.
+    let r = client.call_tool("watch_list", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_list: {}", r);
+    assert!(r["structuredContent"]["watchpoints"][0]["symbol"].is_null(), "{}", r);
     // Unknown symbol is a tool error.
     let r = client.call_tool("watch_set", serde_json::json!({
         "session": s, "symbol": "nope",

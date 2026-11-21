@@ -910,6 +910,9 @@ enum WatchSub {
         /// 会话文件路径（JSON）。
         #[arg(short, long)]
         session: PathBuf,
+        /// 用 ELF 符号注释观察点地址（需会话固件含符号表）。
+        #[arg(long)]
+        symbols: bool,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -4242,22 +4245,47 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
             }
             Ok(())
         }
-        WatchSub::List { session, json } => {
+        WatchSub::List { session, symbols, json } => {
             let wps = if session.exists() {
                 Session::load(&session)?.watchpoints
             } else {
                 Vec::new()
             };
+            let sim = if symbols {
+                Session::load(&session).ok().and_then(|s| s.apply(None).ok())
+            } else {
+                None
+            };
+            let sym_for = |addr: u32| -> Option<String> {
+                if !symbols {
+                    return None;
+                }
+                sim.as_ref()?
+                    .symbols
+                    .iter()
+                    .find(|x| x.address == addr)
+                    .map(|x| x.name.clone())
+            };
             if json {
-                let items: Vec<_> = wps.iter().map(watch_json).collect();
+                let items: Vec<_> = wps
+                    .iter()
+                    .map(|w| {
+                        let mut v = watch_json(w);
+                        v["symbol"] = sym_for(w.address).map(serde_json::Value::String).unwrap_or(serde_json::Value::Null);
+                        v
+                    })
+                    .collect();
                 print_json(&items)?;
             } else if wps.is_empty() {
                 println!("(无观察点)");
             } else {
                 for w in &wps {
                     let state = if w.enabled { "enabled" } else { "disabled" };
+                    let sym = sym_for(w.address)
+                        .map(|n| format!("  {n}"))
+                        .unwrap_or_default();
                     println!(
-                        "0x{a:08x}（{len} 字节）  {state}  hits={hits}{}",
+                        "0x{a:08x}（{len} 字节）  {state}  hits={hits}{}{sym}",
                         if w.once { "  once" } else { "" },
                         a = w.address,
                         len = w.len,

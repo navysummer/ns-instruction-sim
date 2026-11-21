@@ -888,8 +888,14 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "watch_list",
-            description: "列出全部内存观察点（地址/长度/命中次数/一次性/启用/实际命中）。",
-            schema: obj(&[("session", session.clone())], &["session"]),
+            description: "列出全部内存观察点（地址/长度/命中次数/一次性/启用/实际命中；可选 ELF 符号注释）。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("symbols", prop_bool("用 ELF 符号注释观察点地址。")),
+                ],
+                &["session"],
+            ),
             handler: tool_watch_list,
         },
         Tool {
@@ -2557,9 +2563,34 @@ fn tool_watch_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value
 }
 
 fn tool_watch_list(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let symbols = b(args, "symbols").unwrap_or(false);
     with_watch_session(server, args, |session| {
-        let watchpoints: Vec<Value> =
-            session.watchpoints.iter().map(crate::watch_json).collect();
+        let sim = if symbols {
+            session.apply(None).ok()
+        } else {
+            None
+        };
+        let sym_for = |addr: u32| -> Option<String> {
+            if !symbols {
+                return None;
+            }
+            sim.as_ref()?
+                .symbols
+                .iter()
+                .find(|x| x.address == addr)
+                .map(|x| x.name.clone())
+        };
+        let watchpoints: Vec<Value> = session
+            .watchpoints
+            .iter()
+            .map(|wp| {
+                let mut v = crate::watch_json(wp);
+                v["symbol"] = sym_for(wp.address)
+                    .map(Value::String)
+                    .unwrap_or(Value::Null);
+                v
+            })
+            .collect();
         Ok(json!({ "watchpoints": watchpoints }))
     })
 }
