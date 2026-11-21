@@ -7246,7 +7246,7 @@ fn mcp_handshake_and_list_tools() {
         "mem_search", "mem_load", "mem_dump", "mem_region", "mem_copy", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
         "cycle_get", "cycle_set", "interrupt_take", "interrupt_clear", "periph_status", "periph_config", "periph_gpio", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
-        "bp_modify", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
+        "bp_modify", "bp_hits", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
         "watch_disable", "watch_clear_all",
         "session_info", "session_diff", "device_memory_map", "device_lookup", "firmware_info",
         "periph_reg_dump",
@@ -7709,6 +7709,104 @@ fn mcp_bp_modify_tool() {
     let r = client.call_tool(
         "bp_modify",
         serde_json::json!({ "session": s, "addr": "0x80000020", "condition": "x1 == 1" }),
+    );
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
+fn bp_hits_sets_runtime_counter() {
+    let dir = tmpdir();
+    let elf = dir.join("bp_hits_set.elf");
+    let sess = dir.join("bp_hits_set.json");
+    write_riscv_elf(&elf);
+    let run = |args: &[&str]| {
+        let out = Command::new(bin()).args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}: {}",
+            args.first().copied().unwrap_or(""),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    run(&["run", "--firmware", elf.to_str().unwrap(), "--save-session", sess.to_str().unwrap()]);
+    // A breakpoint that only pauses on its second hit.
+    run(&["bp", "set", "--session", sess.to_str().unwrap(), "--addr", "0x80000004", "--hit-count", "2"]);
+    run(&["reset", "--session", sess.to_str().unwrap(), "--entry", "0x80000000"]);
+    // First pass: one hit, no pause, runs to the ecall halt.
+    let out = run(&["continue", "--session", sess.to_str().unwrap(), "--max-steps", "10", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "halted", "{v}");
+
+    // `bp hits` pre-arms the runtime counter (positional + --count forms).
+    let out = run(&["bp", "hits", "--session", sess.to_str().unwrap(), "0x80000004", "1", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["address"], 0x8000_0004u64);
+    assert_eq!(v["hits"], 1u64, "{v}");
+    let out = run(&["bp", "list", "--session", sess.to_str().unwrap(), "--json"]);
+    let list: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(list[0]["hits"], 1u64, "{list}");
+
+    run(&["reset", "--session", sess.to_str().unwrap(), "--entry", "0x80000000"]);
+    // Second pass: the pre-armed counter reaches the threshold and pauses.
+    let out = run(&["continue", "--session", sess.to_str().unwrap(), "--max-steps", "10", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lastResult"], "breakpoint", "{v}");
+    assert_eq!(v["pc"], 0x8000_0004u64, "{v}");
+
+    // Missing count, a missing breakpoint and a missing address all fail.
+    let out = Command::new(bin())
+        .args(["bp", "hits", "--session", sess.to_str().unwrap(), "--addr", "0x80000004"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin())
+        .args(["bp", "hits", "--session", sess.to_str().unwrap(), "--addr", "0x80000030", "--count", "1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin())
+        .args(["bp", "hits", "--session", sess.to_str().unwrap(), "--count", "1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mcp_bp_hits_tool() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-bphits-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool(
+        "bp_set",
+        serde_json::json!({ "session": s, "addr": "0x8000000c", "hit_count": 2 }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "bp_set: {}", r);
+
+    // Set the runtime hit counter and read it back via bp_list.
+    let r = client.call_tool(
+        "bp_hits",
+        serde_json::json!({ "session": s, "addr": "0x8000000c", "count": 5 }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "bp_hits: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x8000_000cu64);
+    assert_eq!(r["structuredContent"]["hits"], 5u64);
+    let r = client.call_tool("bp_list", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_list: {}", r);
+    assert_eq!(r["structuredContent"]["breakpoints"][0]["hits"], 5u64);
+
+    // Missing count and a missing breakpoint are errors.
+    let r = client.call_tool("bp_hits", serde_json::json!({ "session": s, "addr": "0x8000000c" }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    let r = client.call_tool(
+        "bp_hits",
+        serde_json::json!({ "session": s, "addr": "0x80000020", "count": 1 }),
     );
     assert!(r["isError"].as_bool().unwrap(), "{}", r);
     client.close();
@@ -9987,7 +10085,7 @@ fn help_every_command() {
         &["mem", "read"], &["mem", "write"], &["mem", "fill"], &["mem", "search"],
         &["mem", "load"], &["mem", "dump"], &["mem", "region"], &["mem", "copy"],
         &["bp", "list"], &["bp", "set"], &["bp", "modify"], &["bp", "clear"], &["bp", "clear-all"],
-        &["bp", "enable"], &["bp", "disable"],
+        &["bp", "enable"], &["bp", "disable"], &["bp", "hits"],
         &["watch", "set"], &["watch", "list"], &["watch", "modify"], &["watch", "clear"], &["watch", "clear-all"],
         &["watch", "enable"], &["watch", "disable"],
         &["disasm"], &["reset"], &["state"],
@@ -10032,6 +10130,7 @@ fn help_every_param() {
         (&["continue"], &["--session", "--until", "--until-symbol", "--until-condition", "--max-steps", "--max-cycles", "--save", "--json", "--trace", "--trace-regs", "--source"]),
         (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
         (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
+        (&["bp", "hits"], &["--session", "--addr", "--symbol", "--count", "--json"]),
         (&["bp", "list"], &["--session", "--symbols", "--json"]),
         (&["mem", "read"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--width", "--ascii", "--string", "--out", "--json"]),
         (&["mem", "region"], &["--session", "--arch", "--device", "--region", "--offset", "--len", "--json"]),

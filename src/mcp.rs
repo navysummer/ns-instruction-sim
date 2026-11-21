@@ -835,6 +835,20 @@ fn tools() -> Vec<Tool> {
             handler: tool_bp_modify,
         },
         Tool {
+            name: "bp_hits",
+            description: "设置断点的运行时命中计数（预置 hits；命中次数断点按新计数继续）。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("addr", addr.clone()),
+                    ("symbol", prop_str("按符号名定位断点（与 addr 二选一）。")),
+                    ("count", prop_num("目标命中计数。")),
+                ],
+                &["count"],
+            ),
+            handler: tool_bp_hits,
+        },
+        Tool {
             name: "bp_clear",
             description: "清除指定地址的断点。",
             schema: obj(&[("session", session.clone()), ("addr", addr.clone())], &["addr"]),
@@ -2448,6 +2462,28 @@ fn tool_bp_modify(server: &McpServer, args: &Map<String, Value>) -> Result<Value
             "enabled": live.enabled,
             "hits": sim.breakpoint_hits(addr),
         }))
+    })
+}
+
+fn tool_bp_hits(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let count = u(args, "count").ok_or_else(|| anyhow::anyhow!("缺少 count"))?;
+    with_sim(server, args, true, |sim, _, _| {
+        let addr = if let Some(a) = s(args, "addr") {
+            parse_num(&a)?
+        } else if let Some(sym) = s(args, "symbol") {
+            sim.symbols
+                .iter()
+                .find(|s| s.name == sym)
+                .ok_or_else(|| anyhow::anyhow!("未找到符号: {sym}"))?
+                .address
+        } else {
+            bail!("请提供 addr 或 symbol")
+        };
+        if !sim.breakpoints.iter().any(|bp| bp.address == addr) {
+            bail!("断点不存在 @ 0x{addr:08x}");
+        }
+        sim.set_breakpoint_hits(addr, count as u64);
+        Ok(json!({ "address": addr, "hits": count }))
     })
 }
 

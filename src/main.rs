@@ -857,6 +857,30 @@ enum BpSub {
         #[arg(long)]
         json: bool,
     },
+    /// 设置断点的运行时命中计数（预置 hits；命中次数断点按新计数继续）。
+    Hits {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 按符号名定位断点（与地址互斥）。
+        #[arg(long, conflicts_with_all = ["addr", "addr_flag"])]
+        symbol: Option<String>,
+        /// 目标命中计数（位置参数或 --count）。
+        #[arg(index = 2)]
+        count: Option<String>,
+        /// 目标命中计数（--count 形式，十进制）。
+        #[arg(long = "count", conflicts_with = "count")]
+        count_flag: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -4130,6 +4154,52 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                 print_json(&serde_json::json!({ "address": addr_num, "enabled": false }))?;
             } else {
                 println!("已禁用断点 @ 0x{:08x}", addr_num);
+            }
+            Ok(())
+        }
+        BpSub::Hits { session, addr, addr_flag, symbol, count, count_flag, json } => {
+            let count_val = count_flag
+                .or(count)
+                .ok_or_else(|| anyhow::anyhow!("缺少命中计数"))?
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("非法命中计数"))?;
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let addr_num = if let Some(sym) = &symbol {
+                sim.symbols
+                    .iter()
+                    .find(|s| s.name.eq_ignore_ascii_case(sym))
+                    .ok_or_else(|| anyhow::anyhow!("符号未找到: {sym}"))?
+                    .address
+            } else {
+                let a = addr_flag
+                    .or(addr)
+                    .ok_or_else(|| anyhow::anyhow!("缺少地址"))?;
+                parse_num(&a)?
+            };
+            if addr_num > sim.pc_limit() {
+                bail!(
+                    "断点地址 0x{addr_num:08x} 超出 {} 的 PC 可寻址范围（0x{:08x}）",
+                    sim.arch.label(),
+                    sim.pc_limit()
+                );
+            }
+            let exists = sim
+                .breakpoints
+                .iter()
+                .any(|b| b.address == addr_num);
+            if !exists {
+                bail!("断点不存在 @ 0x{addr_num:08x}");
+            }
+            sim.set_breakpoint_hits(addr_num, count_val);
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr_num,
+                    "hits": count_val,
+                }))?;
+            } else {
+                println!("断点命中计数已设置 @ 0x{:08x} -> {}", addr_num, count_val);
             }
             Ok(())
         }

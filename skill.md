@@ -144,6 +144,7 @@ ns-instruction-sim bp set --session s.json --symbol main
 ns-instruction-sim bp set --session s.json --line main.c:10
 ns-instruction-sim bp set --session s.json --addr 0x80000004 --json
 ns-instruction-sim bp modify --session s.json --addr 0x80000004 --condition "x1 == 5" --hit-count 3
+ns-instruction-sim bp hits --session s.json --addr 0x80000004 --count 2
 ns-instruction-sim bp list --session s.json
 ns-instruction-sim bp list --session s.json --symbols
 ns-instruction-sim bp list --session s.json --symbols --json
