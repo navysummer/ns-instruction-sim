@@ -190,6 +190,8 @@ ns-instruction-sim periph uart --session s.json --bytes 0x41 0x42 0x43
 ns-instruction-sim periph uart --session s.json --peek --json
 ns-instruction-sim periph uart --session s.json --rx-drain --json
 ns-instruction-sim periph gpio --session s.json --pin 0 --direction 1 --output 1 --read --json
+ns-instruction-sim periph gpio --session s.json --events --json
+ns-instruction-sim periph gpio --session s.json --clear-events
 ns-instruction-sim periph config --session s.json --uart-base 0x50000000 --gpio-base 0x50002000
 
 # 符号 / 行号

@@ -1181,6 +1181,12 @@ enum PeriphSub {
         /// 仅读取当前引脚状态（不修改）。
         #[arg(long)]
         read: bool,
+        /// 查询 GPIO 输出变化事件日志（cycle/pin/value/pc）。
+        #[arg(long)]
+        events: bool,
+        /// 清空 GPIO 输出变化事件日志。
+        #[arg(long)]
+        clear_events: bool,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -5060,12 +5066,23 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             Ok(())
         }
-        PeriphSub::Gpio { session, pin, pin_flag, value, value_flag, direction, output, read, json } => {
-            let pin = pin_flag.or(pin).ok_or_else(|| anyhow::anyhow!("缺少引脚号"))?;
-            if pin > 31 {
-                bail!("引脚号必须在 0..=31");
-            }
+        PeriphSub::Gpio { session, pin, pin_flag, value, value_flag, direction, output, read, events, clear_events, json } => {
+            let pin = pin_flag.or(pin);
             let value = value_flag.or(value);
+            if pin.is_none() && (value.is_some() || direction.is_some() || output.is_some()) {
+                bail!("--value/--direction/--output 需要配合 --pin");
+            }
+            if !events && !clear_events {
+                let pin = pin.ok_or_else(|| anyhow::anyhow!("缺少引脚号"))?;
+                if pin > 31 {
+                    bail!("引脚号必须在 0..=31");
+                }
+            }
+            if let Some(p) = pin {
+                if p > 31 {
+                    bail!("引脚号必须在 0..=31");
+                }
+            }
             if let Some(v) = value {
                 if v > 1 {
                     bail!("引脚值必须是 0 或 1");
@@ -5083,6 +5100,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             if let Some(v) = value {
+                let pin = pin.ok_or_else(|| anyhow::anyhow!("--value 需要配合 --pin"))?;
                 if v == 1 {
                     sim.peripherals.gpio_in |= 1 << pin;
                 } else {
@@ -5090,6 +5108,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 }
             }
             if let Some(v) = direction {
+                let pin = pin.ok_or_else(|| anyhow::anyhow!("--direction 需要配合 --pin"))?;
                 if v == 1 {
                     sim.peripherals.gpio_dir |= 1 << pin;
                 } else {
@@ -5097,31 +5116,68 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 }
             }
             if let Some(v) = output {
+                let pin = pin.ok_or_else(|| anyhow::anyhow!("--output 需要配合 --pin"))?;
                 if v == 1 {
                     sim.peripherals.gpio_out |= 1 << pin;
                 } else {
                     sim.peripherals.gpio_out &= !(1 << pin);
                 }
             }
+            if clear_events {
+                sim.peripherals.gpio_events.clear();
+            }
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
-            let in_val = (sim.peripherals.gpio_in >> pin) & 1;
-            let out_val = (sim.peripherals.gpio_out >> pin) & 1;
-            let dir_val = (sim.peripherals.gpio_dir >> pin) & 1;
+            let gpio_events: Vec<serde_json::Value> = sim
+                .peripherals
+                .gpio_events
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "cycle": e.cycle,
+                        "pin": e.pin,
+                        "value": e.value,
+                        "pc": e.pc,
+                    })
+                })
+                .collect();
             if json {
                 print_json(&serde_json::json!({
                     "pin": pin,
-                    "value": in_val,
-                    "input": in_val,
-                    "output": out_val,
-                    "direction": dir_val,
+                    "value": pin.map(|p| (sim.peripherals.gpio_in >> p) & 1),
+                    "input": pin.map(|p| (sim.peripherals.gpio_in >> p) & 1),
+                    "output": pin.map(|p| (sim.peripherals.gpio_out >> p) & 1),
+                    "direction": pin.map(|p| (sim.peripherals.gpio_dir >> p) & 1),
                     "read": read,
                     "gpioIn": sim.peripherals.gpio_in,
                     "gpioOut": sim.peripherals.gpio_out,
                     "gpioDir": sim.peripherals.gpio_dir,
+                    "events": gpio_events,
+                    "eventCount": gpio_events.len(),
+                    "clearedEvents": clear_events,
                 }))?;
             } else {
-                println!("GPIO 引脚 {pin}: IN={in_val} OUT={out_val} DIR={dir_val}");
+                if let Some(p) = pin {
+                    println!(
+                        "GPIO 引脚 {p}: IN={} OUT={} DIR={}",
+                        (sim.peripherals.gpio_in >> p) & 1,
+                        (sim.peripherals.gpio_out >> p) & 1,
+                        (sim.peripherals.gpio_dir >> p) & 1,
+                    );
+                }
+                println!("GPIO 事件数: {}", gpio_events.len());
+                for e in &gpio_events {
+                    println!(
+                        "  cycle={} pin={} value={} pc=0x{:08x}",
+                        e["cycle"],
+                        e["pin"],
+                        e["value"],
+                        e["pc"].as_u64().unwrap_or(0),
+                    );
+                }
+                if clear_events {
+                    println!("GPIO 事件日志已清空");
+                }
             }
             Ok(())
         }

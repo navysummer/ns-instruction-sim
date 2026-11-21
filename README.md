@@ -93,6 +93,8 @@ ns-instruction-sim periph uart --session s.json --bytes 0x41 0x42 0x43
 ns-instruction-sim periph uart --session s.json --peek --json
 ns-instruction-sim periph uart --session s.json --rx-drain --json
 ns-instruction-sim periph gpio --session s.json --pin 0 --direction 1 --output 1 --read --json
+ns-instruction-sim periph gpio --session s.json --events --json
+ns-instruction-sim periph gpio --session s.json --clear-events
 
 # 符号 / 行号 / 周期 / 中断 / 看门狗 / CSR / 外设寄存器
 ns-instruction-sim symbol list --session s.json

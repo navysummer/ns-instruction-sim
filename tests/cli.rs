@@ -1072,6 +1072,77 @@ fn periph_gpio_direction_output_readback() {
 }
 
 #[test]
+fn periph_gpio_events_query_and_clear() {
+    let dir = tmpdir();
+    let sess = dir.join("gpio-events.json");
+    let fw = dir.join("gpio-events.elf");
+    // lui x1,0x40002 (base=0x40002000); addi x1,x1,0xc (DIR);
+    // addi x2,x0,-1 (dir=all outputs); sw x2,0(x1);
+    // addi x1,x1,-8 (base+4=OUT_SET); addi x2,x0,1; sw x2,0(x1); ecall.
+    let code: [u8; 32] = [
+        0xB7, 0x20, 0x00, 0x40, // lui x1,0x40002
+        0x93, 0x80, 0xC0, 0x00, // addi x1,x1,0xc
+        0x13, 0x01, 0xf0, 0xff, // addi x2,x0,-1
+        0x23, 0xa0, 0x20, 0x00, // sw x2,0(x1)
+        0x93, 0x80, 0x80, 0xff, // addi x1,x1,-8
+        0x13, 0x01, 0x10, 0x00, // addi x2,x0,1
+        0x23, 0xa0, 0x20, 0x00, // sw x2,0(x1) -> OUT_SET pin0
+        0x73, 0x00, 0x00, 0x00, // ecall
+    ];
+    write_riscv_elf_code(&fw, &code);
+    let out = Command::new(bin())
+        .args(["run", "--firmware", fw.to_str().unwrap(), "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["halted"], true);
+    // Query the output-change event log.
+    let out = Command::new(bin())
+        .args(["periph", "gpio", "--session", sess.to_str().unwrap(), "--events", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["eventCount"].as_u64().unwrap() >= 1, "{json}");
+    let ev = &json["events"][0];
+    assert_eq!(ev["pin"], 0u64);
+    assert_eq!(ev["value"], 1u64);
+    assert!(ev["pc"].as_u64().unwrap() >= 0x8000_0000u64);
+    assert!(ev["cycle"].is_number());
+    // Human-readable output.
+    let out = Command::new(bin())
+        .args(["periph", "gpio", "--session", sess.to_str().unwrap(), "--events"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("GPIO 事件数:"), "{text}");
+    // Clear the event log (persisted).
+    let out = Command::new(bin())
+        .args(["periph", "gpio", "--session", sess.to_str().unwrap(), "--clear-events", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["eventCount"], 0u64);
+    assert_eq!(json["clearedEvents"], true);
+    let out = Command::new(bin())
+        .args(["periph", "gpio", "--session", sess.to_str().unwrap(), "--events", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["eventCount"], 0u64);
+    // A mutation without a pin is a proper error (not a panic).
+    let out = Command::new(bin())
+        .args(["periph", "gpio", "--session", sess.to_str().unwrap(), "--value", "1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--value/--direction/--output 需要配合 --pin"));
+}
+
+#[test]
 fn mem_write_read_roundtrip_persists() {
     let dir = tmpdir();
     let sess = dir.join("mem.json");
@@ -6971,7 +7042,7 @@ fn mcp_handshake_and_list_tools() {
         "device_init", "session_create", "state", "step", "step_over", "step_out",
         "run", "continue", "reg_list", "reg_get", "reg_set", "mem_read", "mem_write", "mem_fill",
         "mem_search", "mem_load", "mem_dump", "mem_region", "mem_copy", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
-        "cycle_get", "cycle_set", "interrupt_take", "periph_status", "periph_config", "periph_reg_read", "periph_reg_write",
+        "cycle_get", "cycle_set", "interrupt_take", "periph_status", "periph_config", "periph_gpio", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
         "watch_disable", "watch_clear_all",
@@ -8689,6 +8760,50 @@ fn mcp_periph_gpio_status() {
 }
 
 #[test]
+fn mcp_periph_gpio_events() {
+    let dir = tmpdir();
+    let sess = dir.join("mcp-gpio-events.json");
+    let fw = dir.join("mcp-gpio-events.elf");
+    let code: [u8; 32] = [
+        0xB7, 0x20, 0x00, 0x40,
+        0x93, 0x80, 0xC0, 0x00,
+        0x13, 0x01, 0xf0, 0xff,
+        0x23, 0xa0, 0x20, 0x00,
+        0x93, 0x80, 0x80, 0xff,
+        0x13, 0x01, 0x10, 0x00,
+        0x23, 0xa0, 0x20, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_code(&fw, &code);
+    let out = Command::new(bin())
+        .args(["run", "--firmware", fw.to_str().unwrap(), "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let s = sess.to_str().unwrap();
+    // Query the event log (read-only).
+    let r = client.call_tool("periph_gpio", serde_json::json!({ "session": s, "events": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_gpio events: {}", r);
+    assert!(r["structuredContent"]["eventCount"].as_u64().unwrap() >= 1, "{}", r);
+    assert_eq!(r["structuredContent"]["events"][0]["pin"], 0u64, "{}", r);
+    // Clear the event log.
+    let r = client.call_tool("periph_gpio", serde_json::json!({ "session": s, "clear_events": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_gpio clear: {}", r);
+    assert_eq!(r["structuredContent"]["clearedEvents"], true, "{}", r);
+    assert_eq!(r["structuredContent"]["eventCount"], 0u64, "{}", r);
+    // Persisted: a fresh query is still empty.
+    let r = client.call_tool("periph_gpio", serde_json::json!({ "session": s, "events": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_gpio events2: {}", r);
+    assert_eq!(r["structuredContent"]["eventCount"], 0u64, "{}", r);
+    // A mutation without a pin is a proper error.
+    let r = client.call_tool("periph_gpio", serde_json::json!({ "session": s, "value": 1 }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn disasm_from_firmware() {
     let dir = tmpdir();
     let elf = dir.join("disfw.elf");
@@ -9503,7 +9618,7 @@ fn help_every_param() {
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--fields", "--json"]),
         (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--peek", "--rx-drain", "--json"]),
-        (&["periph", "gpio"], &["--session", "--pin", "--value", "--direction", "--output", "--read", "--json"]),
+        (&["periph", "gpio"], &["--session", "--pin", "--value", "--direction", "--output", "--read", "--events", "--clear-events", "--json"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
         (&["cycle", "estimate"], &["--session", "--addr", "--symbol", "--json"]),
         (&["cycle", "set"], &["--session", "--count", "--json"]),

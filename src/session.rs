@@ -85,6 +85,9 @@ pub struct PeriphState {
     pub gpio_out: u32,
     pub gpio_dir: u32,
     pub gpio_in: u32,
+    /// GPIO output-change events (cycle, pin, value, pc) recorded by the sim.
+    #[serde(default)]
+    pub gpio_events: Vec<(u64, u32, u32, u32)>,
     /// (base, enabled, prescaler, counter, auto_reload, irq_line, update_count).
     pub timers: Vec<(u32, bool, u32, u32, u32, usize, u64)>,
     /// (base, enabled, timeout_cycles, elapsed, reset_count, last_reset_pc).
@@ -245,6 +248,12 @@ impl Session {
                 gpio_out: sim.peripherals.gpio_out,
                 gpio_dir: sim.peripherals.gpio_dir,
                 gpio_in: sim.peripherals.gpio_in,
+                gpio_events: sim
+                    .peripherals
+                    .gpio_events
+                    .iter()
+                    .map(|e| (e.cycle, e.pin, e.value, e.pc))
+                    .collect(),
                 timers: sim
                     .peripherals
                     .timers
@@ -352,6 +361,15 @@ impl Session {
         sim.peripherals.gpio_out = self.peripherals.gpio_out;
         sim.peripherals.gpio_dir = self.peripherals.gpio_dir;
         sim.peripherals.gpio_in = self.peripherals.gpio_in;
+        sim.peripherals.gpio_events.clear();
+        for (cycle, pin, value, pc) in &self.peripherals.gpio_events {
+            sim.peripherals.gpio_events.push(ns_sim::GpioEvent {
+                cycle: *cycle,
+                pin: *pin,
+                value: *value,
+                pc: *pc,
+            });
+        }
         for (base, enabled, prescaler, counter, auto_reload, irq_line, update_count) in
             &self.peripherals.timers
         {

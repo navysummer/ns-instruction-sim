@@ -1067,7 +1067,7 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "periph_gpio",
-            description: "查询/设置 GPIO 引脚（输入电平/方向/输出电平）。",
+            description: "查询/设置 GPIO 引脚（输入电平/方向/输出电平），查询/清空输出变化事件日志。",
             schema: obj(
                 &[
                     ("session", session.clone()),
@@ -1076,8 +1076,10 @@ fn tools() -> Vec<Tool> {
                     ("direction", prop_num("设置方向 0=输入/1=输出。")),
                     ("output", prop_num("设置输出电平 0/1。")),
                     ("read", prop_bool("仅读取当前引脚状态（不修改）。")),
+                    ("events", prop_bool("查询 GPIO 输出变化事件日志（cycle/pin/value/pc）。")),
+                    ("clear_events", prop_bool("清空 GPIO 输出变化事件日志。")),
                 ],
-                &["pin"],
+                &[],
             ),
             handler: tool_periph_gpio,
         },
@@ -2951,9 +2953,22 @@ fn tool_periph_uart(server: &McpServer, args: &Map<String, Value>) -> Result<Val
 }
 
 fn tool_periph_gpio(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
-    let pin = u(args, "pin").ok_or_else(|| anyhow::anyhow!("缺少 pin"))?;
-    if pin > 31 {
-        bail!("引脚号必须在 0..=31");
+    let events = b(args, "events").unwrap_or(false);
+    let clear_events = b(args, "clear_events").unwrap_or(false);
+    let pin = u(args, "pin");
+    if pin.is_none() && (u(args, "value").is_some() || u(args, "direction").is_some() || u(args, "output").is_some()) {
+        bail!("value / direction / output 需要配合 pin");
+    }
+    if !events && !clear_events {
+        let pin = pin.ok_or_else(|| anyhow::anyhow!("缺少 pin"))?;
+        if pin > 31 {
+            bail!("引脚号必须在 0..=31");
+        }
+    }
+    if let Some(p) = pin {
+        if p > 31 {
+            bail!("引脚号必须在 0..=31");
+        }
     }
     let value = u(args, "value");
     if let Some(v) = value {
@@ -2974,11 +2989,13 @@ fn tool_periph_gpio(server: &McpServer, args: &Map<String, Value>) -> Result<Val
         }
     }
     let read = b(args, "read").unwrap_or(false);
-    if value.is_none() && direction.is_none() && output.is_none() && !read {
-        bail!("需要提供 value / direction / output 之一，或 read: true");
+    if value.is_none() && direction.is_none() && output.is_none() && !read && !events && !clear_events {
+        bail!("需要提供 value / direction / output 之一，或 read/events/clear_events");
     }
-    with_sim(server, args, true, |sim, _, _| {
+    let mutate = clear_events || value.is_some() || direction.is_some() || output.is_some();
+    with_sim(server, args, mutate, |sim, _, _| {
         if let Some(v) = value {
+            let pin = pin.ok_or_else(|| anyhow::anyhow!("value 需要配合 pin"))?;
             if v == 1 {
                 sim.peripherals.gpio_in |= 1 << pin;
             } else {
@@ -2986,6 +3003,7 @@ fn tool_periph_gpio(server: &McpServer, args: &Map<String, Value>) -> Result<Val
             }
         }
         if let Some(v) = direction {
+            let pin = pin.ok_or_else(|| anyhow::anyhow!("direction 需要配合 pin"))?;
             if v == 1 {
                 sim.peripherals.gpio_dir |= 1 << pin;
             } else {
@@ -2993,15 +3011,32 @@ fn tool_periph_gpio(server: &McpServer, args: &Map<String, Value>) -> Result<Val
             }
         }
         if let Some(v) = output {
+            let pin = pin.ok_or_else(|| anyhow::anyhow!("output 需要配合 pin"))?;
             if v == 1 {
                 sim.peripherals.gpio_out |= 1 << pin;
             } else {
                 sim.peripherals.gpio_out &= !(1 << pin);
             }
         }
-        let in_val = (sim.peripherals.gpio_in >> pin) & 1;
-        let out_val = (sim.peripherals.gpio_out >> pin) & 1;
-        let dir_val = (sim.peripherals.gpio_dir >> pin) & 1;
+        if clear_events {
+            sim.peripherals.gpio_events.clear();
+        }
+        let in_val = pin.map(|p| (sim.peripherals.gpio_in >> p) & 1);
+        let out_val = pin.map(|p| (sim.peripherals.gpio_out >> p) & 1);
+        let dir_val = pin.map(|p| (sim.peripherals.gpio_dir >> p) & 1);
+        let gpio_events: Vec<serde_json::Value> = sim
+            .peripherals
+            .gpio_events
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "cycle": e.cycle,
+                    "pin": e.pin,
+                    "value": e.value,
+                    "pc": e.pc,
+                })
+            })
+            .collect();
         Ok(json!({
             "pin": pin,
             "value": in_val,
@@ -3012,6 +3047,9 @@ fn tool_periph_gpio(server: &McpServer, args: &Map<String, Value>) -> Result<Val
             "gpioIn": sim.peripherals.gpio_in,
             "gpioOut": sim.peripherals.gpio_out,
             "gpioDir": sim.peripherals.gpio_dir,
+            "events": gpio_events,
+            "eventCount": sim.peripherals.gpio_events.len(),
+            "clearedEvents": clear_events,
         }))
     })
 }
