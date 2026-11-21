@@ -114,6 +114,7 @@ ns-instruction-sim/
 | `device` | `memory-map` | 列出设备内存区域（FLASH/RAM/PERIPHERALS），可用 `--addr` 查询地址所属区域 | `device [--addr] [--json]` | 表/JSON |
 | `device` | `lookup` | 按地址或 `PERIPH[.REG]` 名反查设备内存区域/外设/寄存器（内置 SVD），含寄存器内偏移与位域字段 | `device --addr | --name [--json]` | 表/JSON |
 | `device` | `peripherals` | 列出设备全部外设概览（名称/基址/寄存器数/描述），可用 `--filter` 按名称子串筛选（大小写不敏感） | `device <DEVICE> [--filter] [--json]` | 表/JSON |
+| `device` | `peripheral` | 显示单个外设的寄存器明细（名称/偏移/尺寸/复位值/位域字段），`--register` 只看单个寄存器 | `device <DEVICE> <PERIPH> [--register] [--json]` | 表/JSON |
 | `run` | — | 加载固件并运行到结束/步数上限/指定步数/指定地址/指定符号/条件成立/周期上限（可指定会话保留外设/SVD 寄存器；`--trace-regs` 打印每条指令后变化的寄存器；`--max-cycles` 到达即停并报 `lastResult="cycles"`） | `--firmware --session --arch --base --max-steps --steps --until --until-symbol --until-condition --max-cycles --cycle-accurate --save-session --json --trace --trace-regs --source` | 状态 |
 | `step` | — | 单步一条指令 | `--session --arch --firmware --base --json --source` | 状态 |
 | `step-over` | — | 步过（跳过调用） | 同上 | 状态 |
@@ -237,6 +238,7 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    与 `out` 参数把结果写入文件；
    `device_memory_map`（设备内存区域与地址所属区域）、`device_lookup`（按地址或 `PERIPH[.REG]` 名反查区域/外设/寄存器）、
    `device_peripherals`（按 `filter` 名称子串列出设备外设概览：名称/基址/寄存器数/描述）、
+   `device_peripheral`（显示单个外设的寄存器明细：名称/偏移/尺寸/复位值/位域字段，`register` 只选一个）、
    `session_info`（会话元信息）、
    `session_diff`（两个会话文件的完整差异：标量/寄存器/断点/内存）、
    `session_merge`（合并两个会话：A 为基准、B 的运行时状态优先；`regs_keep` 保留 A 的寄存器文件）、
@@ -863,6 +865,11 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `device_peripherals_list`：`device peripherals` 列出外设概览（名称/基址/寄存器数/描述），
   `--filter` 名称子串筛选（大小写不敏感），未知设备报错。
 - `mcp_device_peripherals`：MCP `device_peripherals` 列出/筛选，未知设备以 `isError:true` 返回。
+- `device_peripheral_command`：`device peripheral` 显示外设寄存器明细（GPIOA 的 CRL
+  @0x40010800、offset 0、size 32、复位 0x44444444、位域 MODE0），`--register` 只选单个寄存器，
+  未知设备/外设/寄存器均报错。
+- `mcp_device_peripheral`：MCP `device_peripheral` 返回寄存器明细与位域，`register` 只选一个，
+  缺参/未知外设以 `isError:true` 返回。
 - `disasm_and_trace_write_files`：`disasm --out` 写出汇编清单、`trace --json --out` 写出结构化
   轨迹、`profile --out` 写出文本直方图，文件内容均可被重新解析校验。
 - `firmware_info_command`：`firmware info` 对 ELF 自动检测架构与入口（`entryText` 反汇编首条指令、
@@ -901,7 +908,7 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   `device_lookup` 工具端到端（`device_lookup` 解析 GPIOA.CRL 寄存器与位域，含缺参/未知设备
   错误路径）与 `trace` 的 `out` 参数把轨迹写入文件并回报 `file`/`bytes`。
 - `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff/patch/merge`、`device memory-map`、
-  `device lookup`、`device peripherals`、`firmware info/verify`、
+  `device lookup`、`device peripherals`、`device peripheral`、`firmware info/verify`、
   `watch set/list/modify/clear/clear-all/enable/disable`）的
   `--help` 与 `-h` 均退出 0 且含 `Usage:`。
 - `help_every_param`：`run`/`bp set`/`mem read`/`reg set`/`periph reg-write`/`watchdog config`/

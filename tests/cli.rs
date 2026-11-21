@@ -7248,7 +7248,7 @@ fn mcp_handshake_and_list_tools() {
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "bp_hits", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
         "watch_disable", "watch_clear_all", "watch_hits",
-        "session_info", "session_diff", "session_merge", "device_memory_map", "device_lookup", "device_peripherals", "firmware_info", "firmware_verify",
+        "session_info", "session_diff", "session_merge", "device_memory_map", "device_lookup", "device_peripherals", "device_peripheral", "firmware_info", "firmware_verify",
         "periph_reg_dump",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
@@ -10163,6 +10163,90 @@ fn mcp_device_peripherals() {
 }
 
 #[test]
+fn device_peripheral_command() {
+    // Full register map of one peripheral (name/offset/size/reset/fields).
+    let out = Command::new(bin())
+        .args(["device", "peripheral", "stm32f103c8", "GPIOA", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["device"], "stm32f103c8");
+    assert_eq!(json["peripheral"], "GPIOA");
+    assert_eq!(json["baseAddress"], 0x4001_0800u64);
+    assert_eq!(json["register"], serde_json::Value::Null);
+    assert!(json["registerCount"].as_u64().unwrap() > 0);
+    let regs = json["registers"].as_array().unwrap();
+    let crl = regs.iter().find(|r| r["name"] == "CRL").unwrap();
+    assert_eq!(crl["address"], 0x4001_0800u64);
+    assert_eq!(crl["offset"], 0u64);
+    assert_eq!(crl["size"], 32u64);
+    assert_eq!(crl["resetValue"], 0x4444_4444u64);
+    let fields = crl["fields"].as_array().unwrap();
+    assert!(!fields.is_empty());
+    assert_eq!(fields[0]["name"], "MODE0");
+
+    // `--register` narrows to a single register.
+    let out = Command::new(bin())
+        .args(["device", "peripheral", "stm32f103c8", "GPIOA", "--register", "CRL", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["register"], "CRL");
+    assert_eq!(json["registers"].as_array().unwrap().len(), 1);
+    assert_eq!(json["registers"][0]["name"], "CRL");
+
+    // Human output names the peripheral and registers.
+    let out = Command::new(bin())
+        .args(["device", "peripheral", "stm32f103c8", "GPIOA"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("GPIOA") && text.contains("CRL") && text.contains("复位"), "{text}");
+
+    // Unknown device / peripheral / register are errors.
+    let out = Command::new(bin()).args(["device", "peripheral", "nope", "GPIOA"]).output().unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin()).args(["device", "peripheral", "stm32f103c8", "NOPE"]).output().unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin())
+        .args(["device", "peripheral", "stm32f103c8", "GPIOA", "--register", "NOPE"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mcp_device_peripheral() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let r = client.call_tool("device_peripheral", serde_json::json!({ "device": "stm32f103c8", "peripheral": "GPIOA" }));
+    assert!(!r["isError"].as_bool().unwrap(), "device_peripheral: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["peripheral"], "GPIOA");
+    assert_eq!(sc["baseAddress"], 0x4001_0800u64);
+    let regs = sc["registers"].as_array().unwrap();
+    let crl = regs.iter().find(|r| r["name"] == "CRL").unwrap();
+    assert_eq!(crl["resetValue"], 0x4444_4444u64);
+    assert_eq!(crl["fields"][0]["name"], "MODE0");
+    // `register` narrows to one register.
+    let r = client.call_tool(
+        "device_peripheral",
+        serde_json::json!({ "device": "stm32f103c8", "peripheral": "GPIOA", "register": "CRL" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap());
+    assert_eq!(r["structuredContent"]["registers"].as_array().unwrap().len(), 1);
+    // Missing/unknown args are tool errors.
+    let r = client.call_tool("device_peripheral", serde_json::json!({ "device": "stm32f103c8" }));
+    assert!(r["isError"].as_bool().unwrap());
+    let r = client.call_tool("device_peripheral", serde_json::json!({ "device": "stm32f103c8", "peripheral": "NOPE" }));
+    assert!(r["isError"].as_bool().unwrap());
+    client.close();
+}
+
+#[test]
 fn disasm_and_trace_write_files() {
     let dir = tmpdir();
     let sess = dir.join(format!("outfile-{}.json", std::process::id()));
@@ -10476,7 +10560,7 @@ fn help_every_command() {
         &["version"],
         &["arch", "list"],
         &["device", "list"], &["device", "info"], &["device", "lookup"], &["device", "linker"],
-        &["device", "startup"], &["device", "init"], &["device", "svd"], &["device", "peripherals"],
+        &["device", "startup"], &["device", "init"], &["device", "svd"], &["device", "peripherals"], &["device", "peripheral"],
         &["run"], &["step"], &["step-over"], &["step-out"], &["continue"],
         &["reg", "list"], &["reg", "get"], &["reg", "set"],
         &["mem", "read"], &["mem", "write"], &["mem", "fill"], &["mem", "search"],
@@ -10555,6 +10639,7 @@ fn help_every_param() {
         (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--pattern", "--width", "--out", "--json"]),
         (&["device", "lookup"], &["--addr", "--name", "--json"]),
         (&["device", "peripherals"], &["--filter", "--json"]),
+        (&["device", "peripheral"], &["--register", "--json"]),
         (&["periph", "timer"], &["--session", "--index", "--enabled", "--prescaler", "--auto-reload", "--counter", "--update-count", "--list", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--top", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--top", "--json"]),

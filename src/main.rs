@@ -236,6 +236,19 @@ enum DeviceSub {
         #[arg(long)]
         json: bool,
     },
+    /// 显示单个外设的寄存器明细（名称/偏移/尺寸/复位值/位域字段）。
+    Peripheral {
+        /// 目标设备键（如 stm32f103c8）。
+        device: String,
+        /// 外设名（如 GPIOA）。
+        peripheral: String,
+        /// 只看指定寄存器（按名称，可选）。
+        #[arg(long)]
+        register: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -1940,6 +1953,9 @@ fn real_main() -> Result<()> {
         Command::Device { sub: DeviceSub::Peripherals { device, filter, json } } => {
             cmd_device_peripherals(&device, filter.as_deref(), json)
         }
+        Command::Device { sub: DeviceSub::Peripheral { device, peripheral, register, json } } => {
+            cmd_device_peripheral(&device, &peripheral, register.as_deref(), json)
+        }
         Command::Run(args) => cmd_run(args),
         Command::Step(args) => cmd_step(args, StepKind::Step),
         Command::StepOver(args) => cmd_step(args, StepKind::StepOver),
@@ -2795,6 +2811,106 @@ fn cmd_device_peripherals(device: &str, filter: Option<&str>, json: bool) -> Res
         );
     }
     Ok(())
+}
+
+/// Show one peripheral's register map (`device peripheral`).
+fn cmd_device_peripheral(device: &str, peripheral: &str, register: Option<&str>, json: bool) -> Result<()> {
+    let value = device_peripheral_value(device, peripheral, register)?;
+    if json {
+        print_json(&value)?;
+        return Ok(());
+    }
+    println!(
+        "设备 {device} 外设 {}  @ 0x{:08x}  （{}）",
+        value["peripheral"],
+        value["baseAddress"].as_u64().unwrap_or(0),
+        value["description"].as_str().unwrap_or("")
+    );
+    if let Some(r) = value["register"].as_str() {
+        let detail = &value["registers"][0];
+        println!(
+            "  寄存器 {r}  @ 0x{:08x}  +0x{:x}  尺寸 {} 位  复位 0x{:08x}  {}",
+            detail["address"].as_u64().unwrap_or(0),
+            detail["offset"].as_u64().unwrap_or(0),
+            detail["size"].as_u64().unwrap_or(0),
+            detail["resetValue"].as_u64().unwrap_or(0),
+            detail["description"].as_str().unwrap_or("")
+        );
+        for f in detail["fields"].as_array().unwrap() {
+            println!(
+                "      {:<16} [{:<2}..{:<2}]  {}",
+                f["name"].as_str().unwrap_or(""),
+                f["bitOffset"].as_u64().unwrap_or(0) + f["bitWidth"].as_u64().unwrap_or(0) - 1,
+                f["bitOffset"].as_u64().unwrap_or(0),
+                f["description"].as_str().unwrap_or("")
+            );
+        }
+    } else {
+        for r in value["registers"].as_array().unwrap() {
+            println!(
+                "  {:<24} 0x{:08x}  +0x{:x}  {} 位  复位 0x{:08x}  {}",
+                r["name"].as_str().unwrap_or(""),
+                r["address"].as_u64().unwrap_or(0),
+                r["offset"].as_u64().unwrap_or(0),
+                r["size"].as_u64().unwrap_or(0),
+                r["resetValue"].as_u64().unwrap_or(0),
+                r["description"].as_str().unwrap_or("")
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Machine-readable single-peripheral value shared by the CLI and MCP server.
+pub(crate) fn device_peripheral_value(
+    device: &str,
+    peripheral: &str,
+    register: Option<&str>,
+) -> Result<serde_json::Value> {
+    let dev = ns_device::device_for_target(device)
+        .ok_or_else(|| anyhow::anyhow!("未知设备或缺少内置 SVD: {device}"))?;
+    let p = dev.peripheral(peripheral).ok_or_else(|| {
+        let names: Vec<&str> = dev.sorted_peripherals().iter().map(|p| p.name.as_str()).collect();
+        anyhow::anyhow!("设备 {device} 无外设: {peripheral}（可用: {}）", names.join("/"))
+    })?;
+    let register_json = |r: &ns_device::Register| {
+        serde_json::json!({
+            "name": r.name,
+            "address": r.address,
+            "offset": r.address - p.base_address,
+            "size": r.size,
+            "resetValue": r.reset_value,
+            "description": r.description,
+            "fields": r.fields.iter().map(|f| serde_json::json!({
+                "name": f.name,
+                "bitOffset": f.bit_offset,
+                "bitWidth": f.bit_width,
+                "description": f.description,
+            })).collect::<Vec<_>>(),
+        })
+    };
+    let selected: Vec<serde_json::Value> = if let Some(reg) = register {
+        let r = p
+            .registers
+            .iter()
+            .find(|r| r.name == reg)
+            .ok_or_else(|| {
+                let names: Vec<&str> = p.registers.iter().map(|r| r.name.as_str()).collect();
+                anyhow::anyhow!("外设 {peripheral} 无寄存器: {reg}（可用: {}）", names.join("/"))
+            })?;
+        vec![register_json(r)]
+    } else {
+        p.registers.iter().map(register_json).collect()
+    };
+    Ok(serde_json::json!({
+        "device": device,
+        "peripheral": p.name,
+        "baseAddress": p.base_address,
+        "description": p.description,
+        "register": register,
+        "registerCount": p.registers.len(),
+        "registers": selected,
+    }))
 }
 
 /// Shared CLI/MCP dispatch for `device lookup`: exactly one of `--addr`/`name`

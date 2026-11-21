@@ -145,6 +145,7 @@ ns-instruction-sim device lookup stm32f103c8 --addr 0x40010800 --json
 ns-instruction-sim device lookup stm32f103c8 --name GPIOA.CRL --json
 ns-instruction-sim device lookup stm32f103c8 --name GPIOA
 ns-instruction-sim device peripherals stm32f103c8 --filter gpio --json
+ns-instruction-sim device peripheral stm32f103c8 GPIOA --register CRL --json
 ns-instruction-sim device svd --file chip.svd --json
 ns-instruction-sim device svd --file chip.svd --peripheral USART1 --register DR
 ns-instruction-sim device svd --device stm32f103c8 --json

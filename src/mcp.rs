@@ -1423,6 +1423,19 @@ fn tools() -> Vec<Tool> {
             handler: tool_device_peripherals,
         },
         Tool {
+            name: "device_peripheral",
+            description: "显示单个外设的寄存器明细（名称/偏移/尺寸/复位值/位域字段）。",
+            schema: obj(
+                &[
+                    ("device", prop_str("内置设备键，如 stm32f103c8。")),
+                    ("peripheral", prop_str("外设名，如 GPIOA。")),
+                    ("register", prop_str("只看指定寄存器（按名称，可选）。")),
+                ],
+                &["device", "peripheral"],
+            ),
+            handler: tool_device_peripheral,
+        },
+        Tool {
             name: "session_info",
             description: "显示会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）。",
             schema: obj(
@@ -4007,6 +4020,13 @@ fn tool_device_peripherals(_: &McpServer, args: &Map<String, Value>) -> Result<V
         "count": items.len(),
         "peripherals": items,
     }))
+}
+
+/// Show one peripheral's register map (`device peripheral`).
+fn tool_device_peripheral(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let device = s(args, "device").ok_or_else(|| anyhow::anyhow!("缺少 device"))?;
+    let peripheral = s(args, "peripheral").ok_or_else(|| anyhow::anyhow!("缺少 peripheral"))?;
+    crate::device_peripheral_value(&device, &peripheral, s(args, "register").as_deref())
 }
 
 /// Show the metadata of one session file (`session info`).
