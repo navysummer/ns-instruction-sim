@@ -125,6 +125,7 @@ ns-instruction-sim trace --session s.json --steps 200 --json
 ns-instruction-sim trace --session s.json --steps 200 --regs --json
 ns-instruction-sim firmware info --firmware app.elf --json
 ns-instruction-sim firmware verify --firmware app.elf --algo crc32 --expected 0x12345678 --json
+ns-instruction-sim firmware symbols --firmware app.elf --filter reset --json
 ns-instruction-sim trace --session s.json --steps 200 --out trace.json
 ns-instruction-sim coverage --session s.json --steps 2000 --json
 ns-instruction-sim profile --session s.json --steps 2000

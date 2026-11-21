@@ -301,6 +301,21 @@ enum FirmwareSub {
         #[arg(long)]
         json: bool,
     },
+    /// 列出 ELF 符号表与源文件（无需会话；非 ELF 固件无符号）。
+    Symbols {
+        /// 固件文件（ELF / Intel HEX / BIN；仅 ELF 有符号表）。
+        #[arg(long)]
+        firmware: PathBuf,
+        /// 目标架构（非 ELF 固件需要；缺省 ELF 自动检测、其余默认 riscv）。
+        #[arg(short, long)]
+        arch: Option<String>,
+        /// 按名称子串过滤符号（大小写不敏感）。
+        #[arg(long)]
+        filter: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -1983,6 +1998,9 @@ fn real_main() -> Result<()> {
         }
         Command::Firmware { sub: FirmwareSub::Verify { firmware, arch, algo, expected, json } } => {
             cmd_firmware_verify(&firmware, arch.as_deref(), algo.as_deref(), expected.as_deref(), json)
+        }
+        Command::Firmware { sub: FirmwareSub::Symbols { firmware, arch, filter, json } } => {
+            cmd_firmware_symbols(&firmware, arch.as_deref(), filter.as_deref(), json)
         }
         Command::Trace(args) => cmd_analyze(args, AnalyzeKind::Trace),
         Command::Coverage(args) => cmd_analyze(args, AnalyzeKind::Coverage),
@@ -6725,6 +6743,85 @@ pub(crate) fn firmware_verify_value(
         value["verified"] = serde_json::json!(ok);
     }
     Ok(value)
+}
+
+/// List ELF symbols and source files without a session (`firmware symbols`).
+fn cmd_firmware_symbols(firmware: &Path, arch_arg: Option<&str>, filter: Option<&str>, json: bool) -> Result<()> {
+    let value = firmware_symbols_value(firmware, arch_arg, filter)?;
+    if json {
+        print_json(&value)?;
+        return Ok(());
+    }
+    println!(
+        "固件: {}  （格式 {}，架构 {}，符号 {} 个，源文件 {} 个）",
+        value["path"].as_str().unwrap_or(""),
+        value["format"].as_str().unwrap_or(""),
+        value["arch"].as_str().unwrap_or(""),
+        value["symbolCount"].as_u64().unwrap_or(0),
+        value["sourceFiles"].as_u64().unwrap_or(0)
+    );
+    for s in value["symbols"].as_array().unwrap() {
+        println!(
+            "  {:<40} 0x{:08x}  {} 字节",
+            s["name"].as_str().unwrap_or(""),
+            s["address"].as_u64().unwrap_or(0),
+            s["size"].as_u64().unwrap_or(0)
+        );
+    }
+    for f in value["sourceFileList"].as_array().unwrap() {
+        println!("  源文件  {f}");
+    }
+    Ok(())
+}
+
+/// Machine-readable symbol listing shared by the CLI and MCP server.
+pub(crate) fn firmware_symbols_value(
+    firmware: &Path,
+    arch_arg: Option<&str>,
+    filter: Option<&str>,
+) -> Result<serde_json::Value> {
+    let format = detect_format(firmware);
+    let bytes = std::fs::read(firmware)
+        .with_context(|| format!("读取固件 {} 失败", firmware.display()))?;
+    let arch = if let Some(a) = arch_arg {
+        arch_from_arg(Some(a))?
+    } else if format == FirmwareFormat::Elf {
+        let machine = elf_machine(&bytes)
+            .ok_or_else(|| anyhow::anyhow!("无法读取 ELF e_machine"))?;
+        Arch::from_elf_machine(machine)
+            .ok_or_else(|| anyhow::anyhow!("不支持的 ELF 机器码 {machine}（无法确定架构）"))?
+    } else {
+        Arch::RiscV
+    };
+    let mut sim = Simulator::for_arch(arch)?;
+    load_firmware_into(&mut sim, firmware, 0)
+        .with_context(|| format!("加载固件 {} 失败", firmware.display()))?;
+    let needle = filter.map(|f| f.to_ascii_lowercase());
+    let symbols: Vec<_> = sim
+        .symbols
+        .iter()
+        .filter(|s| {
+            needle
+                .as_ref()
+                .map_or(true, |n| s.name.to_ascii_lowercase().contains(n))
+        })
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "address": s.address,
+                "size": s.size,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "path": firmware.display().to_string(),
+        "format": format.label(),
+        "arch": session::arch_name(arch),
+        "symbolCount": sim.symbols.len(),
+        "sourceFiles": sim.source_files.len(),
+        "sourceFileList": sim.source_files,
+        "symbols": symbols,
+    }))
 }
 
 /// Normalize a hexadecimal literal (`0x`/`0X` optional) to a lowercase digit string.

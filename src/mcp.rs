@@ -505,6 +505,19 @@ fn tools() -> Vec<Tool> {
             handler: tool_firmware_verify,
         },
         Tool {
+            name: "firmware_symbols",
+            description: "列出 ELF 符号表与源文件（无需会话；非 ELF 固件无符号）。",
+            schema: obj(
+                &[
+                    ("firmware", prop_str("固件文件（ELF / Intel HEX / BIN；仅 ELF 有符号表）。")),
+                    ("arch", prop_str("目标架构（非 ELF 固件需要；ELF 自动检测）。")),
+                    ("filter", prop_str("按名称子串过滤符号（大小写不敏感）。")),
+                ],
+                &["firmware"],
+            ),
+            handler: tool_firmware_symbols,
+        },
+        Tool {
             name: "session_create",
             description: "创建（或重建）一个会话，可加载固件；返回完整状态。",
             schema: obj(
@@ -1544,6 +1557,16 @@ fn tool_firmware_verify(_: &McpServer, args: &Map<String, Value>) -> Result<Valu
         s(args, "arch").as_deref(),
         s(args, "algo").as_deref(),
         s(args, "expected").as_deref(),
+    )
+}
+
+/// List ELF symbols and source files (`firmware symbols`).
+fn tool_firmware_symbols(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let firmware = s(args, "firmware").ok_or_else(|| anyhow::anyhow!("缺少 firmware"))?;
+    crate::firmware_symbols_value(
+        Path::new(&firmware),
+        s(args, "arch").as_deref(),
+        s(args, "filter").as_deref(),
     )
 }
 

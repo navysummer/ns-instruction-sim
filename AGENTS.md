@@ -137,6 +137,7 @@ ns-instruction-sim/
 | `session` | `merge` | 合并两个会话（A 为基准、B 的运行时状态优先；寄存器/内存/断点/观察点/外部寄存器/定时器按地址并集 B 胜出，UART 输入输出与看门狗取 B 非空值，GPIO 事件拼接、IRQ 行并集；`--regs-keep` 保留 A 的寄存器文件） | `--a --b --out [--regs-keep] [--json]` | 文本/JSON |
 | `firmware` | `info` | 固件元信息（格式/大小/架构/入口/符号表/源文件/首条指令反汇编），ELF 自动检测架构 | `--firmware --arch [--json]` | 文本/JSON |
 | `firmware` | `verify` | 计算/校验固件镜像完整性校验和（CRC32/CRC16-CCITT/Adler32/FNV-1a/加和），基于原始文件字节；`--expected` 按 `--algo`（缺省 crc32）比对，不匹配非零退出 | `--firmware --arch --algo --expected [--json]` | 文本/JSON |
+| `firmware` | `symbols` | 列出 ELF 符号表与源文件（无需会话；非 ELF 固件无符号），`--filter` 按名称子串筛选 | `--firmware --arch --filter [--json]` | 文本/JSON |
 | `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期/寄存器快照；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`；`--top N` 仅返回前 N 条轨迹） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --top --regs --out --json` | 轨迹/JSON |
 | `coverage` | — | 运行并统计执行覆盖（各 PC 执行次数、唯一 PC 数；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`；`--top N` 按命中次数降序仅返回前 N 个 PC，`uniquePcs` 仍为全量） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --top --json` | 覆盖表/JSON |
 | `profile` | — | 运行并统计指令助记符直方图（`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`；`--top N` 按计数降序仅返回前 N 种助记符，`uniqueMnemonics` 仍为全量） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --top --json` | 直方图/JSON |
@@ -247,6 +248,7 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `firmware_info`（固件元信息：格式/架构/入口/符号表/首条指令）补齐设备与会话维度的工具。
    `firmware_verify`（固件镜像校验和：CRC32/CRC16-CCITT/Adler32/FNV-1a/加和，`expected` 按
    `algo` 缺省 crc32 比对并返回 `verified`）补齐固件完整性维度。
+   `firmware_symbols`（ELF 符号表与源文件列表，`filter` 按名称子串筛选）补齐符号查询维度。
 
 ---
 
@@ -880,6 +882,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   `校验失败`、未知算法/缺失文件报错。
 - `mcp_firmware_verify`：MCP `firmware_verify` 返回全部校验和并支持 `algo`+`expected` 比对
   （`verified` 真假），缺失 `firmware`/未知算法以 `isError:true` 返回。
+- `firmware_symbols_command`：`firmware symbols` 列出 ELF 符号（`reset_handler`@0x80000000、
+  size=4）与源文件，`--filter` 名称子串筛选（大小写不敏感）、BIN 无符号、缺失文件报错。
+- `mcp_firmware_symbols`：MCP `firmware_symbols` 返回符号表并支持 `filter`，缺失固件以
+  `isError:true` 返回。
 - `trace_regs_snapshot`：`trace --regs` 每条指令附带执行后寄存器快照（`addi ra,zero,1`→ra=1、
   `addi sp,ra,2`→sp=3），不带 `--regs` 时 `regs` 为空（向后兼容）。
 - `mcp_firmware_info_and_trace_regs`：MCP `firmware_info` 返回同等元信息（含缺失文件错误路径），
@@ -908,7 +914,7 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   `device_lookup` 工具端到端（`device_lookup` 解析 GPIOA.CRL 寄存器与位域，含缺参/未知设备
   错误路径）与 `trace` 的 `out` 参数把轨迹写入文件并回报 `file`/`bytes`。
 - `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff/patch/merge`、`device memory-map`、
-  `device lookup`、`device peripherals`、`device peripheral`、`firmware info/verify`、
+  `device lookup`、`device peripherals`、`device peripheral`、`firmware info/verify/symbols`、
   `watch set/list/modify/clear/clear-all/enable/disable`）的
   `--help` 与 `-h` 均退出 0 且含 `Usage:`。
 - `help_every_param`：`run`/`bp set`/`mem read`/`reg set`/`periph reg-write`/`watchdog config`/

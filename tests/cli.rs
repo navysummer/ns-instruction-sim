@@ -7248,7 +7248,7 @@ fn mcp_handshake_and_list_tools() {
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "bp_hits", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
         "watch_disable", "watch_clear_all", "watch_hits",
-        "session_info", "session_diff", "session_merge", "device_memory_map", "device_lookup", "device_peripherals", "device_peripheral", "firmware_info", "firmware_verify",
+        "session_info", "session_diff", "session_merge", "device_memory_map", "device_lookup", "device_peripherals", "device_peripheral", "firmware_info", "firmware_verify", "firmware_symbols",
         "periph_reg_dump",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
@@ -8024,6 +8024,77 @@ fn mcp_firmware_verify() {
     let r = client.call_tool("firmware_verify", serde_json::json!({}));
     assert!(r["isError"].as_bool().unwrap());
     let r = client.call_tool("firmware_verify", serde_json::json!({ "firmware": bin_path, "algo": "nope" }));
+    assert!(r["isError"].as_bool().unwrap());
+    client.close();
+}
+
+#[test]
+fn firmware_symbols_command() {
+    let dir = tmpdir();
+    let elf = dir.join(format!("fw-symbols-{}.elf", std::process::id()));
+    write_riscv_elf_with_symbol(&elf, &[0x13, 0x00, 0x10, 0x00], "reset_handler");
+    let elf = elf.to_str().unwrap();
+
+    // JSON lists every ELF symbol (name/address/size) and source file count.
+    let out = Command::new(bin()).args(["firmware", "symbols", "--firmware", elf, "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["format"], "elf");
+    assert_eq!(json["arch"], "riscv");
+    assert!(json["symbolCount"].as_u64().unwrap() >= 1);
+    let symbols = json["symbols"].as_array().unwrap();
+    let main = symbols.iter().find(|s| s["name"] == "reset_handler").unwrap();
+    assert_eq!(main["address"], 0x8000_0000u64);
+    assert_eq!(main["size"], 4u64);
+    assert!(json["sourceFileList"].is_array());
+
+    // `--filter` narrows by name substring (case-insensitive).
+    let out = Command::new(bin()).args(["firmware", "symbols", "--firmware", elf, "--filter", "RESET", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["symbols"].as_array().unwrap().iter().all(|s| s["name"] == "reset_handler"));
+    let out = Command::new(bin()).args(["firmware", "symbols", "--firmware", elf, "--filter", "nomatch", "--json"]).output().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["symbols"].as_array().unwrap().is_empty());
+
+    // Human output names the symbol.
+    let out = Command::new(bin()).args(["firmware", "symbols", "--firmware", elf]).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("reset_handler") && text.contains("0x80000000"), "{text}");
+
+    // A BIN has no symbols; a missing file is an error.
+    let bin_path = dir.join(format!("fw-symbols-{}.bin", std::process::id()));
+    std::fs::write(&bin_path, [0x13u8, 0x00, 0x00, 0x00]).unwrap();
+    let out = Command::new(bin()).args(["firmware", "symbols", "--firmware", bin_path.to_str().unwrap(), "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["symbolCount"], 0u64);
+    let out = Command::new(bin()).args(["firmware", "symbols", "--firmware", "/tmp/nsim-no-fw.elf"]).output().unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mcp_firmware_symbols() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-fw-symbols-{}.elf", std::process::id()));
+    write_riscv_elf_with_symbol(&elf, &[0x13, 0x00, 0x10, 0x00], "reset_handler");
+    let elf = elf.to_str().unwrap();
+
+    let r = client.call_tool("firmware_symbols", serde_json::json!({ "firmware": elf }));
+    assert!(!r["isError"].as_bool().unwrap(), "firmware_symbols: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["arch"], "riscv");
+    assert!(sc["symbolCount"].as_u64().unwrap() >= 1);
+    let main = sc["symbols"].as_array().unwrap().iter().find(|s| s["name"] == "reset_handler").unwrap();
+    assert_eq!(main["address"], 0x8000_0000u64);
+    // Filter narrows; missing firmware is a tool error.
+    let r = client.call_tool("firmware_symbols", serde_json::json!({ "firmware": elf, "filter": "RESET" }));
+    assert!(!r["isError"].as_bool().unwrap());
+    assert_eq!(r["structuredContent"]["symbols"].as_array().unwrap().len(), 1);
+    let r = client.call_tool("firmware_symbols", serde_json::json!({ "firmware": "/tmp/nsim-no-fw.elf" }));
     assert!(r["isError"].as_bool().unwrap());
     client.close();
 }
@@ -10582,7 +10653,7 @@ fn help_every_command() {
         &["csr", "list"], &["csr", "get"], &["csr", "set"],
         &["trace"], &["coverage"], &["profile"],
         &["session", "info"], &["session", "diff"], &["session", "patch"], &["session", "merge"], &["device", "memory-map"],
-        &["firmware", "info"], &["firmware", "verify"],
+        &["firmware", "info"], &["firmware", "verify"], &["firmware", "symbols"],
         &["mcp"],
     ];
     for flag in ["--help", "-h"] {
@@ -10632,6 +10703,7 @@ fn help_every_param() {
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--top", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["firmware", "verify"], &["--firmware", "--arch", "--algo", "--expected", "--json"]),
+        (&["firmware", "symbols"], &["--firmware", "--arch", "--filter", "--json"]),
         (&["session", "patch"], &["--file", "--pc", "--cycle", "--halted", "--reg", "--csr", "--arm-state", "--xpsr", "--it", "--json"]),
         (&["session", "merge"], &["--a", "--b", "--out", "--regs-keep", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
