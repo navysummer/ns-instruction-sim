@@ -1217,6 +1217,9 @@ enum PeriphSub {
         /// 直接设置更新计数（可选）。
         #[arg(long)]
         update_count: Option<u64>,
+        /// 列出会话中已配置的全部定时器（只读，不创建）。
+        #[arg(long)]
+        list: bool,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -5268,9 +5271,56 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             Ok(())
         }
-        PeriphSub::Timer { session, index, enabled, prescaler, auto_reload, counter, update_count, json } => {
+        PeriphSub::Timer { session, index, enabled, prescaler, auto_reload, counter, update_count, list, json } => {
             if index >= 8 {
                 bail!("定时器索引必须在 0..8");
+            }
+            if list {
+                if enabled.is_some() || prescaler.is_some() || auto_reload.is_some() || counter.is_some() || update_count.is_some() {
+                    bail!("--list 不能与 --enabled/--prescaler/--auto-reload/--counter/--update-count 同时使用");
+                }
+                let (sim, _, _) = load_or_create(Some(&session), None, None, "0")?;
+                let timers: Vec<serde_json::Value> = sim
+                    .peripherals
+                    .timers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        serde_json::json!({
+                            "index": i,
+                            "base": t.base,
+                            "enabled": t.enabled,
+                            "counter": t.counter,
+                            "autoReload": t.auto_reload,
+                            "prescaler": t.prescaler,
+                            "irqLine": t.irq_line,
+                            "updateCount": t.update_count,
+                        })
+                    })
+                    .collect();
+                if json {
+                    print_json(&serde_json::json!({
+                        "list": true,
+                        "count": timers.len(),
+                        "timers": timers,
+                    }))?;
+                } else {
+                    println!("定时器数量: {}", timers.len());
+                    for t in &timers {
+                        println!(
+                            "定时器[{}]: base=0x{:08x} enabled={} counter={} autoReload={} prescaler={} irqLine={} updates={}",
+                            t["index"].as_u64().unwrap_or(0),
+                            t["base"].as_u64().unwrap_or(0),
+                            t["enabled"].as_bool().unwrap_or(false),
+                            t["counter"].as_u64().unwrap_or(0),
+                            t["autoReload"].as_u64().unwrap_or(0),
+                            t["prescaler"].as_u64().unwrap_or(0),
+                            t["irqLine"].as_u64().unwrap_or(0),
+                            t["updateCount"].as_u64().unwrap_or(0),
+                        );
+                    }
+                }
+                return Ok(());
             }
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             // Ensure the timer exists (extend the vector up to index+1).

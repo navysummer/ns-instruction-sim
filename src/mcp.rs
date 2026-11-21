@@ -1095,6 +1095,7 @@ fn tools() -> Vec<Tool> {
                     ("auto_reload", prop_num("自动重载值。")),
                     ("counter", prop_num("直接设置运行时计数器值。")),
                     ("update_count", prop_num("直接设置更新计数。")),
+                    ("list", prop_bool("列出会话中已配置的全部定时器（只读，不创建）。")),
                 ],
                 &["session"],
             ),
@@ -3065,6 +3066,36 @@ fn tool_periph_timer(server: &McpServer, args: &Map<String, Value>) -> Result<Va
     let auto_reload = u(args, "auto_reload");
     let counter = u(args, "counter");
     let update_count = u64(args, "update_count");
+    if b(args, "list").unwrap_or(false) {
+        if enabled.is_some() || prescaler.is_some() || auto_reload.is_some() || counter.is_some() || update_count.is_some() {
+            bail!("list 不能与 enabled/prescaler/auto_reload/counter/update_count 同时使用");
+        }
+        return with_sim(server, args, false, |sim, _, _| {
+            let timers: Vec<serde_json::Value> = sim
+                .peripherals
+                .timers
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    json!({
+                        "index": i,
+                        "base": t.base,
+                        "enabled": t.enabled,
+                        "counter": t.counter,
+                        "autoReload": t.auto_reload,
+                        "prescaler": t.prescaler,
+                        "irqLine": t.irq_line,
+                        "updateCount": t.update_count,
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "list": true,
+                "count": timers.len(),
+                "timers": timers,
+            }))
+        });
+    }
     with_sim(server, args, true, |sim, _, _| {
         while sim.peripherals.timers.len() <= index {
             sim.peripherals

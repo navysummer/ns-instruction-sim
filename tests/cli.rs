@@ -1021,6 +1021,55 @@ fn periph_timer_counter_set_readback() {
 }
 
 #[test]
+fn periph_timer_list() {
+    let dir = tmpdir();
+    let sess = dir.join("timer-list.json");
+    bootstrap(&sess);
+    // Configure two timers, then list them all in one read-only call.
+    let out = Command::new(bin())
+        .args(["periph", "timer", "--session", sess.to_str().unwrap(), "--index", "0",
+               "--enabled", "true", "--prescaler", "8", "--auto-reload", "100", "--counter", "42"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["periph", "timer", "--session", sess.to_str().unwrap(), "--index", "1",
+               "--counter", "7"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["periph", "timer", "--session", sess.to_str().unwrap(), "--list", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["list"], true);
+    assert_eq!(json["count"], 2u64);
+    let timers = json["timers"].as_array().unwrap();
+    assert_eq!(timers[0]["index"], 0u64);
+    assert_eq!(timers[0]["enabled"], true);
+    assert_eq!(timers[0]["counter"], 42u64);
+    assert_eq!(timers[1]["index"], 1u64);
+    assert_eq!(timers[1]["counter"], 7u64);
+    // Human-readable output lists each timer.
+    let out = Command::new(bin())
+        .args(["periph", "timer", "--session", sess.to_str().unwrap(), "--list"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("定时器数量: 2") && text.contains("定时器[0]") && text.contains("定时器[1]"), "{text}");
+    // `--list` is read-only and conflicts with configuration parameters.
+    let out = Command::new(bin())
+        .args(["periph", "timer", "--session", sess.to_str().unwrap(), "--list", "--counter", "1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--list 不能"));
+}
+
+#[test]
 fn periph_gpio_direction_output_readback() {
     let dir = tmpdir();
     let sess = dir.join("gpio-dir.json");
@@ -8724,6 +8773,19 @@ fn mcp_periph_timer_counter() {
     assert!(!r["isError"].as_bool().unwrap(), "periph_timer readback: {}", r);
     assert_eq!(r["structuredContent"]["counter"], 12345u64, "{}", r);
     assert_eq!(r["structuredContent"]["updateCount"], 678u64, "{}", r);
+    // `list: true` returns every configured timer (read-only).
+    let r = client.call_tool("periph_timer", serde_json::json!({ "session": s, "list": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_timer list: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["list"], true, "{}", r);
+    assert_eq!(sc["count"], 3u64, "{}", r);
+    let timers = sc["timers"].as_array().unwrap();
+    assert_eq!(timers[2]["index"], 2u64);
+    assert_eq!(timers[2]["counter"], 12345u64);
+    assert_eq!(timers[2]["updateCount"], 678u64);
+    // `list` conflicts with configuration parameters.
+    let r = client.call_tool("periph_timer", serde_json::json!({ "session": s, "list": true, "counter": 1 }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
     client.close();
 }
 
@@ -9716,7 +9778,7 @@ fn help_every_param() {
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
         (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--pattern", "--width", "--out", "--json"]),
         (&["device", "lookup"], &["--addr", "--name", "--json"]),
-        (&["periph", "timer"], &["--session", "--index", "--enabled", "--prescaler", "--auto-reload", "--counter", "--update-count", "--json"]),
+        (&["periph", "timer"], &["--session", "--index", "--enabled", "--prescaler", "--auto-reload", "--counter", "--update-count", "--list", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--json"]),
         (&["mcp"], &["--session"]),
