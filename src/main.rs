@@ -766,6 +766,15 @@ enum BpSub {
         /// 按源码行号设置断点（`file:line`，如 `main.c:10`；与地址/符号互斥）。
         #[arg(long, conflicts_with_all = ["addr", "addr_flag", "symbol"])]
         line: Option<String>,
+        /// 内置设备键（配合 --region，如 stm32f103c8；与 --addr/--symbol/--line 二选一）。
+        #[arg(long, conflicts_with_all = ["addr", "addr_flag", "symbol", "line"])]
+        device: Option<String>,
+        /// 设备命名内存区域（FLASH/RAM/PERIPHERALS；配合 --device）。
+        #[arg(long)]
+        region: Option<String>,
+        /// 区域内偏移（配合 --device/--region，默认 0）。
+        #[arg(long)]
+        offset: Option<String>,
         /// 条件表达式（如 `x1 == 10`）。
         #[arg(long)]
         condition: Option<String>,
@@ -4009,7 +4018,7 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
             }
             Ok(())
         }
-        BpSub::Set { session, addr, addr_flag, symbol, line, condition, hit_count, once, json } => {
+        BpSub::Set { session, addr, addr_flag, symbol, line, device, region, offset, condition, hit_count, once, json } => {
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             let addr_num = if let Some(sym) = &symbol {
                 let found = sim
@@ -4039,6 +4048,14 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("源文件未找到: {file_part}"))?;
                 sim.address_for_line(file_idx, line_num)
                     .ok_or_else(|| anyhow::anyhow!("行 {line_part} 无对应指令地址"))?
+            } else if device.is_some() || region.is_some() {
+                resolve_mem_address(
+                    None,
+                    None,
+                    device.as_deref(),
+                    region.as_deref(),
+                    offset.as_deref().map(parse_num).transpose()?.unwrap_or(0),
+                )?
             } else {
                 let addr = addr_flag
                     .or(addr)

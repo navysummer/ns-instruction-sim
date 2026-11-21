@@ -8501,6 +8501,68 @@ fn mcp_mem_region_addressing() {
 }
 
 #[test]
+fn bp_set_device_region() {
+    let dir = tmpdir();
+    let sess = dir.join("bp-region.json");
+    let run = |args: &[&str]| {
+        let out = Command::new(bin()).args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}: {}",
+            args.first().copied().unwrap_or(""),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    run(&["state", "--arch", "arm", "--session", sess.to_str().unwrap()]);
+    // Breakpoint via a named device memory region (FLASH @ 0x08000000).
+    let out = run(&["bp", "set", "--session", sess.to_str().unwrap(),
+        "--device", "stm32f103c8", "--region", "FLASH", "--offset", "0", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["address"], 0x0800_0000u64, "{v}");
+    let out = run(&["bp", "list", "--session", sess.to_str().unwrap(), "--json"]);
+    let list: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(list[0]["address"], 0x0800_0000u64, "{list}");
+    // Unknown region and device-without-region are errors.
+    let out = Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8", "--region", "NOSUCH"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(),
+               "--device", "stm32f103c8"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mcp_bp_set_device_region() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-bp-region-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "arm" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("bp_set", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "region": "FLASH", "offset": 0,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_set: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x0800_0000u64, "{}", r);
+    let r = client.call_tool("bp_list", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_list: {}", r);
+    assert_eq!(r["structuredContent"]["breakpoints"][0]["address"], 0x0800_0000u64);
+    let r = client.call_tool("bp_set", serde_json::json!({
+        "session": s, "device": "stm32f103c8", "region": "NOSUCH",
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn state_reports_arm_it_and_pc_limit() {
     let dir = tmpdir();
     let sess = dir.join("arm-itstate.json");
@@ -10128,7 +10190,7 @@ fn help_every_param() {
     let checks: &[(&[&str], &[&str])] = &[
         (&["run"], &["--session", "--firmware", "--arch", "--base", "--max-steps", "--steps", "--until", "--until-symbol", "--until-condition", "--max-cycles", "--save-session", "--cycle-accurate", "--json", "--trace", "--trace-regs", "--source"]),
         (&["continue"], &["--session", "--until", "--until-symbol", "--until-condition", "--max-steps", "--max-cycles", "--save", "--json", "--trace", "--trace-regs", "--source"]),
-        (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--condition", "--hit-count", "--once"]),
+        (&["bp", "set"], &["--session", "--addr", "--symbol", "--line", "--device", "--region", "--offset", "--condition", "--hit-count", "--once"]),
         (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
         (&["bp", "hits"], &["--session", "--addr", "--symbol", "--count", "--json"]),
         (&["watch", "hits"], &["--session", "--addr", "--symbol", "--count", "--json"]),

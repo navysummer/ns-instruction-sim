@@ -811,6 +811,9 @@ fn tools() -> Vec<Tool> {
                     ("addr", addr.clone()),
                     ("symbol", prop_str("按符号名设置断点。")),
                     ("line", prop_str("按源码行号设置断点（file:line）。")),
+                    ("device", prop_str("内置设备键（配合 region，如 stm32f103c8）。")),
+                    ("region", prop_str("设备命名内存区域（FLASH/RAM/PERIPHERALS）。")),
+                    ("offset", prop_num("区域内偏移（默认 0）。")),
                     ("condition", prop_str("条件表达式，如 x1 == 10。")),
                     ("hit_count", prop_num("命中次数（第 N 次命中时暂停）。")),
                     ("once", prop_bool("一次性断点：命中后自动清除。")),
@@ -2389,6 +2392,9 @@ fn tool_bp_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let addr_arg = s(args, "addr");
     let symbol = s(args, "symbol");
     let line = s(args, "line");
+    let device = s(args, "device");
+    let region = s(args, "region");
+    let offset = u(args, "offset").unwrap_or(0);
     let condition = s(args, "condition").unwrap_or_default();
     let hit_count = u(args, "hit_count").unwrap_or(0);
     let once = b(args, "once").unwrap_or(false);
@@ -2415,8 +2421,16 @@ fn tool_bp_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
                 .map_err(|_| anyhow::anyhow!("无效行号: {lineno}"))?;
             sim.address_for_line(file_idx, lineno)
                 .ok_or_else(|| anyhow::anyhow!("文件 {file} 无行号 {lineno}"))?
+        } else if device.is_some() || region.is_some() {
+            crate::resolve_mem_address(
+                None,
+                None,
+                device.as_deref(),
+                region.as_deref(),
+                offset,
+            )?
         } else {
-            bail!("请提供 addr、symbol 或 line");
+            bail!("请提供 addr、symbol、line 或 device+region");
         };
         if addr > sim.pc_limit() {
             bail!("断点地址 0x{addr:08x} 超出 {} 的 PC 可寻址范围", sim.arch.label());
