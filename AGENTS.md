@@ -134,6 +134,7 @@ ns-instruction-sim/
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
 | `session` | `info` / `diff` / `patch` | 会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）或比较两个会话的全部差异；`patch` 直接修改 PC/周期/停机/寄存器/CSR 并保存，ARM 会话还可设置指令集状态（`--arm-state`）、xPSR（`--xpsr`）与 If-Then 块（`--it mask,cond,index`） | `--file` / `--a --b --limit` / `--pc --cycle --halted --reg --csr --arm-state --xpsr --it [--json]` | 文本/JSON |
 | `firmware` | `info` | 固件元信息（格式/大小/架构/入口/符号表/源文件/首条指令反汇编），ELF 自动检测架构 | `--firmware --arch [--json]` | 文本/JSON |
+| `firmware` | `verify` | 计算/校验固件镜像完整性校验和（CRC32/CRC16-CCITT/Adler32/FNV-1a/加和），基于原始文件字节；`--expected` 按 `--algo`（缺省 crc32）比对，不匹配非零退出 | `--firmware --arch --algo --expected [--json]` | 文本/JSON |
 | `trace` | — | 运行并输出结构化指令轨迹（每条指令的 PC/反汇编/原始字节/来源/周期/寄存器快照；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`；`--top N` 仅返回前 N 条轨迹） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --top --regs --out --json` | 轨迹/JSON |
 | `coverage` | — | 运行并统计执行覆盖（各 PC 执行次数、唯一 PC 数；`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`；`--top N` 按命中次数降序仅返回前 N 个 PC，`uniquePcs` 仍为全量） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --top --json` | 覆盖表/JSON |
 | `profile` | — | 运行并统计指令助记符直方图（`--max-cycles` 到达即停并报 `result="cycles"`；内存观察点被写入时停并报 `result="watchpoint"`、`watchHit=<地址>`；`--top N` 按计数降序仅返回前 N 种助记符，`uniqueMnemonics` 仍为全量） | `--session --arch --firmware --base --steps --max-steps --max-cycles --until --until-symbol --top --json` | 直方图/JSON |
@@ -240,6 +241,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `session_patch`（直接修改会话的 PC/周期/停机/寄存器/CSR 并保存；ARM 会话支持
    `arm_state`/`xpsr`/`it_mask`/`it_cond`/`it_index` 设置执行状态）、
    `firmware_info`（固件元信息：格式/架构/入口/符号表/首条指令）补齐设备与会话维度的工具。
+   `firmware_verify`（固件镜像校验和：CRC32/CRC16-CCITT/Adler32/FNV-1a/加和，`expected` 按
+   `algo` 缺省 crc32 比对并返回 `verified`）补齐固件完整性维度。
 
 ---
 
@@ -857,6 +860,12 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   轨迹、`profile --out` 写出文本直方图，文件内容均可被重新解析校验。
 - `firmware_info_command`：`firmware info` 对 ELF 自动检测架构与入口（`entryText` 反汇编首条指令、
   `machine=243`），BIN 可 `--arch` 显式指定，缺失文件报错。
+- `firmware_verify_command`：`firmware verify` 对原始文件字节计算全部校验和（8 字节
+  `00..07` 的 CRC32=`0x88aa689f`、Adler32=`0x005c001d`、CRC16-CCITT=`0x178d`、FNV-1a 等），
+  `--algo` 只选单个算法、`--expected` 匹配退出 0 且 `verified=true`、不匹配非零退出并报
+  `校验失败`、未知算法/缺失文件报错。
+- `mcp_firmware_verify`：MCP `firmware_verify` 返回全部校验和并支持 `algo`+`expected` 比对
+  （`verified` 真假），缺失 `firmware`/未知算法以 `isError:true` 返回。
 - `trace_regs_snapshot`：`trace --regs` 每条指令附带执行后寄存器快照（`addi ra,zero,1`→ra=1、
   `addi sp,ra,2`→sp=3），不带 `--regs` 时 `regs` 为空（向后兼容）。
 - `mcp_firmware_info_and_trace_regs`：MCP `firmware_info` 返回同等元信息（含缺失文件错误路径），
@@ -885,7 +894,8 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   `device_lookup` 工具端到端（`device_lookup` 解析 GPIOA.CRL 寄存器与位域，含缺参/未知设备
   错误路径）与 `trace` 的 `out` 参数把轨迹写入文件并回报 `file`/`bytes`。
 - `help_every_command`：每个命令与子命令（含 `mcp`、`session info/diff`、`device memory-map`、
-  `device lookup`、`device peripherals`、`watch set/list/modify/clear/clear-all/enable/disable`）的
+  `device lookup`、`device peripherals`、`firmware info/verify`、
+  `watch set/list/modify/clear/clear-all/enable/disable`）的
   `--help` 与 `-h` 均退出 0 且含 `Usage:`。
 - `help_every_param`：`run`/`bp set`/`mem read`/`reg set`/`periph reg-write`/`watchdog config`/
   `watch set`/`watch list`/`watch modify`/`trace`/`coverage`/`profile`/`mcp` 的 `--help` 包含每个参数的帮助文本

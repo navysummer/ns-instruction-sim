@@ -491,6 +491,20 @@ fn tools() -> Vec<Tool> {
             handler: tool_firmware_info,
         },
         Tool {
+            name: "firmware_verify",
+            description: "计算/校验固件镜像的完整性校验和（CRC32/CRC16-CCITT/Adler32/FNV-1a/加和）；给出 expected 时按 algo（缺省 crc32）比对并返回 verified。",
+            schema: obj(
+                &[
+                    ("firmware", prop_str("固件文件（ELF / Intel HEX / BIN），校验和基于原始文件字节。")),
+                    ("arch", prop_str("目标架构（仅用于报告；ELF 自动检测）。")),
+                    ("algo", prop_str("只计算指定算法：crc32|crc16_ccitt|adler32|fnv1a32|fnv1a64|sum8|sum16|sum32。")),
+                    ("expected", prop_str("期望的校验值（十六进制，如 0x12345678）；给出时比对。")),
+                ],
+                &["firmware"],
+            ),
+            handler: tool_firmware_verify,
+        },
+        Tool {
             name: "session_create",
             description: "创建（或重建）一个会话，可加载固件；返回完整状态。",
             schema: obj(
@@ -1493,6 +1507,17 @@ fn tool_arch_list(_: &McpServer, _: &Map<String, Value>) -> Result<Value> {
 fn tool_firmware_info(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let firmware = s(args, "firmware").ok_or_else(|| anyhow::anyhow!("缺少 firmware"))?;
     crate::firmware_info_value(Path::new(&firmware), s(args, "arch").as_deref())
+}
+
+/// Compute and optionally verify firmware checksums (`firmware verify`).
+fn tool_firmware_verify(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let firmware = s(args, "firmware").ok_or_else(|| anyhow::anyhow!("缺少 firmware"))?;
+    crate::firmware_verify_value(
+        Path::new(&firmware),
+        s(args, "arch").as_deref(),
+        s(args, "algo").as_deref(),
+        s(args, "expected").as_deref(),
+    )
 }
 
 fn tool_device_list(_: &McpServer, _: &Map<String, Value>) -> Result<Value> {

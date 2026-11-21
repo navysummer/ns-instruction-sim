@@ -7248,7 +7248,7 @@ fn mcp_handshake_and_list_tools() {
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "bp_hits", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
         "watch_disable", "watch_clear_all", "watch_hits",
-        "session_info", "session_diff", "device_memory_map", "device_lookup", "device_peripherals", "firmware_info",
+        "session_info", "session_diff", "device_memory_map", "device_lookup", "device_peripherals", "firmware_info", "firmware_verify",
         "periph_reg_dump",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
@@ -7924,6 +7924,107 @@ fn mcp_firmware_info_and_trace_regs() {
     let r = client.call_tool("trace", serde_json::json!({ "session": s, "steps": 1, "regs": true }));
     assert!(!r["isError"].as_bool().unwrap(), "trace regs: {}", r);
     assert_eq!(r["structuredContent"]["trace"][0]["regs"]["ra"], 1u64);
+    client.close();
+}
+
+#[test]
+fn firmware_verify_command() {
+    let dir = tmpdir();
+    let bin_path = dir.join(format!("fw-verify-{}.bin", std::process::id()));
+    std::fs::write(&bin_path, [0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]).unwrap();
+    let bin_path = bin_path.to_str().unwrap();
+
+    // JSON reports every checksum over the raw image bytes.
+    let out = Command::new(bin()).args(["firmware", "verify", "--firmware", bin_path, "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["format"], "bin");
+    assert_eq!(json["bytes"], 8u64);
+    assert_eq!(json["arch"], "riscv");
+    assert_eq!(json["checksums"]["crc32"], "0x88aa689f");
+    assert_eq!(json["checksums"]["adler32"], "0x005c001d");
+    assert_eq!(json["checksums"]["crc16_ccitt"], "0x178d");
+    assert_eq!(json["checksums"]["fnv1a32"], "0x6bf6a41d");
+    assert_eq!(json["checksums"]["fnv1a64"], "0xa4dc49e2b28ecb7d");
+    assert_eq!(json["checksums"]["sum8"], "0x1c");
+    assert_eq!(json["checksums"]["sum16"], "0x001c");
+    assert_eq!(json["checksums"]["sum32"], "0x0000001c");
+    assert_eq!(json["algorithms"].as_array().unwrap().len(), 8);
+
+    // Single-algorithm selection narrows the result.
+    let out = Command::new(bin()).args(["firmware", "verify", "--firmware", bin_path, "--algo", "adler32", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["checksums"].as_object().unwrap().len(), 1);
+    assert_eq!(json["checksums"]["adler32"], "0x005c001d");
+
+    // Human view lists checksums.
+    let out = Command::new(bin()).args(["firmware", "verify", "--firmware", bin_path]).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("crc32") && text.contains("0x88aa689f") && text.contains("8 字节"), "{text}");
+
+    // Matching expected value reports verified=true and exits 0.
+    let out = Command::new(bin())
+        .args(["firmware", "verify", "--firmware", bin_path, "--algo", "crc32", "--expected", "0x88aa689f", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["verified"], true);
+    assert_eq!(json["expected"], "88aa689f");
+    assert_eq!(json["algo"], "crc32");
+
+    // A mismatching expected value reports verified=false and exits non-zero.
+    let out = Command::new(bin())
+        .args(["firmware", "verify", "--firmware", bin_path, "--algo", "crc32", "--expected", "0xdeadbeef"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("校验失败"));
+
+    // Unknown algorithm and missing file are real errors.
+    let out = Command::new(bin()).args(["firmware", "verify", "--firmware", bin_path, "--algo", "nope"]).output().unwrap();
+    assert!(!out.status.success());
+    let out = Command::new(bin()).args(["firmware", "verify", "--firmware", "/tmp/nsim-no-fw.elf"]).output().unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mcp_firmware_verify() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let bin_path = dir.join(format!("mcp-fw-verify-{}.bin", std::process::id()));
+    std::fs::write(&bin_path, [0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]).unwrap();
+    let bin_path = bin_path.to_str().unwrap();
+
+    // firmware_verify returns all checksums; the crc32 matches the known value.
+    let r = client.call_tool("firmware_verify", serde_json::json!({ "firmware": bin_path }));
+    assert!(!r["isError"].as_bool().unwrap(), "firmware_verify: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["checksums"]["crc32"], "0x88aa689f");
+    assert_eq!(sc["checksums"]["adler32"], "0x005c001d");
+
+    // expected compares against the selected algo.
+    let r = client.call_tool(
+        "firmware_verify",
+        serde_json::json!({ "firmware": bin_path, "algo": "crc32", "expected": "0x88aa689f" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "verify match: {}", r);
+    assert_eq!(r["structuredContent"]["verified"], true);
+    let r = client.call_tool(
+        "firmware_verify",
+        serde_json::json!({ "firmware": bin_path, "algo": "crc32", "expected": "0xdeadbeef" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap());
+    assert_eq!(r["structuredContent"]["verified"], false);
+
+    // Missing firmware and unknown algorithm are tool errors.
+    let r = client.call_tool("firmware_verify", serde_json::json!({}));
+    assert!(r["isError"].as_bool().unwrap());
+    let r = client.call_tool("firmware_verify", serde_json::json!({ "firmware": bin_path, "algo": "nope" }));
+    assert!(r["isError"].as_bool().unwrap());
     client.close();
 }
 
@@ -10259,7 +10360,7 @@ fn help_every_command() {
         &["csr", "list"], &["csr", "get"], &["csr", "set"],
         &["trace"], &["coverage"], &["profile"],
         &["session", "info"], &["session", "diff"], &["session", "patch"], &["device", "memory-map"],
-        &["firmware", "info"],
+        &["firmware", "info"], &["firmware", "verify"],
         &["mcp"],
     ];
     for flag in ["--help", "-h"] {
@@ -10308,6 +10409,7 @@ fn help_every_param() {
         (&["interrupt", "clear"], &["--session", "--json"]),
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--top", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
+        (&["firmware", "verify"], &["--firmware", "--arch", "--algo", "--expected", "--json"]),
         (&["session", "patch"], &["--file", "--pc", "--cycle", "--halted", "--reg", "--csr", "--arm-state", "--xpsr", "--it", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),

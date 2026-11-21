@@ -133,6 +133,64 @@ pub fn parse_num(text: &str) -> Result<u32> {
     }
 }
 
+/// Compute a set of firmware checksums over a byte image.
+///
+/// Returns `(name, width_bits, value)` tuples for every supported algorithm so
+/// callers can render hex strings and verify an expected digest. All algorithms
+/// are pure-Rust and dependency-free.
+pub fn compute_checksums(bytes: &[u8]) -> Vec<(&'static str, u32, u64)> {
+    let mut crc32 = 0xFFFF_FFFFu32;
+    let mut crc16 = 0xFFFFu16;
+    let mut adler_a = 1u32;
+    let mut adler_b = 0u32;
+    let mut fnv32 = 0x811C_9DC5u32;
+    let mut fnv64 = 0xCBF2_9CE4_8422_2325u64;
+    let mut sum8 = 0u8;
+    let mut sum16 = 0u16;
+    let mut sum32 = 0u32;
+    for &b in bytes {
+        // CRC-32 (IEEE 802.3, reflected, poly 0xEDB88320, init/xorout 0xFFFFFFFF).
+        crc32 ^= b as u32;
+        for _ in 0..8 {
+            crc32 = if crc32 & 1 != 0 {
+                (crc32 >> 1) ^ 0xEDB8_8320
+            } else {
+                crc32 >> 1
+            };
+        }
+        // CRC-16/CCITT-FALSE (MSB-first, poly 0x1021, init 0xFFFF, no xorout).
+        crc16 ^= (b as u16) << 8;
+        for _ in 0..8 {
+            crc16 = if crc16 & 0x8000 != 0 {
+                (crc16 << 1) ^ 0x1021
+            } else {
+                crc16 << 1
+            };
+        }
+        // Adler-32.
+        adler_a = (adler_a + b as u32) % 65521;
+        adler_b = (adler_b + adler_a) % 65521;
+        // FNV-1a 32-bit and 64-bit.
+        fnv32 = (fnv32 ^ b as u32).wrapping_mul(0x0100_0193);
+        fnv64 = (fnv64 ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3);
+        // Simple additive checksums.
+        sum8 = sum8.wrapping_add(b);
+        sum16 = sum16.wrapping_add(b as u16);
+        sum32 = sum32.wrapping_add(b as u32);
+    }
+    let crc32 = crc32 ^ 0xFFFF_FFFF;
+    vec![
+        ("crc32", 32, crc32 as u64),
+        ("crc16_ccitt", 16, crc16 as u64),
+        ("adler32", 32, ((adler_b << 16) | adler_a) as u64),
+        ("fnv1a32", 32, fnv32 as u64),
+        ("fnv1a64", 64, fnv64),
+        ("sum8", 8, sum8 as u64),
+        ("sum16", 16, sum16 as u64),
+        ("sum32", 32, sum32 as u64),
+    ]
+}
+
 /// Encode `bytes` starting at `addr` as Intel HEX records (loadable by
 /// `mem load` / the firmware loader). Addresses above 0xFFFF are split into
 /// 64 KiB banks using extended-linear-address (type 04) records.

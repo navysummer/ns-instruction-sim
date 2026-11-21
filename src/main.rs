@@ -268,6 +268,24 @@ enum FirmwareSub {
         #[arg(long)]
         json: bool,
     },
+    /// 计算/校验固件镜像的完整性校验和（CRC32/CRC16-CCITT/Adler32/FNV-1a/加和）。
+    Verify {
+        /// 固件文件（ELF / Intel HEX / BIN），校验和基于原始文件字节计算。
+        #[arg(long)]
+        firmware: PathBuf,
+        /// 目标架构（仅用于报告；非 ELF 固件缺省 riscv，ELF 自动检测）。
+        #[arg(short, long)]
+        arch: Option<String>,
+        /// 只计算指定的校验算法：crc32|crc16_ccitt|adler32|fnv1a32|fnv1a64|sum8|sum16|sum32。
+        #[arg(long)]
+        algo: Option<String>,
+        /// 期望的校验值（十六进制，如 0x12345678）；给出时按 `--algo`（缺省 crc32）比对。
+        #[arg(long)]
+        expected: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -1923,6 +1941,9 @@ fn real_main() -> Result<()> {
         Command::Session(SessionArgs { sub: SessionSub::Patch(args) }) => cmd_session_patch(args),
         Command::Firmware { sub: FirmwareSub::Info { firmware, arch, json } } => {
             cmd_firmware_info(&firmware, arch.as_deref(), json)
+        }
+        Command::Firmware { sub: FirmwareSub::Verify { firmware, arch, algo, expected, json } } => {
+            cmd_firmware_verify(&firmware, arch.as_deref(), algo.as_deref(), expected.as_deref(), json)
         }
         Command::Trace(args) => cmd_analyze(args, AnalyzeKind::Trace),
         Command::Coverage(args) => cmd_analyze(args, AnalyzeKind::Coverage),
@@ -6463,6 +6484,115 @@ pub(crate) fn firmware_info_value(
         "sourceFiles": sim.source_files.len(),
         "symbols": symbols,
     }))
+}
+
+/// Compute and optionally verify firmware-image checksums.
+fn cmd_firmware_verify(
+    firmware: &Path,
+    arch_arg: Option<&str>,
+    algo_arg: Option<&str>,
+    expected_arg: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let value = firmware_verify_value(firmware, arch_arg, algo_arg, expected_arg)?;
+    let verified = value["verified"].as_bool();
+    if json {
+        print_json(&value)?;
+        if verified == Some(false) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    println!(
+        "固件: {}  （格式 {}，{} 字节，架构 {}）",
+        value["path"].as_str().unwrap_or(""),
+        value["format"].as_str().unwrap_or(""),
+        value["bytes"].as_u64().unwrap_or(0),
+        value["arch"].as_str().unwrap_or("")
+    );
+    for (name, hex) in value["checksums"].as_object().unwrap() {
+        println!("  {:<14} {}", name, hex.as_str().unwrap_or(""));
+    }
+    if let Some(expected) = value["expected"].as_str() {
+        let algo = value["algo"].as_str().unwrap_or("crc32");
+        let actual = value["checksums"][algo].as_str().unwrap_or("");
+        if verified == Some(true) {
+            println!("  校验 {}: 通过（{expected}）", algo);
+        } else {
+            eprintln!("错误: 校验失败 {}: 期望 {expected}，实际 {actual}", algo);
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+/// Machine-readable firmware checksum value shared by the CLI and MCP server.
+pub(crate) fn firmware_verify_value(
+    firmware: &Path,
+    arch_arg: Option<&str>,
+    algo_arg: Option<&str>,
+    expected_arg: Option<&str>,
+) -> Result<serde_json::Value> {
+    let format = detect_format(firmware);
+    let bytes = std::fs::read(firmware)
+        .with_context(|| format!("读取固件 {} 失败", firmware.display()))?;
+    let arch = if let Some(a) = arch_arg {
+        arch_from_arg(Some(a))?
+    } else if format == FirmwareFormat::Elf {
+        let machine = elf_machine(&bytes)
+            .ok_or_else(|| anyhow::anyhow!("无法读取 ELF e_machine"))?;
+        Arch::from_elf_machine(machine)
+            .ok_or_else(|| anyhow::anyhow!("不支持的 ELF 机器码 {machine}（无法确定架构）"))?
+    } else {
+        Arch::RiscV
+    };
+    let mut checksums = BTreeMap::new();
+    let mut selected: Vec<&str> = Vec::new();
+    for (name, bits, value) in sim::compute_checksums(&bytes) {
+        if let Some(algo) = algo_arg {
+            if algo != name {
+                continue;
+            }
+        }
+        selected.push(name);
+        checksums.insert(name.to_string(), format!("0x{:0>width$x}", value, width = (bits / 4) as usize));
+    }
+    if selected.is_empty() {
+        bail!(
+            "未知校验算法 {:?}（支持 crc32|crc16_ccitt|adler32|fnv1a32|fnv1a64|sum8|sum16|sum32）",
+            algo_arg.unwrap_or("")
+        );
+    }
+    let mut value = serde_json::json!({
+        "path": firmware.display().to_string(),
+        "format": format.label(),
+        "bytes": bytes.len(),
+        "arch": session::arch_name(arch),
+        "algorithms": selected,
+        "checksums": checksums,
+    });
+    if let Some(expected) = expected_arg {
+        let algo = if let Some(a) = algo_arg {
+            a.to_string()
+        } else {
+            "crc32".to_string()
+        };
+        let actual = value["checksums"][&algo].as_str().unwrap_or("").to_string();
+        let expected_norm = normalize_hex(expected);
+        let actual_norm = normalize_hex(&actual);
+        let ok = actual_norm == expected_norm;
+        value["expected"] = serde_json::json!(expected_norm);
+        value["algo"] = serde_json::json!(algo);
+        value["verified"] = serde_json::json!(ok);
+    }
+    Ok(value)
+}
+
+/// Normalize a hexadecimal literal (`0x`/`0X` optional) to a lowercase digit string.
+fn normalize_hex(s: &str) -> String {
+    let t = s.trim();
+    let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+    t.chars().filter(|c| c.is_ascii_hexdigit()).map(|c| c.to_ascii_lowercase()).collect()
 }
 
 /// `session info`: show persisted-session metadata in a compact table.
