@@ -214,6 +214,7 @@ ns-instruction-sim interrupt pending --session s.json
 ns-instruction-sim interrupt vector --session s.json --json
 ns-instruction-sim interrupt set --session s.json --line 3 --value 1
 ns-instruction-sim interrupt take --session s.json
+ns-instruction-sim interrupt clear --session s.json --json
 
 # 看门狗
 ns-instruction-sim watchdog status --session s.json

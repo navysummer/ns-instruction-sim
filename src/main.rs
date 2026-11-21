@@ -1545,6 +1545,15 @@ enum InterruptSub {
         #[arg(long)]
         json: bool,
     },
+    /// 清除全部挂起外设中断线（保留使能状态）。
+    Clear {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -5879,6 +5888,32 @@ fn cmd_interrupt(sub: InterruptSub) -> Result<()> {
                 print_json(&serde_json::json!({ "line": line, "value": value }))?;
             } else {
                 println!("IRQ {line} = {value}");
+            }
+            Ok(())
+        }
+        InterruptSub::Clear { session, json } => {
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let before: Vec<usize> = sim
+                .peripherals
+                .irq_pending
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| **p)
+                .map(|(i, _)| i)
+                .collect();
+            for p in sim.peripherals.irq_pending.iter_mut() {
+                *p = false;
+            }
+            let s = Session::capture(&sim, fw);
+            s.save(&session)?;
+            if json {
+                print_json(&serde_json::json!({
+                    "cleared": before.len(),
+                    "pendingLines": Vec::<usize>::new(),
+                    "anyPending": sim.any_pending(),
+                }))?;
+            } else {
+                println!("已清除 {} 条挂起中断线", before.len());
             }
             Ok(())
         }

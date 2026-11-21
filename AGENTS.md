@@ -128,7 +128,7 @@ ns-instruction-sim/
 | `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费），`--peek` 查看下一条待读字节而不消费、`--rx-drain` 清空接收 FIFO；`reg-dump --fields` 附带每个寄存器的 SVD 位域解码（位偏移/宽度/当前值/描述）；`timer` 可直接设置/读取运行时计数器（`--counter`）与更新计数（`--update-count`），`--list` 列出已配置的全部定时器（只读，不创建，与配置参数互斥）；`gpio` 可设置引脚方向/输出电平（`--direction`/`--output`）并读取输入/输出/方向（`--read`），`--events` 查询输出变化事件日志（cycle/pin/value/pc）、`--clear-events` 清空该日志（两者均持久化） | `--uart-base --gpio-base --pin --value --direction --output --read --events --clear-events --index --enabled --prescaler --auto-reload --counter --update-count --list --addr --name --len --bytes --input --peek --rx-drain --file --device --peripheral --register --field --fields --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `nearest` / `line` / `addr` | ELF 符号与源行号映射（`nearest` 查询地址不大于给定地址的最近符号，含 `offset`） | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` / `set` | 周期计数/指令周期估算/外设推进/设置周期计数（模拟时间流逝/超时）；`estimate` 可用 `--symbol` 按 ELF 符号解析地址 | `--addr --symbol --cycles --count --session --json` | 值/JSON |
-| `interrupt` | `take` / `pending` / `vector` / `set` | 中断触发/查询/向量表/置线；`vector` 返回 mtvec 基址与模式（`direct`/`vectored`）及每行目标地址 | `--line --value --session --json` | 值/JSON |
+| `interrupt` | `take` / `pending` / `vector` / `set` / `clear` | 中断触发/查询/向量表/置线/清除全部挂起；`vector` 返回 mtvec 基址与模式（`direct`/`vectored`）及每行目标地址；`clear` 清空全部挂起线并持久化（保留使能状态） | `--line --value --session --json` | 值/JSON |
 | `watchdog` | `status` / `feed` / `config` / `reset` | 看门狗查询/喂狗/配置/强制复位 | `--enabled --timeout --base --entry --session --json` | 表/JSON |
 | `csr` | `list` / `get` / `set` | RISC-V machine-mode CSR 读写 | `--name --value --session --json` | 值/JSON |
 | `session` | `info` / `diff` / `patch` | 会话元信息（架构/PC/周期/寄存器数/断点/内存/外设/固件/CSR）或比较两个会话的全部差异；`patch` 直接修改 PC/周期/停机/寄存器/CSR 并保存，ARM 会话还可设置指令集状态（`--arm-state`）、xPSR（`--xpsr`）与 If-Then 块（`--it mask,cond,index`） | `--file` / `--a --b --limit` / `--pc --cycle --halted --reg --csr --arm-state --xpsr --it [--json]` | 文本/JSON |
@@ -214,8 +214,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `watch_modify` 更新长度/命中次数/一次性并保留运行时命中计数，
    `state` 返回 `watchpoints` 数组），
    `disasm`、`reset`、`cycle_get/estimate/tick/set`（`cycle_estimate` 支持 `symbol` 参数，
-   从会话固件符号表解析地址）、`interrupt_take/pending/vector/set`（`interrupt_vector`
-   返回 `base`/`mode`/`vectors`）、
+   从会话固件符号表解析地址）、`interrupt_take/pending/vector/set/clear`（`interrupt_vector`
+   返回 `base`/`mode`/`vectors`；`interrupt_clear` 清空全部挂起线并持久化）、
    `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`
    （`periph_reg_dump` 默认返回 `fields` 位域解码，`fields: false` 省略；
    `periph_uart` 支持 `peek` 查看下一条待读字节与 `rx_drain` 清空接收 FIFO；
@@ -309,6 +309,9 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `interrupt_vector_query`：`interrupt vector` 返回 mtvec 基址/模式（`direct`/`vectored`）与
   每行目标地址。
 - `mcp_interrupt_vector`：MCP `interrupt_vector` 返回 `base`/`mode`/`vectors`，支持向量模式地址计算。
+- `interrupt_clear_pending`：`interrupt clear` 清空全部挂起线（`cleared` 回报数量、`pendingLines` 为空、
+  人读 `已清除 N 条`），跨调用持久化。
+- `mcp_interrupt_clear`：MCP `interrupt_clear` 清空全部挂起线并持久化，`interrupt_pending` 读回 `pending: []`。
 - `bp_list_shows_hits`：断点命中次数持久化并展示。
 - `bp_once_autoclears`：`bp set --once` 命中后自动清除，再次 `continue` 不再停靠。
 - `bp_enable_disable_roundtrip`：`bp disable` 不再暂停，`bp enable` 恢复暂停。

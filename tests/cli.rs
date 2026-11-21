@@ -718,6 +718,32 @@ fn mcp_interrupt_vector() {
 }
 
 #[test]
+fn mcp_interrupt_clear() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-irq-clear-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    for line in [1u64, 4u64] {
+        let r = client.call_tool("interrupt_set", serde_json::json!({ "session": s, "line": line, "value": 1 }));
+        assert!(!r["isError"].as_bool().unwrap(), "interrupt_set: {}", r);
+    }
+    // Clear all pending lines.
+    let r = client.call_tool("interrupt_clear", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "interrupt_clear: {}", r);
+    assert_eq!(r["structuredContent"]["cleared"], 2u64, "{}", r);
+    assert_eq!(r["structuredContent"]["anyPending"], false, "{}", r);
+    // Persisted: pending query is empty.
+    let r = client.call_tool("interrupt_pending", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "interrupt_pending: {}", r);
+    assert_eq!(r["structuredContent"]["pending"], serde_json::json!([]), "{}", r);
+    client.close();
+}
+
+#[test]
 fn csr_set_get_roundtrip() {
     let dir = tmpdir();
     let sess = dir.join("csr.json");
@@ -830,6 +856,44 @@ fn interrupt_set_pending_and_take() {
     assert_eq!(json["taken"], true);
     assert_eq!(json["pc"], 0x8000_0010u64);
     assert_eq!(json["mcause"], 0x8000_0003u64);
+}
+
+#[test]
+fn interrupt_clear_pending() {
+    let dir = tmpdir();
+    let sess = dir.join("irq-clear.json");
+    bootstrap(&sess);
+    // Assert two lines, then clear all of them in one call.
+    for line in [1usize, 3usize] {
+        let out = Command::new(bin())
+            .args(["interrupt", "set", "--session", sess.to_str().unwrap(), "--line", &line.to_string(), "--value", "1"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["interrupt", "clear", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["cleared"], 2u64);
+    assert_eq!(json["pendingLines"], serde_json::json!([]));
+    assert_eq!(json["anyPending"], false);
+    // Human output reports the cleared count.
+    let out = Command::new(bin())
+        .args(["interrupt", "clear", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("已清除 0 条"));
+    // Persisted: a fresh pending query is empty.
+    let out = Command::new(bin())
+        .args(["interrupt", "pending", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["pendingLines"], serde_json::json!([]));
 }
 
 #[test]
@@ -7091,7 +7155,7 @@ fn mcp_handshake_and_list_tools() {
         "device_init", "session_create", "state", "step", "step_over", "step_out",
         "run", "continue", "reg_list", "reg_get", "reg_set", "mem_read", "mem_write", "mem_fill",
         "mem_search", "mem_load", "mem_dump", "mem_region", "mem_copy", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
-        "cycle_get", "cycle_set", "interrupt_take", "periph_status", "periph_config", "periph_gpio", "periph_reg_read", "periph_reg_write",
+        "cycle_get", "cycle_set", "interrupt_take", "interrupt_clear", "periph_status", "periph_config", "periph_gpio", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
         "watch_disable", "watch_clear_all",
@@ -9722,7 +9786,7 @@ fn help_every_command() {
         &["periph", "field-get"], &["periph", "field-set"],
         &["symbol", "list"], &["symbol", "at"], &["symbol", "line"], &["symbol", "addr"],
         &["cycle", "get"], &["cycle", "estimate"], &["cycle", "tick"], &["cycle", "set"],
-        &["interrupt", "take"], &["interrupt", "pending"], &["interrupt", "vector"], &["interrupt", "set"],
+        &["interrupt", "take"], &["interrupt", "pending"], &["interrupt", "vector"], &["interrupt", "set"], &["interrupt", "clear"],
         &["watchdog", "status"], &["watchdog", "feed"], &["watchdog", "config"],
         &["watchdog", "reset"],
         &["csr", "list"], &["csr", "get"], &["csr", "set"],
@@ -9771,6 +9835,7 @@ fn help_every_param() {
         (&["cycle", "estimate"], &["--session", "--addr", "--symbol", "--json"]),
         (&["cycle", "set"], &["--session", "--count", "--json"]),
         (&["interrupt", "vector"], &["--session", "--json"]),
+        (&["interrupt", "clear"], &["--session", "--json"]),
         (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["session", "patch"], &["--file", "--pc", "--cycle", "--halted", "--reg", "--csr", "--arm-state", "--xpsr", "--it", "--json"]),

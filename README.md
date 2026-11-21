@@ -104,6 +104,7 @@ ns-instruction-sim cycle estimate --session s.json --symbol main --json
 ns-instruction-sim cycle set --session s.json --count 1000
 ns-instruction-sim interrupt pending --session s.json
 ns-instruction-sim interrupt vector --session s.json --json
+ns-instruction-sim interrupt clear --session s.json --json
 ns-instruction-sim watchdog config --session s.json --enabled true --timeout 1000
 ns-instruction-sim watchdog reset --session s.json --entry 0x80000000
 ns-instruction-sim csr set --session s.json mtvec 0x80000010

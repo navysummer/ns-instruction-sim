@@ -1031,6 +1031,12 @@ fn tools() -> Vec<Tool> {
             handler: tool_interrupt_set,
         },
         Tool {
+            name: "interrupt_clear",
+            description: "清除全部挂起外设中断线（保留使能状态）。",
+            schema: obj(&[("session", session.clone())], &["session"]),
+            handler: tool_interrupt_clear,
+        },
+        Tool {
             name: "periph_status",
             description: "显示虚拟外设完整状态（UART/GPIO/定时器/看门狗/寄存器）。",
             schema: obj(&[("session", session.clone())], &["session"]),
@@ -2871,6 +2877,27 @@ fn tool_interrupt_set(server: &McpServer, args: &Map<String, Value>) -> Result<V
     with_sim(server, args, true, |sim, _, _| {
         sim.peripherals.irq_pending[line] = value == 1;
         Ok(json!({ "line": line, "value": value, "pending": sim.peripherals.irq_pending[line] }))
+    })
+}
+
+fn tool_interrupt_clear(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    with_sim(server, args, true, |sim, _, _| {
+        let before: Vec<usize> = sim
+            .peripherals
+            .irq_pending
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| **p)
+            .map(|(i, _)| i)
+            .collect();
+        for p in sim.peripherals.irq_pending.iter_mut() {
+            *p = false;
+        }
+        Ok(json!({
+            "cleared": before.len(),
+            "pending": Vec::<usize>::new(),
+            "anyPending": sim.any_pending(),
+        }))
     })
 }
 
