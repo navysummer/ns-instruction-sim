@@ -1112,6 +1112,9 @@ enum PeriphSub {
         /// GPIO 寄存器基址（默认 0x4000_2000）。
         #[arg(long)]
         gpio_base: Option<String>,
+        /// 定时器寄存器基址（默认 0x4000_1000；重定位已有定时器并用于后续创建）。
+        #[arg(long)]
+        timer_base: Option<String>,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -2068,6 +2071,7 @@ fn peripherals_json(sim: &Simulator) -> serde_json::Value {
         "uartBase": sim.peripherals.uart_base,
         "uartInput": sim.peripherals.uart_rx.borrow().iter().copied().collect::<Vec<_>>(),
         "gpioBase": sim.peripherals.gpio_base,
+        "timerBase": sim.peripherals.timer_base,
         "uart": sim.peripherals.outputs,
         "uartText": String::from_utf8_lossy(&sim.peripherals.outputs),
         "gpioOut": sim.peripherals.gpio_out,
@@ -5018,6 +5022,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             let out = serde_json::json!({
                 "uartBase": sim.peripherals.uart_base,
                 "gpioBase": sim.peripherals.gpio_base,
+                "timerBase": sim.peripherals.timer_base,
                 "uart": sim.peripherals.outputs,
                 "uartText": uart_text,
                 "gpioOut": sim.peripherals.gpio_out,
@@ -5032,8 +5037,8 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 print_json(&out)?;
             } else {
                 println!(
-                    "基址: UART=0x{:08x} GPIO=0x{:08x}",
-                    sim.peripherals.uart_base, sim.peripherals.gpio_base
+                    "基址: UART=0x{:08x} GPIO=0x{:08x} TIMER=0x{:08x}",
+                    sim.peripherals.uart_base, sim.peripherals.gpio_base, sim.peripherals.timer_base
                 );
                 println!("UART 输出: {} 字节 {:?}", sim.peripherals.outputs.len(), uart_text);
                 println!("GPIO OUT=0x{:08x} DIR=0x{:08x} IN=0x{:08x}", sim.peripherals.gpio_out, sim.peripherals.gpio_dir, sim.peripherals.gpio_in);
@@ -5046,9 +5051,9 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             }
             Ok(())
         }
-        PeriphSub::Config { session, uart_base, gpio_base, json } => {
-            if uart_base.is_none() && gpio_base.is_none() {
-                bail!("至少提供 --uart-base 或 --gpio-base");
+        PeriphSub::Config { session, uart_base, gpio_base, timer_base, json } => {
+            if uart_base.is_none() && gpio_base.is_none() && timer_base.is_none() {
+                bail!("至少提供 --uart-base、--gpio-base 或 --timer-base");
             }
             let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
             if let Some(v) = uart_base.as_deref() {
@@ -5057,9 +5062,17 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             if let Some(v) = gpio_base.as_deref() {
                 sim.peripherals.gpio_base = parse_num(v)?;
             }
+            if let Some(v) = timer_base.as_deref() {
+                let base = parse_num(v)?;
+                sim.peripherals.timer_base = base;
+                for t in sim.peripherals.timers.iter_mut() {
+                    t.base = base;
+                }
+            }
             let out = serde_json::json!({
                 "uartBase": sim.peripherals.uart_base,
                 "gpioBase": sim.peripherals.gpio_base,
+                "timerBase": sim.peripherals.timer_base,
             });
             let s = Session::capture(&sim, fw);
             s.save(&session)?;
@@ -5067,8 +5080,8 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                 print_json(&out)?;
             } else {
                 println!(
-                    "外设基址: UART=0x{:08x} GPIO=0x{:08x}",
-                    sim.peripherals.uart_base, sim.peripherals.gpio_base
+                    "外设基址: UART=0x{:08x} GPIO=0x{:08x} TIMER=0x{:08x}",
+                    sim.peripherals.uart_base, sim.peripherals.gpio_base, sim.peripherals.timer_base
                 );
             }
             Ok(())
@@ -5364,7 +5377,7 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
             while sim.peripherals.timers.len() <= index {
                 sim.peripherals
                     .timers
-                    .push(ns_sim::Timer::new(0x4000_1000, sim.peripherals.timers.len()));
+                    .push(ns_sim::Timer::new(sim.peripherals.timer_base, sim.peripherals.timers.len()));
             }
             {
                 let t = &mut sim.peripherals.timers[index];

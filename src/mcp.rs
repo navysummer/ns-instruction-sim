@@ -1050,12 +1050,13 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "periph_config",
-            description: "配置虚拟外设基址（UART/GPIO 重定位并持久化）。",
+            description: "配置虚拟外设基址（UART/GPIO/定时器重定位并持久化）。",
             schema: obj(
                 &[
                     ("session", session.clone()),
                     ("uart_base", prop_str("UART 寄存器基址（默认 0x40000000）。")),
                     ("gpio_base", prop_str("GPIO 寄存器基址（默认 0x40002000）。")),
+                    ("timer_base", prop_str("定时器寄存器基址（默认 0x40001000；重定位已有定时器）。")),
                 ],
                 &[],
             ),
@@ -2942,8 +2943,9 @@ fn tool_periph_status(server: &McpServer, args: &Map<String, Value>) -> Result<V
 fn tool_periph_config(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let uart_base = s(args, "uart_base").map(|x| parse_num(&x)).transpose()?;
     let gpio_base = s(args, "gpio_base").map(|x| parse_num(&x)).transpose()?;
-    if uart_base.is_none() && gpio_base.is_none() {
-        bail!("至少提供 uart_base 或 gpio_base");
+    let timer_base = s(args, "timer_base").map(|x| parse_num(&x)).transpose()?;
+    if uart_base.is_none() && gpio_base.is_none() && timer_base.is_none() {
+        bail!("至少提供 uart_base、gpio_base 或 timer_base");
     }
     with_sim(server, args, true, |sim, _, _| {
         if let Some(v) = uart_base {
@@ -2952,9 +2954,16 @@ fn tool_periph_config(server: &McpServer, args: &Map<String, Value>) -> Result<V
         if let Some(v) = gpio_base {
             sim.peripherals.gpio_base = v;
         }
+        if let Some(v) = timer_base {
+            sim.peripherals.timer_base = v;
+            for t in sim.peripherals.timers.iter_mut() {
+                t.base = v;
+            }
+        }
         Ok(json!({
             "uartBase": sim.peripherals.uart_base,
             "gpioBase": sim.peripherals.gpio_base,
+            "timerBase": sim.peripherals.timer_base,
         }))
     })
 }
@@ -3158,7 +3167,7 @@ fn tool_periph_timer(server: &McpServer, args: &Map<String, Value>) -> Result<Va
         while sim.peripherals.timers.len() <= index {
             sim.peripherals
                 .timers
-                .push(ns_sim::Timer::new(0x4000_1000, sim.peripherals.timers.len()));
+                .push(ns_sim::Timer::new(sim.peripherals.timer_base, sim.peripherals.timers.len()));
         }
         {
             let t = &mut sim.peripherals.timers[index];

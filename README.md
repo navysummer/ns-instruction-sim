@@ -115,6 +115,7 @@ ns-instruction-sim periph field-get --session s.json --device stm32f103c8 --peri
 ns-instruction-sim periph timer --session s.json --index 1 --enabled true --prescaler 8 --auto-reload 1000 --counter 123 --update-count 5
 ns-instruction-sim periph timer --session s.json --list --json
 ns-instruction-sim periph config --session s.json --uart-base 0x50000000
+ns-instruction-sim periph config --session s.json --timer-base 0x50001000
 
 # 执行轨迹 / 覆盖 / 助记符直方图 / 会话对比
 ns-instruction-sim trace --session s.json --steps 200 --json

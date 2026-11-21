@@ -2320,6 +2320,58 @@ fn periph_config_relocates_bases() {
 }
 
 #[test]
+fn periph_config_timer_base() {
+    let dir = tmpdir();
+    let sess = dir.join("pconf-timer.json");
+    bootstrap(&sess);
+    // Relocate the timer base before any timer exists.
+    let out = Command::new(bin())
+        .args(["periph", "config", "--session", sess.to_str().unwrap(), "--timer-base", "0x50001000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["timerBase"], 0x5000_1000u64);
+    // A timer created afterward uses the relocated base.
+    let out = Command::new(bin())
+        .args(["periph", "timer", "--session", sess.to_str().unwrap(), "--index", "0", "--counter", "5", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["base"], 0x5000_1000u64);
+    assert_eq!(json["counter"], 5u64);
+    // Relocating again updates the existing timer too.
+    let out = Command::new(bin())
+        .args(["periph", "config", "--session", sess.to_str().unwrap(), "--timer-base", "0x60001000", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["timerBase"], 0x6000_1000u64);
+    let out = Command::new(bin())
+        .args(["periph", "timer", "--session", sess.to_str().unwrap(), "--index", "0", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["base"], 0x6000_1000u64);
+    // `state --json` reports the timer base too.
+    let out = Command::new(bin())
+        .args(["state", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["peripherals"]["timerBase"], 0x6000_1000u64);
+    // At least one base is required.
+    let out = Command::new(bin())
+        .args(["periph", "config", "--session", sess.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("至少提供"));
+}
+
+#[test]
 fn mem_write_with_arch_creates_session() {
     let dir = tmpdir();
     let sess = dir.join("memarch.json");
@@ -7240,8 +7292,19 @@ fn mcp_call_step_and_state() {
     assert!(!r["isError"].as_bool().unwrap(), "periph_config failed: {}", r);
     assert_eq!(r["structuredContent"]["uartBase"], 0x5000_0000u64);
     assert_eq!(r["structuredContent"]["gpioBase"], 0x5000_2000u64);
+    // Timer base relocation persists and applies to timers created afterward.
+    let r = client.call_tool(
+        "periph_config",
+        serde_json::json!({ "session": sess, "timer_base": "0x50001000" }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "periph_config timer: {}", r);
+    assert_eq!(r["structuredContent"]["timerBase"], 0x5000_1000u64);
+    let r = client.call_tool("periph_timer", serde_json::json!({ "session": sess, "index": 0, "counter": 9 }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_timer: {}", r);
+    assert_eq!(r["structuredContent"]["base"], 0x5000_1000u64);
     let r = client.call_tool("periph_status", serde_json::json!({ "session": sess }));
     assert_eq!(r["structuredContent"]["uartBase"], 0x5000_0000u64);
+    assert_eq!(r["structuredContent"]["timerBase"], 0x5000_1000u64);
 
     // An error tool call surfaces isError, not a JSON-RPC error.
     let r = client.call_tool("reg_set", serde_json::json!({ "session": sess, "name": "bogus", "value": "1" }));
@@ -9828,6 +9891,7 @@ fn help_every_param() {
         (&["mem", "write"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--bytes", "--width", "--values", "--file", "--string", "--null", "--json"]),
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
+        (&["periph", "config"], &["--session", "--uart-base", "--gpio-base", "--timer-base", "--json"]),
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--fields", "--json"]),
         (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--peek", "--rx-drain", "--json"]),
         (&["periph", "gpio"], &["--session", "--pin", "--value", "--direction", "--output", "--read", "--events", "--clear-events", "--json"]),

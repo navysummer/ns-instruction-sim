@@ -207,6 +207,8 @@ pub struct VirtualPeripherals {
     pub uart_rx: RefCell<VecDeque<u8>>,
     /// GPIO register base address.
     pub gpio_base: u32,
+    /// Base address used for newly created virtual timers.
+    pub timer_base: u32,
     /// GPIO output value (bit per pin).
     pub gpio_out: u32,
     /// GPIO direction mask (1 = output).
@@ -328,6 +330,7 @@ impl VirtualPeripherals {
             outputs: Vec::new(),
             uart_rx: RefCell::new(VecDeque::new()),
             gpio_base: 0x4000_2000,
+            timer_base: 0x4000_1000,
             gpio_out: 0,
             gpio_dir: 0,
             gpio_in: 0,

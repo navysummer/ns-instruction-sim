@@ -194,6 +194,7 @@ ns-instruction-sim periph gpio --session s.json --pin 0 --direction 1 --output 1
 ns-instruction-sim periph gpio --session s.json --events --json
 ns-instruction-sim periph gpio --session s.json --clear-events
 ns-instruction-sim periph config --session s.json --uart-base 0x50000000 --gpio-base 0x50002000
+ns-instruction-sim periph config --session s.json --timer-base 0x50001000
 
 # 符号 / 行号
 ns-instruction-sim symbol list --session s.json

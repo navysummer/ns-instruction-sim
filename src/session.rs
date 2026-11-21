@@ -82,6 +82,9 @@ pub struct PeriphState {
     /// GPIO register base address.
     #[serde(default)]
     pub gpio_base: u32,
+    /// Base address used for newly created virtual timers.
+    #[serde(default)]
+    pub timer_base: u32,
     pub gpio_out: u32,
     pub gpio_dir: u32,
     pub gpio_in: u32,
@@ -245,6 +248,7 @@ impl Session {
                 uart_base: sim.peripherals.uart_base,
                 uart_input: sim.peripherals.uart_rx.borrow().iter().copied().collect(),
                 gpio_base: sim.peripherals.gpio_base,
+                timer_base: sim.peripherals.timer_base,
                 gpio_out: sim.peripherals.gpio_out,
                 gpio_dir: sim.peripherals.gpio_dir,
                 gpio_in: sim.peripherals.gpio_in,
@@ -358,6 +362,11 @@ impl Session {
         sim.peripherals.uart_base = self.peripherals.uart_base;
         sim.peripherals.uart_rx.borrow_mut().extend(self.peripherals.uart_input.iter().copied());
         sim.peripherals.gpio_base = self.peripherals.gpio_base;
+        sim.peripherals.timer_base = if self.peripherals.timer_base == 0 {
+            0x4000_1000
+        } else {
+            self.peripherals.timer_base
+        };
         sim.peripherals.gpio_out = self.peripherals.gpio_out;
         sim.peripherals.gpio_dir = self.peripherals.gpio_dir;
         sim.peripherals.gpio_in = self.peripherals.gpio_in;
