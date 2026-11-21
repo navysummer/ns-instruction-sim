@@ -478,6 +478,9 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   `periph_timer` 随后创建在该基址，`periph_status` 读回 `timerBase`。
 - `mem_write_with_arch_creates_session`：`mem write --arch` 直接创建指定架构会话。
 - `disasm_arm_state_override`：`disasm --arm-state a32|thumb` 切换 ARM 解码并校验步进宽度。
+- `disasm_count_zero_returns_empty`：`disasm --count 0 --json` 返回空指令数组，
+  人读模式无输出且不报错。
+- `mcp_disasm_count_zero_returns_empty`：MCP `disasm {"count":0}` 返回空 `instructions` 数组。
 - `disasm_thumb_full_families`：Thumb-1/Thumb-2 全家族反汇编镜像执行内核（LSL/ADD/MOV/CMP/SUB
   imm、PC-rel LDR、寄存器偏移 LDRH、字/字节/半字立即、SP 相对、PUSH/POP、LDMIA、SVC、条件/无条件分支、
   BL、MOVW、ADDW、LDR/STR/LDRB/STRB 立即），并校验按编码实际宽度推进。

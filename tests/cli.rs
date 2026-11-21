@@ -2429,6 +2429,43 @@ fn disasm_arm_state_override() {
 }
 
 #[test]
+fn disasm_count_zero_returns_empty() {
+    let dir = tmpdir();
+    let sess = dir.join("disasm-zero.json");
+    bootstrap(&sess);
+    // CLI: `--count 0` yields an empty instruction list (JSON) and no output.
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0",
+               "--count", "0", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json.is_array(), "{}", json);
+    assert_eq!(json.as_array().unwrap().len(), 0, "{}", json);
+    // Human-readable `--count 0` prints nothing (no error).
+    let out = Command::new(bin())
+        .args(["disasm", "--session", sess.to_str().unwrap(), "--addr", "0x0",
+               "--count", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stdout.is_empty(), "{}", String::from_utf8_lossy(&out.stdout));
+}
+
+#[test]
+fn mcp_disasm_count_zero_returns_empty() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let r = client.call_tool("disasm", serde_json::json!({
+        "arch": "riscv", "addr": "0", "count": 0,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "disasm count 0: {}", r);
+    assert_eq!(r["structuredContent"]["instructions"].as_array().unwrap().len(), 0);
+    client.close();
+}
+
+#[test]
 fn disasm_thumb_full_families() {
     let dir = tmpdir();
     let binfile = dir.join("thumb-families.bin");
