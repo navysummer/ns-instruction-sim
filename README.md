@@ -153,6 +153,7 @@ ns-instruction-sim device peripheral stm32f103c8 GPIOA --register CRL --json
 ns-instruction-sim device svd --file chip.svd --json
 ns-instruction-sim device svd --file chip.svd --peripheral USART1 --register DR
 ns-instruction-sim device svd --device stm32f103c8 --json
+ns-instruction-sim device svd --device stm32f103c8 --json --out svd.json
 ns-instruction-sim device linker stm32f103c8 --out chip.ld
 ns-instruction-sim device startup stm32f103c8 --out startup.s
 ns-instruction-sim device init stm32f103c8 --peripheral GPIOA --register GPIOA.CRL=0x44444444 --out periph_init.c

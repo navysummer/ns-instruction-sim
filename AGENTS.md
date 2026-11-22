@@ -110,7 +110,7 @@ ns-instruction-sim/
 |---|---|---|---|---|
 | `version` | — | 显示版本号 | `--json` | 文本/JSON |
 | `arch` | `list` | 列出支持的架构与示例设备 | `--json` | 表/JSON |
-| `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析（文件或内置）/链接脚本/启动文件/外设初始化 C 骨架 | `--file --device --peripheral --register --out --json` | 表/文本/JSON |
+| `device` | `list` / `info` / `svd` / `linker` / `startup` / `init` | 设备目录/详情/SVD 解析（文件或内置，`--out` 把解析结果文本/JSON 写入文件并返回 `file`/`bytes`）/链接脚本/启动文件/外设初始化 C 骨架 | `--file --device --peripheral --register --out --json` | 表/文本/JSON |
 | `device` | `memory-map` | 列出设备内存区域（FLASH/RAM/PERIPHERALS），可用 `--addr` 查询地址所属区域 | `device [--addr] [--json]` | 表/JSON |
 | `device` | `lookup` | 按地址或 `PERIPH[.REG]` 名反查设备内存区域/外设/寄存器（内置 SVD），含寄存器内偏移与位域字段 | `device --addr | --name [--json]` | 表/JSON |
 | `device` | `peripherals` | 列出设备全部外设概览（名称/基址/寄存器数/描述），可用 `--filter` 按名称子串筛选（大小写不敏感） | `device <DEVICE> [--filter] [--json]` | 表/JSON |
@@ -197,7 +197,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `mcp --session` 的默认会话。每个修改状态的工具（step/run/mem/bp/periph/watchdog/csr/...）
    在返回前将会话保存回磁盘，因此跨工具调用状态持续。`session_create`、`session_load`、
    `session_save` 显式管理会话；`state` 读取完整快照。
-5. **工具覆盖**：`arch_list`、`device_list`、`device_info`、`device_svd/linker/startup/init`、
+5. **工具覆盖**：`arch_list`、`device_list`、`device_info`、`device_svd/linker/startup/init`
+   （`device_svd` 支持 `out` 把结果 JSON 写入文件并返回 `file`/`bytes`）、
    `session_create/load/save`、
    `state`（支持 `mem`/`mem_len` 附带内存快照）、`step`、`step_over`、`step_out`、
    `run`/`continue`/`trace`/`coverage`/`profile`（均支持 `max_cycles` 周期上限，`lastResult`/`result="cycles"`；
@@ -431,6 +432,8 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `mcp_periph_uart_peek_drain`：MCP `periph_uart` 的 `peek`/`rx_drain` 参数跨调用持久化，
   peek 不消费、drain 清空后 peek 为 null。
 - `device_svd_parse_and_filter`：SVD 文件解析、外设/寄存器过滤与错误路径。
+- `device_svd_out_writes_file`：`device svd --out` 把 JSON/文本/寄存器明细结果写入文件并报告
+  `file`/`bytes`（与 `linker`/`startup`/`init` 的 `--out` 契约一致）。
 - `run_steps_runs_exactly_n_instructions`：`--steps N` 精确运行 N 条指令并停住。
 - `run_until_stops_at_address`：`run --until` 临时断点运行到指定地址且不持久化。
 - `run_until_symbol_stops`：`run/continue --until-symbol NAME` 解析符号地址并停靠（临时断点不持久化；
@@ -848,6 +851,8 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   完整往返，工具错误以 `isError:true` 返回。
 - `mcp_device_codegen_and_svd`：MCP `device_svd`（内置设备/按外设寄存器/缺源错误）、
   `device_linker`/`device_startup`/`device_init` 代码生成（含未知设备错误路径）。
+- `mcp_device_svd_out_writes_file`：MCP `device_svd` 的 `out` 参数把结果 JSON 写入文件并返回
+  `file`/`bytes`，支持寄存器过滤路径。
 - `mcp_all_arch_step`：12 架构通过 MCP `session_create`→`step`/`reg_list`/`mem_read`/`disasm`
   均成功，验证 MCP 工具在全部架构上可用。
 - `analyze_trace_coverage_profile`：`trace` 输出结构化指令轨迹（`pc`/`text`/`bytes`/`source`/

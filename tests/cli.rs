@@ -1676,6 +1676,86 @@ fn device_svd_parse_and_filter() {
 }
 
 #[test]
+fn device_svd_out_writes_file() {
+    let dir = tmpdir();
+    let svd = dir.join("testchip.svd");
+    std::fs::write(
+        &svd,
+        r#"<?xml version="1.0"?>
+<device>
+  <name>TestChip</name>
+  <vendor>TestVendor</vendor>
+  <cpu><name>CM3</name></cpu>
+  <peripherals>
+    <peripheral>
+      <name>UART0</name>
+      <baseAddress>0x40000000</baseAddress>
+      <registers>
+        <register>
+          <name>DR</name>
+          <addressOffset>0x00</addressOffset>
+          <size>32</size>
+          <resetValue>0</resetValue>
+        </register>
+      </registers>
+    </peripheral>
+  </peripherals>
+</device>
+"#,
+    )
+    .unwrap();
+
+    // JSON mode with --out writes the structured result and reports file/bytes.
+    let out_json = dir.join("svd.json");
+    let out = Command::new(bin())
+        .args([
+            "device", "svd", "--file", svd.to_str().unwrap(), "--json",
+            "--out", out_json.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["kind"], "svd");
+    assert_eq!(json["file"], out_json.to_str().unwrap());
+    assert!(json["bytes"].as_u64().unwrap() > 0);
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&out_json).unwrap()).unwrap();
+    assert_eq!(written["name"], "TestChip");
+    assert_eq!(written["peripherals"][0]["name"], "UART0");
+
+    // Text mode with --out writes the human-readable summary.
+    let out_txt = dir.join("svd.txt");
+    let out = Command::new(bin())
+        .args([
+            "device", "svd", "--file", svd.to_str().unwrap(),
+            "--out", out_txt.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = std::fs::read_to_string(&out_txt).unwrap();
+    assert!(text.contains("设备: TestChip"));
+    assert!(text.contains("UART0"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("已写入 SVD 摘要"));
+
+    // --out with a register filter writes the register detail.
+    let out_reg = dir.join("svd-reg.json");
+    let out = Command::new(bin())
+        .args([
+            "device", "svd", "--file", svd.to_str().unwrap(),
+            "--peripheral", "UART0", "--register", "DR", "--json",
+            "--out", out_reg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&out_reg).unwrap()).unwrap();
+    assert_eq!(written["name"], "DR");
+}
+
+#[test]
 fn periph_svd_load_populates_registers() {
     let dir = tmpdir();
     let sess = dir.join("svd_load.json");
@@ -7519,6 +7599,44 @@ fn mcp_device_codegen_and_svd() {
 }
 
 #[test]
+fn mcp_device_svd_out_writes_file() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+
+    let dir = tmpdir();
+    let out_path = dir.join("svd.json");
+    let r = client.call_tool(
+        "device_svd",
+        serde_json::json!({ "device": "stm32f103c8", "out": out_path.to_str().unwrap() }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "device_svd out failed: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["file"], out_path.to_str().unwrap());
+    assert!(sc["bytes"].as_u64().unwrap() > 0);
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&out_path).unwrap()).unwrap();
+    assert!(written["peripherals"].as_array().unwrap().len() > 0);
+
+    // Register-filtered output also respects `out`.
+    let out_reg = dir.join("svd-reg.json");
+    let r = client.call_tool(
+        "device_svd",
+        serde_json::json!({
+            "device": "stm32f103c8",
+            "peripheral": "TIM2",
+            "register": "CR1",
+            "out": out_reg.to_str().unwrap(),
+        }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "device_svd reg out failed: {}", r);
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&out_reg).unwrap()).unwrap();
+    assert_eq!(written["name"], "CR1");
+
+    client.close();
+}
+
+#[test]
 fn mcp_all_arch_step() {
     let mut client = McpClient::start();
     let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
@@ -10987,6 +11105,7 @@ fn help_every_param() {
         (&["device", "lookup"], &["--addr", "--name", "--json"]),
         (&["device", "peripherals"], &["--filter", "--json"]),
         (&["device", "peripheral"], &["--register", "--json"]),
+        (&["device", "svd"], &["--file", "--device", "--peripheral", "--register", "--out", "--json"]),
         (&["periph", "timer"], &["--session", "--index", "--enabled", "--prescaler", "--auto-reload", "--counter", "--update-count", "--list", "--json"]),
         (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--until-condition", "--top", "--json"]),
         (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--until-condition", "--top", "--json"]),

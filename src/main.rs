@@ -196,6 +196,9 @@ enum DeviceSub {
         /// 只看指定寄存器（按名称，需配合 --peripheral）。
         #[arg(long)]
         register: Option<String>,
+        /// 把 SVD 解析结果（文本或 JSON）写入文件；省略则输出到 stdout。
+        #[arg(short, long)]
+        out: Option<PathBuf>,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -1957,12 +1960,13 @@ fn real_main() -> Result<()> {
         Command::Device { sub: DeviceSub::Init { device, peripheral, register, out, json } } => {
             cmd_device_init(&device, &peripheral, &register, out.as_deref(), json)
         }
-        Command::Device { sub: DeviceSub::Svd { file, device, peripheral, register, json } } => {
+        Command::Device { sub: DeviceSub::Svd { file, device, peripheral, register, out, json } } => {
             cmd_device_svd(
                 file.as_deref(),
                 device.as_deref(),
                 peripheral.as_deref(),
                 register.as_deref(),
+                out.as_deref(),
                 json,
             )
         }
@@ -2613,6 +2617,7 @@ fn cmd_device_svd(
     device_key: Option<&str>,
     peripheral: Option<&str>,
     register: Option<&str>,
+    out: Option<&Path>,
     json: bool,
 ) -> Result<()> {
     let device = match (file, device_key) {
@@ -2632,6 +2637,35 @@ fn cmd_device_svd(
         None => device.sorted_peripherals(),
     };
 
+    // Emit `content` to stdout or, when `--out` is given, to a file. The JSON
+    // confirmation reports the file path and byte count so callers can consume it.
+    let emit = |content: &str| -> Result<()> {
+        match out {
+            Some(path) => {
+                std::fs::write(path, content).with_context(|| format!("写入 {} 失败", path.display()))?;
+                if json {
+                    print_json(&serde_json::json!({
+                        "device": device.name,
+                        "kind": "svd",
+                        "file": path.to_string_lossy(),
+                        "bytes": content.len(),
+                    }))?;
+                } else {
+                    println!("已写入 SVD 摘要 -> {}", path.display());
+                }
+            }
+            None => {
+                if json {
+                    // Preserve `print_json`'s trailing newline for machine consumers.
+                    println!("{content}");
+                } else {
+                    print!("{content}");
+                }
+            }
+        }
+        Ok(())
+    };
+
     // A register filter requires a peripheral and shows its fields.
     if let Some(reg_name) = register {
         let p = peripherals
@@ -2643,61 +2677,68 @@ fn cmd_device_svd(
             .find(|r| r.name == reg_name)
             .ok_or_else(|| anyhow::anyhow!("外设 {} 中无寄存器: {reg_name}", p.name))?;
         if json {
-            print_json(&register_json(reg))?;
+            emit(&serde_json::to_string_pretty(&register_json(reg))?)?;
         } else {
-            println!("{}:{} @ 0x{:08x} ({} 位)", p.name, reg.name, reg.address, reg.size);
+            let mut text = String::new();
+            text.push_str(&format!("{}:{} @ 0x{:08x} ({} 位)\n", p.name, reg.name, reg.address, reg.size));
             if !reg.description.is_empty() {
-                println!("  描述: {}", reg.description);
+                text.push_str(&format!("  描述: {}\n", reg.description));
             }
-            println!("  复位值: 0x{:08x}", reg.reset_value);
-            println!("  字段:");
+            text.push_str(&format!("  复位值: 0x{:08x}\n", reg.reset_value));
+            text.push_str("  字段:\n");
             if reg.fields.is_empty() {
-                println!("    (无)");
+                text.push_str("    (无)\n");
             }
             for f in &reg.fields {
-                println!(
-                    "    {:<24} bit {}:{}  {}",
+                text.push_str(&format!(
+                    "    {:<24} bit {}:{}  {}\n",
                     f.name,
                     f.bit_offset,
                     f.bit_offset + f.bit_width.saturating_sub(1),
                     f.description
-                );
+                ));
             }
+            emit(&text)?;
         }
         return Ok(());
     }
 
     if json {
-        print_json(&device_json(&device, &peripherals))?;
+        emit(&serde_json::to_string_pretty(&device_json(&device, &peripherals))?)?;
     } else {
-        println!("设备: {}", device.name);
-        println!("厂商: {}", device.vendor);
-        println!("核心: {}", device.core);
+        let mut text = String::new();
+        text.push_str(&format!("设备: {}\n", device.name));
+        text.push_str(&format!("厂商: {}\n", device.vendor));
+        text.push_str(&format!("核心: {}\n", device.core));
         if !device.memory.is_empty() {
-            println!("内存映射:");
+            text.push_str("内存映射:\n");
             for m in &device.memory {
-                println!("  {:<16} 0x{:012x} size=0x{:x} {}", m.name, m.start, m.size, m.access);
+                text.push_str(&format!(
+                    "  {:<16} 0x{:012x} size=0x{:x} {}\n",
+                    m.name, m.start, m.size, m.access
+                ));
             }
         }
-        println!("外设 ({}):", peripherals.len());
+        text.push_str(&format!("外设 ({}):\n", peripherals.len()));
         for p in &peripherals {
-            println!(
-                "  {:<24} 0x{:08x}  {} ({} 寄存器)",
+            text.push_str(&format!(
+                "  {:<24} 0x{:08x}  {} ({} 寄存器)\n",
                 p.name,
                 p.base_address,
                 p.description,
                 p.registers.len()
-            );
+            ));
             // When a specific peripheral is selected, expand its registers.
             if peripheral.is_some() {
                 for r in &p.registers {
-                    println!(
-                        "    {:<24} 0x{:08x}  {} 位  reset=0x{:08x}  {}",
+                    text.push_str(&format!(
+                        "    {:<24} 0x{:08x}  {} 位  reset=0x{:08x}  {}\n",
                         r.name, r.address, r.size, r.reset_value, r.description
-                    );
+                    ));
                 }
             }
         }
+        emit(&text)?;
     }
     Ok(())
 }

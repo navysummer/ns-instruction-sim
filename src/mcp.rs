@@ -449,6 +449,7 @@ fn tools() -> Vec<Tool> {
                     ("device", prop_str("内置设备键（与 file 二选一）。")),
                     ("peripheral", prop_str("只看指定外设（按名称）。")),
                     ("register", prop_str("只看指定寄存器（需配合 peripheral）。")),
+                    ("out", prop_str("把结果 JSON 写入文件并返回 file/bytes。")),
                 ],
                 &[],
             ),
@@ -1681,6 +1682,7 @@ fn tool_device_svd(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let device_key = s(args, "device");
     let peripheral = s(args, "peripheral");
     let register = s(args, "register");
+    let out = s(args, "out");
     let device = match (file, device_key) {
         (Some(f), None) => ns_device::load_svd_file(Path::new(&f))?,
         (None, Some(k)) => ns_device::device_for_target(&k)
@@ -1703,9 +1705,30 @@ fn tool_device_svd(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
             .iter()
             .find(|r| &r.name == reg_name)
             .ok_or_else(|| anyhow::anyhow!("外设 {} 中无寄存器: {reg_name}", p.name))?;
-        return Ok(mcp_register_json(reg));
+        return maybe_write_svd_out(mcp_register_json(reg), out);
     }
-    Ok(mcp_device_json(&device, &peripherals))
+    maybe_write_svd_out(mcp_device_json(&device, &peripherals), out)
+}
+
+/// If `out` is given, write the structured result as pretty JSON to that file
+/// and return the value augmented with `file`/`bytes`; otherwise return as-is.
+fn maybe_write_svd_out(value: serde_json::Value, out: Option<String>) -> Result<serde_json::Value> {
+    let Some(path) = out else {
+        return Ok(value);
+    };
+    let text = serde_json::to_string_pretty(&value)?;
+    std::fs::write(&path, &text).with_context(|| format!("写入 {path} 失败"))?;
+    let mut map = match value {
+        Value::Object(m) => m,
+        other => {
+            let mut m = Map::new();
+            m.insert("result".to_string(), other);
+            m
+        }
+    };
+    map.insert("file".to_string(), Value::String(path));
+    map.insert("bytes".to_string(), Value::from(text.len()));
+    Ok(Value::Object(map))
 }
 
 fn tool_device_linker(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
