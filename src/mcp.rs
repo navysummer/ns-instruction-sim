@@ -761,6 +761,7 @@ fn tools() -> Vec<Tool> {
                     ("len", prop_num("搜索长度（默认 256）。")),
                     ("pattern", prop_arr("搜索模式值（整数，宽度由 width 决定）。")),
                     ("width", prop_str("模式宽度：byte/half/word/dword（默认 byte）。")),
+                    ("mask", prop_arr("搜索掩码值（整数，按 width 小端展开；长度需与展开后的模式一致，某字节掩码为 0 表示通配）。")),
                     ("out", prop_str("把匹配结果写入文件（JSON）；缺省直接返回结果。")),
                 ],
                 &["pattern"],
@@ -2289,6 +2290,16 @@ fn tool_mem_search(server: &McpServer, args: &Map<String, Value>) -> Result<Valu
         bail!("pattern 至少需要一个值");
     }
     let pat = crate::expand_search_pattern(&pattern, &width)?;
+    let mask_tokens = arr(args, "mask");
+    let mask_bytes = if mask_tokens.is_empty() {
+        vec![0xffu8; pat.len()]
+    } else {
+        let m = crate::expand_search_pattern(&mask_tokens, &width)?;
+        if m.len() != pat.len() {
+            bail!("mask 长度（{} 字节）必须与展开后的 pattern（{} 字节）一致", m.len(), pat.len());
+        }
+        m
+    };
     with_sim(server, args, false, |sim, _, _| {
         let addr_num = crate::resolve_mem_addr(
             s(args, "symbol").as_deref(),
@@ -2304,7 +2315,9 @@ fn tool_mem_search(server: &McpServer, args: &Map<String, Value>) -> Result<Valu
             for off in 0..=(len - pat.len()) {
                 let mut ok = true;
                 for (j, p) in pat.iter().enumerate() {
-                    if read_mem_byte(sim, addr_num.wrapping_add((off + j) as u32)) != *p {
+                    let mask_b = mask_bytes[j];
+                    let actual = read_mem_byte(sim, addr_num.wrapping_add((off + j) as u32));
+                    if (actual & mask_b) != (*p & mask_b) {
                         ok = false;
                         break;
                     }
@@ -2318,6 +2331,7 @@ fn tool_mem_search(server: &McpServer, args: &Map<String, Value>) -> Result<Valu
             "address": addr_num,
             "width": width,
             "patternTokens": pattern.len(),
+            "mask": mask_bytes,
             "count": matches.len(),
             "matches": matches,
         });

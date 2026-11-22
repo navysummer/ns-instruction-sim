@@ -1541,6 +1541,71 @@ fn mem_search_width_pattern() {
 }
 
 #[test]
+fn mem_search_mask() {
+    let dir = tmpdir();
+    let sess = dir.join("search-mask.json");
+    bootstrap(&sess);
+    let s = sess.to_str().unwrap();
+    let write = |addr: &str, bytes: &[&str]| {
+        let mut cmd = Command::new(bin());
+        cmd.args(["mem", "write", "--session", s, "--addr", addr, "--bytes"]);
+        for b in bytes {
+            cmd.arg(*b);
+        }
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    write("0x20000000", &["0x10", "0x11", "0x12", "0x13", "0x20", "0x21", "0x22", "0x23"]);
+
+    // Exact (implicit all-0xFF mask) finds the byte run once.
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", s, "--addr", "0x20000000", "--len", "8",
+               "--pattern", "0x10", "0x11", "0x12", "0x13", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["count"], 1u64);
+    assert_eq!(json["matches"][0], 0x2000_0000u64);
+    assert_eq!(json["mask"].as_array().unwrap().len(), 4);
+
+    // A 0x00 mask byte is a wildcard: the pattern's leading byte is ignored.
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", s, "--addr", "0x20000000", "--len", "8",
+               "--pattern", "0x20", "0x21", "0x22", "0x23",
+               "--mask", "0x00", "0xFF", "0xFF", "0xFF", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["count"], 1u64);
+    assert_eq!(json["matches"][0], 0x2000_0004u64);
+    assert_eq!(json["mask"][0], 0u64);
+
+    // Word width: a mask with the low byte wildcard matches both variants.
+    write("0x20000010", &["0xef", "0xbe", "0xad", "0xde", "0xff", "0xbe", "0xad", "0xde"]);
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", s, "--addr", "0x20000010", "--len", "8",
+               "--pattern", "0xDEADBEEF", "--width", "word", "--mask", "0xFFFFFF00", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["count"], 2u64);
+    assert_eq!(json["matches"][0], 0x2000_0010u64);
+    assert_eq!(json["matches"][1], 0x2000_0014u64);
+
+    // A mask whose length differs from the expanded pattern is an error.
+    let out = Command::new(bin())
+        .args(["mem", "search", "--session", s, "--addr", "0x20000000", "--len", "8",
+               "--pattern", "0x10", "0x11", "0x12", "0x13", "--mask", "0xFF", "0xFF"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("一致"), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
 fn device_svd_parse_and_filter() {
     let dir = tmpdir();
     let svd = dir.join("testchip.svd");
@@ -9012,6 +9077,36 @@ fn mcp_mem_search_width() {
 }
 
 #[test]
+fn mcp_mem_search_mask() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-searchm-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "arch": "riscv", "addr": "0x20000000",
+        "bytes": ["0x10", "0x11", "0x12", "0x13", "0x20", "0x21", "0x22", "0x23"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write: {}", r);
+    // A 0x00 mask byte is a wildcard (leading byte ignored).
+    let r = client.call_tool("mem_search", serde_json::json!({
+        "session": s, "addr": "0x20000000", "len": 8,
+        "pattern": ["0x20", "0x21", "0x22", "0x23"],
+        "mask": ["0x00", "0xFF", "0xFF", "0xFF"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mask: {}", r);
+    assert_eq!(r["structuredContent"]["matches"], serde_json::json!([0x2000_0004u64]));
+    assert_eq!(r["structuredContent"]["mask"][0], 0u64);
+    // A mask whose length differs from the expanded pattern is an error.
+    let r = client.call_tool("mem_search", serde_json::json!({
+        "session": s, "addr": "0x20000000", "len": 8,
+        "pattern": ["0x10", "0x11", "0x12", "0x13"], "mask": ["0xFF", "0xFF"],
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn mcp_mem_search_out_and_count() {
     let mut client = McpClient::start();
     let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
@@ -10708,7 +10803,7 @@ fn help_every_param() {
         (&["session", "merge"], &["--a", "--b", "--out", "--regs-keep", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
-        (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--pattern", "--width", "--out", "--json"]),
+        (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--pattern", "--width", "--mask", "--out", "--json"]),
         (&["device", "lookup"], &["--addr", "--name", "--json"]),
         (&["device", "peripherals"], &["--filter", "--json"]),
         (&["device", "peripheral"], &["--register", "--json"]),

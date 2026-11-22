@@ -680,6 +680,10 @@ enum MemSub {
         /// 模式宽度：`byte`/`half`/`word`/`dword`（默认 byte；每个模式值按小端展开为字节）。
         #[arg(long, default_value = "byte")]
         width: String,
+        /// 搜索掩码（空格分隔；长度需与展开后的模式一致，按 --width 小端展开；
+        /// 某字节掩码为 0 表示该字节通配）。
+        #[arg(long, value_delimiter = ' ', num_args = 1..)]
+        mask: Vec<String>,
         /// 将搜索结果写入文件（缺省打印到 stdout）。
         #[arg(long)]
         out: Option<PathBuf>,
@@ -3997,7 +4001,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
             }
             Ok(())
         }
-        MemSub::Search { session, arch, device, region, offset, symbol, addr, addr_flag, len, pattern, width, out, json } => {
+        MemSub::Search { session, arch, device, region, offset, symbol, addr, addr_flag, len, pattern, width, mask, out, json } => {
             let (sim, _, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
             let addr_num = resolve_mem_addr(
                 symbol.as_deref(),
@@ -4012,6 +4016,15 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                 bail!("--pattern 至少需要一个字节");
             }
             let pat = expand_search_pattern(&pattern, &width)?;
+            let mask_bytes = if mask.is_empty() {
+                vec![0xffu8; pat.len()]
+            } else {
+                let m = expand_search_pattern(&mask, &width)?;
+                if m.len() != pat.len() {
+                    bail!("--mask 长度（{} 字节）必须与展开后的 --pattern（{} 字节）一致", m.len(), pat.len());
+                }
+                m
+            };
             let mut matches: Vec<u32> = Vec::new();
             if pat.is_empty() || len < pat.len() {
                 // Nothing to search.
@@ -4020,7 +4033,9 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                 for i in 0..=(len - window) {
                     let mut ok = true;
                     for (j, b) in pat.iter().enumerate() {
-                        if read_mem_byte(&sim, addr_num.wrapping_add((i + j) as u32)) != *b {
+                        let mask_b = mask_bytes[j];
+                        let actual = read_mem_byte(&sim, addr_num.wrapping_add((i + j) as u32));
+                        if (actual & mask_b) != (*b & mask_b) {
                             ok = false;
                             break;
                         }
@@ -4035,6 +4050,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                     "address": addr_num,
                     "width": width,
                     "patternTokens": pattern.len(),
+                    "mask": mask_bytes,
                     "count": matches.len(),
                     "matches": matches,
                 });
