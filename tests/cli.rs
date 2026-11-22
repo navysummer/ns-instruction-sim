@@ -5050,6 +5050,60 @@ fn bp_set_by_symbol() {
 }
 
 #[test]
+fn bp_set_symbol_offset() {
+    let dir = tmpdir();
+    let sess = dir.join("bpsymoff.json");
+    let elf = dir.join("bpsymoff.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    let out = Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // --symbol --offset places the breakpoint at symbol + offset.
+    let out = Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(), "--symbol", "main", "--offset", "4"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000_0004u64);
+
+    // Offset 0 keeps the symbol address.
+    let out = Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(), "--symbol", "main", "--offset", "0"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[1]["address"], 0x8000_0000u64);
+
+    // --offset without a symbol / device / region is rejected.
+    let out = Command::new(bin())
+        .args(["bp", "set", "--session", sess.to_str().unwrap(), "--addr", "0x80000000", "--offset", "4"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--offset"), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
 fn disasm_raw_shows_bytes() {
     let dir = tmpdir();
     let sess = dir.join("drawn.json");
@@ -8795,6 +8849,39 @@ fn mcp_bp_set_device_region() {
     let r = client.call_tool("bp_set", serde_json::json!({
         "session": s, "device": "stm32f103c8", "region": "NOSUCH",
     }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
+fn mcp_bp_set_symbol_offset() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-bpsymoff-{}.elf", std::process::id()));
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    let sess = dir.join(format!("mcp-bpsymoff-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({
+        "session": s, "arch": "riscv", "firmware": elf.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    // --symbol --offset resolves symbol + offset.
+    let r = client.call_tool("bp_set", serde_json::json!({ "session": s, "symbol": "main", "offset": 4 }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_set offset: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x8000_0004u64, "{}", r);
+    let r = client.call_tool("bp_set", serde_json::json!({ "session": s, "symbol": "main" }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_set symbol: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x8000_0000u64, "{}", r);
+    // offset without symbol / device / region is rejected.
+    let r = client.call_tool("bp_set", serde_json::json!({ "session": s, "addr": "0x80000000", "offset": 4 }));
     assert!(r["isError"].as_bool().unwrap(), "{}", r);
     client.close();
 }

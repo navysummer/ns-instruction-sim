@@ -142,6 +142,7 @@ ns-instruction-sim bp set --session s.json --addr 0x80000004
 ns-instruction-sim bp set --session s.json --addr 0x80000008 --condition "x1 == 3" --hit-count 2
 ns-instruction-sim bp set --session s.json --addr 0x8000000c --once
 ns-instruction-sim bp set --session s.json --symbol main
+ns-instruction-sim bp set --session s.json --symbol main --offset 4
 ns-instruction-sim bp set --session s.json --line main.c:10
 ns-instruction-sim bp set --session s.json --device stm32f103c8 --region FLASH --offset 0
 ns-instruction-sim bp set --session s.json --addr 0x80000004 --json

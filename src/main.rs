@@ -835,7 +835,7 @@ enum BpSub {
         /// 设备命名内存区域（FLASH/RAM/PERIPHERALS；配合 --device）。
         #[arg(long)]
         region: Option<String>,
-        /// 区域内偏移（配合 --device/--region，默认 0）。
+        /// 偏移（配合 --symbol 或 --device/--region；对符号为符号地址 + 偏移，默认 0）。
         #[arg(long)]
         offset: Option<String>,
         /// 条件表达式（如 `x1 == 10`）。
@@ -4283,8 +4283,16 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                     .iter()
                     .find(|s| s.name.eq_ignore_ascii_case(sym))
                     .ok_or_else(|| anyhow::anyhow!("符号未找到: {sym}"))?;
-                found.address
+                let off = offset
+                    .as_deref()
+                    .map(parse_num)
+                    .transpose()?
+                    .unwrap_or(0);
+                found.address.wrapping_add(off)
             } else if let Some(line_spec) = &line {
+                if offset.is_some() {
+                    bail!("--offset 仅支持 --symbol/--device+--region");
+                }
                 let (file_part, line_part) = line_spec
                     .rsplit_once(':')
                     .ok_or_else(|| anyhow::anyhow!("行号格式应为 file:line，如 main.c:10"))?;
@@ -4314,6 +4322,9 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                     offset.as_deref().map(parse_num).transpose()?.unwrap_or(0),
                 )?
             } else {
+                if offset.is_some() {
+                    bail!("--offset 需要配合 --symbol/--device+--region");
+                }
                 let addr = addr_flag
                     .or(addr)
                     .ok_or_else(|| anyhow::anyhow!("缺少地址"))?;

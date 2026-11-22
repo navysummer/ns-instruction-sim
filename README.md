@@ -57,6 +57,7 @@ ns-instruction-sim mem copy --session s.json --src 0x08000000 --dst 0x20000000 -
 ns-instruction-sim bp set --session s.json --addr 0x80000004
 ns-instruction-sim bp set --session s.json --addr 0x80000008 --once
 ns-instruction-sim bp set --session s.json --symbol main
+ns-instruction-sim bp set --session s.json --symbol main --offset 4
 ns-instruction-sim bp set --session s.json --line main.c:10
 ns-instruction-sim bp set --session s.json --device stm32f103c8 --region FLASH --offset 0
 ns-instruction-sim bp set --session s.json --addr 0x80000004 --json

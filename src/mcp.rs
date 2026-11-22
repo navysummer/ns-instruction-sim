@@ -2501,6 +2501,9 @@ fn tool_bp_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let once = b(args, "once").unwrap_or(false);
     with_sim(server, args, true, |sim, _, _| {
         let addr = if let Some(a) = &addr_arg {
+            if offset != 0 {
+                bail!("offset 需要配合 symbol/device+region");
+            }
             parse_num(a)?
         } else if let Some(sym) = &symbol {
             sim.symbols
@@ -2508,7 +2511,11 @@ fn tool_bp_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
                 .find(|s| s.name == *sym)
                 .ok_or_else(|| anyhow::anyhow!("未找到符号: {sym}"))?
                 .address
+                .wrapping_add(offset)
         } else if let Some(l) = &line {
+            if offset != 0 {
+                bail!("offset 仅支持 symbol/device+region");
+            }
             let (file, lineno) = l
                 .split_once(':')
                 .ok_or_else(|| anyhow::anyhow!("line 格式应为 file:line: {l}"))?;
