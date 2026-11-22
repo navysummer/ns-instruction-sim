@@ -1206,6 +1206,9 @@ struct DisasmArgs {
     /// 指令条数（默认 8）。
     #[arg(long, default_value = "8")]
     count: usize,
+    /// 反汇编字节范围（从起始地址起；与 --count 互斥，默认按指令条数）。
+    #[arg(long, conflicts_with = "count")]
+    size: Option<usize>,
     /// ARM 状态：`a32` 或 `thumb`（仅 ARM；默认取内核当前状态）。
     #[arg(long, value_parser = ["a32", "thumb"])]
     arm_state: Option<String>,
@@ -5177,7 +5180,17 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
         }
         entry.push_str(&s.name);
     }
-    for _ in 0..args.count {
+    let pc_start = pc;
+    let mut emitted = 0usize;
+    loop {
+        if emitted >= args.count {
+            break;
+        }
+        if let Some(size) = args.size {
+            if pc.wrapping_sub(pc_start) as usize >= size {
+                break;
+            }
+        }
         let width = ns_sim::instruction_size(arch, pc, &read, arm_state);
         let text = ns_sim::disassemble_one_state(arch, pc, &read, arm_state);
         let label = labels.get(&pc).cloned();
@@ -5233,6 +5246,7 @@ fn cmd_disasm(args: DisasmArgs) -> Result<()> {
             println!("0x{pc:08x}: {text}{raw}");
         }
         pc = pc.wrapping_add(width);
+        emitted += 1;
     }
     if args.json {
         emit_out(args.out.as_deref(), &serde_json::to_string_pretty(&items)?)?;

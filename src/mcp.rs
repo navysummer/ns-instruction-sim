@@ -1047,6 +1047,7 @@ fn tools() -> Vec<Tool> {
                     ("addr", addr.clone()),
                     ("symbol", prop_str("按符号名起始（与 addr 互斥）。")),
                     ("count", prop_num("指令条数（默认 8）。")),
+                    ("size", prop_num("反汇编字节范围（从起始地址起；与 count 互斥）。")),
                     ("arm_state", prop_str("ARM 状态：a32 或 thumb。")),
                     ("raw", prop_bool("是否包含原始字节。")),
                     ("source", prop_bool("是否标注来源 file:line。")),
@@ -3176,6 +3177,7 @@ fn tool_disasm(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
             .address;
     }
     let count = u(args, "count").unwrap_or(8) as usize;
+    let size = u(args, "size").map(|v| v as usize);
     let raw = b(args, "raw").unwrap_or(false);
     let source = b(args, "source").unwrap_or(false);
     let labels = b(args, "labels").unwrap_or(false);
@@ -3199,7 +3201,17 @@ fn tool_disasm(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
         map
     };
     let mut items = Vec::new();
-    for _ in 0..count {
+    let pc_start = pc;
+    let mut emitted = 0usize;
+    loop {
+        if emitted >= count {
+            break;
+        }
+        if let Some(size) = size {
+            if pc.wrapping_sub(pc_start) as usize >= size {
+                break;
+            }
+        }
         let width = ns_sim::instruction_size(arch, pc, &read, arm_state);
         let text = ns_sim::disassemble_one_state(arch, pc, &read, arm_state);
         let label = label_map.get(&pc).cloned();
@@ -3232,6 +3244,7 @@ fn tool_disasm(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
             }));
         }
         pc = pc.wrapping_add(width);
+        emitted += 1;
     }
     Ok(json!({ "arch": arch_name(arch), "instructions": items }))
 }

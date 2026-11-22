@@ -2776,6 +2776,59 @@ fn mcp_disasm_count_zero_returns_empty() {
 }
 
 #[test]
+fn disasm_size_range() {
+    let dir = tmpdir();
+    let elf = dir.join("disasm-size.elf");
+    write_riscv_elf(&elf);
+    // `--size 8` disassembles exactly the first two 4-byte instructions.
+    let out = Command::new(bin())
+        .args(["disasm", "--firmware", elf.to_str().unwrap(),
+               "--addr", "0x80000000", "--size", "8", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let list = json.as_array().unwrap();
+    assert_eq!(list.len(), 2, "{}", json);
+    assert_eq!(list[0]["address"], 0x8000_0000u64);
+    assert_eq!(list[1]["address"], 0x8000_0004u64);
+    // `--size 4` yields a single instruction.
+    let out = Command::new(bin())
+        .args(["disasm", "--firmware", elf.to_str().unwrap(),
+               "--addr", "0x80000000", "--size", "4", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 1);
+    // `--size` and `--count` are mutually exclusive.
+    let out = Command::new(bin())
+        .args(["disasm", "--firmware", elf.to_str().unwrap(),
+               "--addr", "0x80000000", "--size", "8", "--count", "2"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn mcp_disasm_size_range() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-disasm-size-{}.elf", std::process::id()));
+    write_riscv_elf(&elf);
+    let r = client.call_tool("disasm", serde_json::json!({
+        "firmware": elf.to_str().unwrap(), "addr": "0x80000000", "size": 8,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "disasm size: {}", r);
+    let list = r["structuredContent"]["instructions"].as_array().unwrap();
+    assert_eq!(list.len(), 2, "{}", r);
+    assert_eq!(list[0]["address"], 0x8000_0000u64);
+    assert_eq!(list[1]["address"], 0x8000_0004u64);
+    client.close();
+}
+
+#[test]
 fn disasm_thumb_full_families() {
     let dir = tmpdir();
     let binfile = dir.join("thumb-families.bin");
@@ -11466,7 +11519,7 @@ fn help_every_param() {
         (&["firmware", "sections"], &["--firmware", "--arch", "--json"]),
         (&["session", "patch"], &["--file", "--pc", "--cycle", "--halted", "--reg", "--csr", "--arm-state", "--xpsr", "--it", "--json"]),
         (&["session", "merge"], &["--a", "--b", "--out", "--regs-keep", "--json"]),
-        (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
+        (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--size", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
         (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--pattern", "--width", "--mask", "--out", "--json"]),
         (&["mem", "verify"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--bytes", "--values", "--file", "--pattern", "--width", "--json"]),
