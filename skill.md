@@ -216,6 +216,7 @@ ns-instruction-sim symbol addr --session s.json --file 0 --line 1
 ns-instruction-sim cycle get --session s.json
 ns-instruction-sim cycle estimate --session s.json 0x80000000
 ns-instruction-sim cycle estimate --session s.json --symbol main --json
+ns-instruction-sim cycle estimate --session s.json --line main.c:10 --json
 ns-instruction-sim cycle tick --session s.json --cycles 100
 ns-instruction-sim cycle set --session s.json --count 1000
 

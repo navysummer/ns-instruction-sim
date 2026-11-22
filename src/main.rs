@@ -1588,6 +1588,9 @@ enum CycleSub {
         /// ELF 符号名（与 --addr 二选一；从会话固件符号表解析地址）。
         #[arg(long = "symbol")]
         symbol: Option<String>,
+        /// 按源码行号解析地址（`file:line`，如 `main.c:10`；与 --addr/--symbol 二选一）。
+        #[arg(long, conflicts_with_all = ["addr", "addr_flag", "symbol"])]
+        line: Option<String>,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -6273,18 +6276,44 @@ fn cmd_cycle(sub: CycleSub) -> Result<()> {
             }
             Ok(())
         }
-        CycleSub::Estimate { session, addr, addr_flag, symbol, json } => {
-            if symbol.is_some() && (addr.is_some() || addr_flag.is_some()) {
-                bail!("--addr 与 --symbol 只能二选一");
-            }
+        CycleSub::Estimate { session, addr, addr_flag, symbol, line, json } => {
             let sim = load_session_sim(&session)?;
             let (addr_num, resolved_symbol) = if let Some(name) = symbol.as_deref() {
+                if addr.is_some() || addr_flag.is_some() || line.is_some() {
+                    bail!("--symbol 与 --addr/--line 只能二选一");
+                }
                 let sym = sim
                     .symbols
                     .iter()
                     .find(|s| s.name == name)
                     .ok_or_else(|| anyhow::anyhow!("符号未找到: {name}"))?;
                 (sym.address, Some(sym.name.clone()))
+            } else if let Some(line_spec) = line.as_deref() {
+                if addr.is_some() || addr_flag.is_some() {
+                    bail!("--line 与 --addr 只能二选一");
+                }
+                let (file_part, line_part) = line_spec
+                    .rsplit_once(':')
+                    .ok_or_else(|| anyhow::anyhow!("行号格式应为 file:line，如 main.c:10"))?;
+                let line_num: u32 = line_part
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("非法行号: {line_part}"))?;
+                let file_idx = sim
+                    .source_files
+                    .iter()
+                    .position(|f| {
+                        f == file_part
+                            || std::path::Path::new(f)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| n == file_part)
+                                .unwrap_or(false)
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("源文件未找到: {file_part}"))?;
+                let addr = sim
+                    .address_for_line(file_idx, line_num)
+                    .ok_or_else(|| anyhow::anyhow!("行 {line_part} 无对应指令地址"))?;
+                (addr, Some(format!("{file_part}:{line_num}")))
             } else {
                 let addr = addr_flag.or(addr).ok_or_else(|| anyhow::anyhow!("缺少地址或符号"))?;
                 (parse_num(&addr)?, None)

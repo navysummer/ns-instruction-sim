@@ -109,6 +109,7 @@ ns-instruction-sim symbol list --session s.json
 ns-instruction-sim symbol nearest --session s.json --addr 0x80000004 --json
 ns-instruction-sim cycle get --session s.json
 ns-instruction-sim cycle estimate --session s.json --symbol main --json
+ns-instruction-sim cycle estimate --session s.json --line main.c:10 --json
 ns-instruction-sim cycle set --session s.json --count 1000
 ns-instruction-sim interrupt pending --session s.json
 ns-instruction-sim interrupt vector --session s.json --json

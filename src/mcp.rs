@@ -1041,6 +1041,7 @@ fn tools() -> Vec<Tool> {
                     ("session", session.clone()),
                     ("addr", addr.clone()),
                     ("symbol", prop_str("ELF 符号名（与 addr 二选一）。")),
+                    ("line", prop_str("按源码行号解析地址（file:line，如 main.c:10）。")),
                 ],
                 &[],
             ),
@@ -3120,17 +3121,44 @@ fn tool_cycle_get(server: &McpServer, args: &Map<String, Value>) -> Result<Value
 fn tool_cycle_estimate(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let addr_arg = s(args, "addr");
     let symbol = s(args, "symbol");
-    if symbol.is_some() && addr_arg.is_some() {
-        bail!("addr 与 symbol 只能二选一");
-    }
+    let line = s(args, "line");
     with_sim(server, args, false, |sim, _, _| {
         let (addr, sym) = if let Some(name) = symbol.as_deref() {
+            if addr_arg.is_some() || line.is_some() {
+                bail!("symbol 与 addr/line 只能二选一");
+            }
             let s = sim
                 .symbols
                 .iter()
                 .find(|s| s.name == name)
                 .ok_or_else(|| anyhow::anyhow!("符号未找到: {name}"))?;
             (s.address, Some(s.name.clone()))
+        } else if let Some(line_spec) = line.as_deref() {
+            if addr_arg.is_some() {
+                bail!("line 与 addr 只能二选一");
+            }
+            let (file_part, line_part) = line_spec
+                .rsplit_once(':')
+                .ok_or_else(|| anyhow::anyhow!("行号格式应为 file:line，如 main.c:10"))?;
+            let line_num: u32 = line_part
+                .parse()
+                .map_err(|_| anyhow::anyhow!("非法行号: {line_part}"))?;
+            let file_idx = sim
+                .source_files
+                .iter()
+                .position(|f| {
+                    f == file_part
+                        || std::path::Path::new(f)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| n == file_part)
+                            .unwrap_or(false)
+                })
+                .ok_or_else(|| anyhow::anyhow!("源文件未找到: {file_part}"))?;
+            let addr = sim
+                .address_for_line(file_idx, line_num)
+                .ok_or_else(|| anyhow::anyhow!("行 {line_part} 无对应指令地址"))?;
+            (addr, Some(format!("{file_part}:{line_num}")))
         } else {
             let addr = parse_num(&addr_arg.ok_or_else(|| anyhow::anyhow!("缺少 addr 或 symbol"))?)?;
             (addr, None)

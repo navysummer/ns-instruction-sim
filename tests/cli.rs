@@ -595,6 +595,50 @@ fn cycle_estimate_by_symbol() {
 }
 
 #[test]
+fn cycle_estimate_by_line() {
+    let dir = tmpdir();
+    let elf = dir.join("cyceline.elf");
+    write_riscv_elf_with_symbol(&elf, &[0x93, 0x00, 0x10, 0x00], "main");
+    let sess = dir.join("cyceline.json");
+    let out = Command::new(bin())
+        .args([
+            "state", "--arch", "riscv", "--firmware", elf.to_str().unwrap(),
+            "--session", sess.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Estimate cycles by source line.
+    let out = Command::new(bin())
+        .args([
+            "cycle", "estimate", "--session", sess.to_str().unwrap(), "--line", "<elf>:1", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["address"], 0x8000_0000u64);
+    assert!(json["cycles"].as_u64().unwrap() >= 1);
+    // A bad line number is an error.
+    let out = Command::new(bin())
+        .args([
+            "cycle", "estimate", "--session", sess.to_str().unwrap(), "--line", "<elf>:99",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    // --addr and --line are mutually exclusive.
+    let out = Command::new(bin())
+        .args([
+            "cycle", "estimate", "--session", sess.to_str().unwrap(),
+            "--addr", "0x80000000", "--line", "<elf>:1",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
 fn cycle_set_roundtrip() {
     let dir = tmpdir();
     let sess = dir.join("cycleset.json");
@@ -689,6 +733,39 @@ fn mcp_cycle_estimate_symbol() {
     // addr + symbol conflict.
     let r = client.call_tool("cycle_estimate", serde_json::json!({
         "session": s, "addr": "0x80000000", "symbol": "main",
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
+fn mcp_cycle_estimate_line() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-cyceline-{}.elf", std::process::id()));
+    write_riscv_elf_with_symbol(&elf, &[0x93, 0x00, 0x10, 0x00], "main");
+    let sess = dir.join(format!("mcp-cyceline-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({
+        "session": s, "arch": "riscv", "firmware": elf.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    let r = client.call_tool("cycle_estimate", serde_json::json!({
+        "session": s, "line": "<elf>:1",
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "cycle_estimate line: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x8000_0000u64, "{}", r);
+    assert!(r["structuredContent"]["cycles"].as_u64().unwrap() >= 1);
+    // A bad line is a tool error.
+    let r = client.call_tool("cycle_estimate", serde_json::json!({
+        "session": s, "line": "<elf>:99",
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    // addr + line conflict.
+    let r = client.call_tool("cycle_estimate", serde_json::json!({
+        "session": s, "addr": "0x80000000", "line": "<elf>:1",
     }));
     assert!(r["isError"].as_bool().unwrap(), "{}", r);
     client.close();
@@ -11161,7 +11238,7 @@ fn help_every_param() {
         (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--peek", "--rx-drain", "--json"]),
         (&["periph", "gpio"], &["--session", "--pin", "--value", "--direction", "--output", "--read", "--events", "--clear-events", "--json"]),
         (&["watchdog", "config"], &["--session", "--enabled", "--timeout", "--base"]),
-        (&["cycle", "estimate"], &["--session", "--addr", "--symbol", "--json"]),
+        (&["cycle", "estimate"], &["--session", "--addr", "--symbol", "--line", "--json"]),
         (&["cycle", "set"], &["--session", "--count", "--json"]),
         (&["interrupt", "vector"], &["--session", "--json"]),
         (&["interrupt", "clear"], &["--session", "--json"]),
