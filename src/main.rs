@@ -694,6 +694,54 @@ enum MemSub {
         #[arg(long)]
         json: bool,
     },
+    /// 校验内存区域与期望数据（字节序列/文件/值/重复模式）是否一致。
+    Verify {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 目标架构（无会话时使用，默认 riscv）。
+        #[arg(short, long)]
+        arch: Option<String>,
+        /// 内置设备键（配合 --region，如 stm32f103c8；与 --addr 二选一）。
+        #[arg(long)]
+        device: Option<String>,
+        /// 设备命名内存区域（FLASH/RAM/PERIPHERALS；配合 --device）。
+        #[arg(long)]
+        region: Option<String>,
+        /// 区域内偏移（配合 --device/--region，默认 0）。
+        #[arg(long, default_value = "0")]
+        offset: Option<String>,
+        /// ELF 符号名（数据符号起始地址；与 --addr/--device 二选一）。
+        #[arg(long)]
+        symbol: Option<String>,
+        /// 起始地址（位置参数或 --addr）。
+        #[arg(index = 1)]
+        addr: Option<String>,
+        /// 起始地址（--addr 形式）。
+        #[arg(long = "addr", conflicts_with = "addr")]
+        addr_flag: Option<String>,
+        /// 校验长度（字节；缺省用期望数据长度；配 --pattern 时为重复填充总长）。
+        #[arg(long)]
+        len: Option<usize>,
+        /// 期望字节（空格分隔，支持 0xNN）。
+        #[arg(long, value_delimiter = ' ', num_args = 1.., conflicts_with_all = ["values", "file", "pattern"])]
+        bytes: Vec<String>,
+        /// 期望值（配合 --width；空格分隔，十进制/十六进制）。
+        #[arg(long, value_delimiter = ' ', num_args = 1.., conflicts_with_all = ["bytes", "file", "pattern"])]
+        values: Vec<String>,
+        /// 期望字节从二进制文件读取（与 --bytes/--values/--pattern 互斥）。
+        #[arg(long, conflicts_with_all = ["bytes", "values", "pattern"])]
+        file: Option<PathBuf>,
+        /// 重复填充的期望字节模式（空格分隔；与 --bytes/--values/--file 互斥）。
+        #[arg(long, value_delimiter = ' ', num_args = 1.., conflicts_with_all = ["bytes", "values", "file"])]
+        pattern: Vec<String>,
+        /// 数据宽度：`byte`/`half`/`word`/`dword`（默认 byte；配合 --values）。
+        #[arg(long, default_value = "byte")]
+        width: String,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
     /// 加载固件到内存（等价于 run 的加载步骤，不执行）。
     Load {
         /// 会话文件路径（JSON）。
@@ -4121,6 +4169,126 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
                 println!("已搜索 {} 字节，找到 {} 处匹配，结果写入 {}", len, matches.len(), out_path.display());
             } else {
                 print!("{text}");
+            }
+            Ok(())
+        }
+        MemSub::Verify { session, arch, device, region, offset, symbol, addr, addr_flag, len, bytes, values, file, pattern, width, json } => {
+            let (sim, _, _) = load_or_create(Some(&session), arch.as_deref(), None, "0")?;
+            let addr_num = resolve_mem_addr(
+                symbol.as_deref(),
+                addr.as_deref(),
+                addr_flag.as_deref(),
+                device.as_deref(),
+                region.as_deref(),
+                offset.as_deref().map(parse_num).transpose()?.unwrap_or(0),
+                &sim,
+            )?;
+            let elem_size = match width.as_str() {
+                "byte" => 1usize,
+                "half" => 2usize,
+                "word" => 4usize,
+                "dword" => 8usize,
+                other => bail!("不支持的内存宽度: {other}（支持 byte/half/word/dword）"),
+            };
+            let expected: Vec<u8> = if !bytes.is_empty() {
+                let mut exp = Vec::with_capacity(bytes.len());
+                for b in &bytes {
+                    let v = parse_num(b)?;
+                    if v > 0xff {
+                        bail!("字节超出 0..=255: {b}");
+                    }
+                    exp.push(v as u8);
+                }
+                exp
+            } else if !values.is_empty() {
+                let mut exp = Vec::with_capacity(values.len() * elem_size);
+                for v in &values {
+                    let n = parse_num(v)? as u64;
+                    let max = if elem_size * 8 == 64 {
+                        u64::MAX
+                    } else {
+                        (1u64 << (elem_size * 8)) - 1
+                    };
+                    if n > max {
+                        bail!("值超出 {} 位: {v}", elem_size * 8);
+                    }
+                    for j in 0..elem_size {
+                        exp.push(((n >> (8 * j)) & 0xff) as u8);
+                    }
+                }
+                exp
+            } else if let Some(f) = &file {
+                std::fs::read(f).with_context(|| format!("读取 {} 失败", f.display()))?
+            } else if !pattern.is_empty() {
+                let base = expand_search_pattern(&pattern, &width)?;
+                if base.is_empty() {
+                    bail!("--pattern 至少需要一个字节");
+                }
+                let total = len.unwrap_or(base.len());
+                let mut exp = Vec::with_capacity(total);
+                for i in 0..total {
+                    exp.push(base[i % base.len()]);
+                }
+                exp
+            } else {
+                bail!("请提供 --bytes/--values/--file/--pattern 之一");
+            };
+            let compare_len = if !pattern.is_empty() {
+                expected.len()
+            } else {
+                let want = len.unwrap_or(expected.len());
+                if want != expected.len() {
+                    bail!(
+                        "--len（{want}）必须等于期望数据长度（{}）",
+                        expected.len()
+                    );
+                }
+                want
+            };
+            let mut mismatches: Vec<serde_json::Value> = Vec::new();
+            let mut first: Option<usize> = None;
+            for i in 0..compare_len {
+                let actual = read_mem_byte(&sim, addr_num.wrapping_add(i as u32));
+                if expected[i] != actual {
+                    if first.is_none() {
+                        first = Some(i);
+                    }
+                    mismatches.push(serde_json::json!({
+                        "offset": i,
+                        "address": addr_num.wrapping_add(i as u32),
+                        "expected": expected[i],
+                        "actual": actual,
+                    }));
+                }
+            }
+            let matched = mismatches.is_empty();
+            if json {
+                print_json(&serde_json::json!({
+                    "address": addr_num,
+                    "len": compare_len,
+                    "matched": matched,
+                    "mismatchCount": mismatches.len(),
+                    "firstMismatch": first,
+                    "mismatches": mismatches,
+                }))?;
+            } else if matched {
+                println!("已验证 {} 字节 @ 0x{:08x}（一致）", compare_len, addr_num);
+            } else {
+                println!(
+                    "校验失败：{} / {} 字节不匹配 @ 0x{:08x}",
+                    mismatches.len(),
+                    compare_len,
+                    addr_num
+                );
+                for m in &mismatches {
+                    println!(
+                        "  偏移 {offset} @ 0x{address:08x}: 期望 0x{expected:02x} 实际 0x{actual:02x}",
+                        offset = m["offset"].as_u64().unwrap_or(0),
+                        address = m["address"].as_u64().unwrap_or(0),
+                        expected = m["expected"].as_u64().unwrap_or(0),
+                        actual = m["actual"].as_u64().unwrap_or(0),
+                    );
+                }
             }
             Ok(())
         }

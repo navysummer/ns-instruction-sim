@@ -1683,6 +1683,94 @@ fn mem_search_mask() {
 }
 
 #[test]
+fn mem_verify_roundtrip() {
+    let dir = tmpdir();
+    let sess = dir.join("verify.json");
+    bootstrap(&sess);
+    let s = sess.to_str().unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "write", "--session", s, "--addr", "0x20000000",
+               "--bytes", "0x10", "0x11", "0x12", "0x13", "0x10", "0x11", "0x12", "0x13"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // Exact byte comparison matches.
+    let out = Command::new(bin())
+        .args(["mem", "verify", "--session", s, "--addr", "0x20000000",
+               "--bytes", "0x10", "0x11", "0x12", "0x13", "0x10", "0x11", "0x12", "0x13", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["matched"], true);
+    assert_eq!(json["mismatchCount"], 0u64);
+    assert_eq!(json["firstMismatch"], serde_json::Value::Null);
+
+    // A mismatch reports offset/expected/actual.
+    let out = Command::new(bin())
+        .args(["mem", "verify", "--session", s, "--addr", "0x20000000",
+               "--bytes", "0x10", "0x11", "0x12", "0xff", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["matched"], false);
+    assert_eq!(json["mismatchCount"], 1u64);
+    assert_eq!(json["firstMismatch"], 3u64);
+    assert_eq!(json["mismatches"][0]["offset"], 3u64);
+    assert_eq!(json["mismatches"][0]["expected"], 0xffu64);
+    assert_eq!(json["mismatches"][0]["actual"], 0x13u64);
+
+    // Word-width value comparison (little-endian).
+    let out = Command::new(bin())
+        .args(["mem", "verify", "--session", s, "--addr", "0x20000000",
+               "--values", "0x13121110", "0x13121110", "--width", "word", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["matched"], true);
+
+    // Repeated pattern over the whole range matches.
+    let out = Command::new(bin())
+        .args(["mem", "verify", "--session", s, "--addr", "0x20000000", "--len", "8",
+               "--pattern", "0x10", "0x11", "0x12", "0x13", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["matched"], true);
+    assert_eq!(json["len"], 8u64);
+
+    // Expected bytes from a file.
+    let payload = dir.join("verify.bin");
+    std::fs::write(&payload, [0x10u8, 0x11, 0x12, 0x13, 0x10, 0x11, 0x12, 0x13]).unwrap();
+    let out = Command::new(bin())
+        .args(["mem", "verify", "--session", s, "--addr", "0x20000000",
+               "--file", payload.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["matched"], true);
+
+    // Missing expected source is an error.
+    let out = Command::new(bin())
+        .args(["mem", "verify", "--session", s, "--addr", "0x20000000"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    // --len must equal the expected data length for exact comparison.
+    let out = Command::new(bin())
+        .args(["mem", "verify", "--session", s, "--addr", "0x20000000", "--len", "5",
+               "--bytes", "0x10", "0x11", "0x12", "0x13"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
 fn device_svd_parse_and_filter() {
     let dir = tmpdir();
     let svd = dir.join("testchip.svd");
@@ -7557,7 +7645,7 @@ fn mcp_handshake_and_list_tools() {
         "arch_list", "device_list", "device_info", "device_svd", "device_linker", "device_startup",
         "device_init", "session_create", "state", "step", "step_over", "step_out",
         "run", "continue", "reg_list", "reg_get", "reg_set", "mem_read", "mem_write", "mem_fill",
-        "mem_search", "mem_load", "mem_dump", "mem_region", "mem_copy", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
+        "mem_search", "mem_load", "mem_dump", "mem_region", "mem_copy", "mem_verify", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
         "cycle_get", "cycle_set", "interrupt_take", "interrupt_clear", "periph_status", "periph_config", "periph_gpio", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "bp_hits", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
@@ -9314,6 +9402,71 @@ fn mcp_mem_copy() {
 }
 
 #[test]
+fn mcp_mem_verify() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-memverify-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "arch": "riscv", "addr": "0x20000000",
+        "bytes": ["0x10", "0x11", "0x12", "0x13", "0x10", "0x11", "0x12", "0x13"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write: {}", r);
+
+    // Exact byte comparison matches.
+    let r = client.call_tool("mem_verify", serde_json::json!({
+        "session": s, "addr": "0x20000000",
+        "bytes": ["0x10", "0x11", "0x12", "0x13", "0x10", "0x11", "0x12", "0x13"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_verify: {}", r);
+    assert_eq!(r["structuredContent"]["matched"], true);
+    assert_eq!(r["structuredContent"]["mismatchCount"], 0u64);
+
+    // A mismatch is reported, not an error.
+    let r = client.call_tool("mem_verify", serde_json::json!({
+        "session": s, "addr": "0x20000000",
+        "bytes": ["0x10", "0x11", "0x12", "0xff"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "{}", r);
+    assert_eq!(r["structuredContent"]["matched"], false);
+    assert_eq!(r["structuredContent"]["mismatchCount"], 1u64);
+    assert_eq!(r["structuredContent"]["firstMismatch"], 3u64);
+    assert_eq!(r["structuredContent"]["mismatches"][0]["expected"], 0xffu64);
+    assert_eq!(r["structuredContent"]["mismatches"][0]["actual"], 0x13u64);
+
+    // Repeated pattern comparison.
+    let r = client.call_tool("mem_verify", serde_json::json!({
+        "session": s, "addr": "0x20000000", "len": 8,
+        "pattern": ["0x10", "0x11", "0x12", "0x13"],
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "{}", r);
+    assert_eq!(r["structuredContent"]["matched"], true);
+    assert_eq!(r["structuredContent"]["len"], 8u64);
+
+    // Expected bytes from a file.
+    let payload = dir.join("verify.bin");
+    std::fs::write(&payload, [0x10u8, 0x11, 0x12, 0x13, 0x10, 0x11, 0x12, 0x13]).unwrap();
+    let r = client.call_tool("mem_verify", serde_json::json!({
+        "session": s, "addr": "0x20000000", "file": payload.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "{}", r);
+    assert_eq!(r["structuredContent"]["matched"], true);
+
+    // Missing expected source is a tool error.
+    let r = client.call_tool("mem_verify", serde_json::json!({ "session": s, "addr": "0x20000000" }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    // --len mismatch for exact comparison is a tool error.
+    let r = client.call_tool("mem_verify", serde_json::json!({
+        "session": s, "addr": "0x20000000", "len": 5,
+        "bytes": ["0x10", "0x11", "0x12", "0x13"],
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
 fn mcp_mem_symbol() {
     let mut client = McpClient::start();
     let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
@@ -9403,13 +9556,13 @@ fn mcp_mem_write_file() {
     let dir = tmpdir();
     let sess = dir.join(format!("mcp-memfile-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&sess);
-    let bin = dir.join("payload.bin");
-    std::fs::write(&bin, [0xAAu8, 0xBB, 0xCC, 0xDD]).unwrap();
+    let payload = dir.join("payload.bin");
+    std::fs::write(&payload, [0xAAu8, 0xBB, 0xCC, 0xDD]).unwrap();
     let s = sess.to_str().unwrap();
 
     // `file` reads bytes from a binary file and writes them to memory.
     let r = client.call_tool("mem_write", serde_json::json!({
-        "session": s, "arch": "riscv", "addr": "0x20000000", "file": bin.to_str().unwrap(),
+        "session": s, "arch": "riscv", "addr": "0x20000000", "file": payload.to_str().unwrap(),
     }));
     assert!(!r["isError"].as_bool().unwrap(), "mem_write file: {}", r);
     assert_eq!(r["structuredContent"]["len"], 4u64);
@@ -11251,6 +11404,7 @@ fn help_every_param() {
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),
         (&["mem", "fill"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--value", "--random", "--seed", "--pattern", "--json"]),
         (&["mem", "search"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--pattern", "--width", "--mask", "--out", "--json"]),
+        (&["mem", "verify"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--bytes", "--values", "--file", "--pattern", "--width", "--json"]),
         (&["device", "lookup"], &["--addr", "--name", "--json"]),
         (&["device", "peripherals"], &["--filter", "--json"]),
         (&["device", "peripheral"], &["--register", "--json"]),

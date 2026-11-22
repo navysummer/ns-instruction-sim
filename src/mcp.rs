@@ -833,6 +833,29 @@ fn tools() -> Vec<Tool> {
             handler: tool_mem_copy,
         },
         Tool {
+            name: "mem_verify",
+            description: "校验内存区域与期望数据（字节序列/文件/值/重复模式）是否一致。",
+            schema: obj(
+                &[
+                    ("session", session.clone()),
+                    ("arch", arch.clone()),
+                    ("addr", addr.clone()),
+                    ("symbol", prop_str("ELF 符号名（数据符号起始地址；与 addr/device 二选一）。")),
+                    ("device", prop_str("内置设备键（配合 region，如 stm32f103c8）。")),
+                    ("region", prop_str("设备命名内存区域（FLASH/RAM/PERIPHERALS）。")),
+                    ("offset", prop_num("区域内偏移（默认 0）。")),
+                    ("len", prop_num("校验长度（字节；缺省用期望数据长度；配 pattern 时为重复填充总长）。")),
+                    ("bytes", prop_arr("期望字节序列（支持 0xNN）。")),
+                    ("values", prop_arr("期望值序列（配合 width，十进制/十六进制）。")),
+                    ("file", prop_str("期望字节从二进制文件读取。")),
+                    ("pattern", prop_arr("重复填充的期望字节模式（空格分隔整数）。")),
+                    ("width", prop_str("数据宽度：byte/half/word/dword。")),
+                ],
+                &[],
+            ),
+            handler: tool_mem_verify,
+        },
+        Tool {
             name: "bp_set",
             description: "设置断点（按地址/符号/源码行号，支持条件/命中次数/一次性）。",
             schema: obj(
@@ -2442,6 +2465,109 @@ fn tool_mem_copy(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
             write_mem_byte(sim, dst.wrapping_add(i as u32), *b);
         }
         Ok(json!({ "src": src, "dst": dst, "len": len }))
+    })
+}
+
+/// Verify a memory range against expected bytes (`mem verify`).
+fn tool_mem_verify(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let width = s(args, "width").unwrap_or_else(|| "byte".to_string());
+    let elem_size = match width.as_str() {
+        "byte" => 1usize,
+        "half" => 2usize,
+        "word" => 4usize,
+        "dword" => 8usize,
+        other => bail!("不支持的内存宽度: {other}（支持 byte/half/word/dword）"),
+    };
+    let bytes = arr(args, "bytes");
+    let values = arr(args, "values");
+    let file = s(args, "file");
+    let pattern = arr(args, "pattern");
+    let expected: Vec<u8> = if !bytes.is_empty() {
+        let mut exp = Vec::with_capacity(bytes.len());
+        for b in &bytes {
+            let v = parse_num(b)?;
+            if v > 0xff {
+                bail!("字节超出 0..=255: {b}");
+            }
+            exp.push(v as u8);
+        }
+        exp
+    } else if !values.is_empty() {
+        let mut exp = Vec::with_capacity(values.len() * elem_size);
+        for v in &values {
+            let n = parse_num(v)? as u64;
+            let max = if elem_size * 8 == 64 {
+                u64::MAX
+            } else {
+                (1u64 << (elem_size * 8)) - 1
+            };
+            if n > max {
+                bail!("值超出 {} 位: {v}", elem_size * 8);
+            }
+            for j in 0..elem_size {
+                exp.push(((n >> (8 * j)) & 0xff) as u8);
+            }
+        }
+        exp
+    } else if let Some(f) = &file {
+        std::fs::read(f).with_context(|| format!("读取 {f} 失败"))?
+    } else if !pattern.is_empty() {
+        let base = crate::expand_search_pattern(&pattern, &width)?;
+        if base.is_empty() {
+            bail!("pattern 至少需要一个字节");
+        }
+        let total = u(args, "len").map(|v| v as usize).unwrap_or(base.len());
+        let mut exp = Vec::with_capacity(total);
+        for i in 0..total {
+            exp.push(base[i % base.len()]);
+        }
+        exp
+    } else {
+        bail!("请提供 bytes/values/file/pattern 之一");
+    };
+    with_sim(server, args, false, |sim, _, _| {
+        let addr_num = crate::resolve_mem_addr(
+            s(args, "symbol").as_deref(),
+            s(args, "addr").as_deref(),
+            None,
+            s(args, "device").as_deref(),
+            s(args, "region").as_deref(),
+            u(args, "offset").unwrap_or(0),
+            sim,
+        )?;
+        let compare_len = if !pattern.is_empty() {
+            expected.len()
+        } else {
+            let want = u(args, "len").map(|v| v as usize).unwrap_or(expected.len());
+            if want != expected.len() {
+                bail!("len（{want}）必须等于期望数据长度（{}）", expected.len());
+            }
+            want
+        };
+        let mut mismatches: Vec<Value> = Vec::new();
+        let mut first: Option<usize> = None;
+        for i in 0..compare_len {
+            let actual = read_mem_byte(sim, addr_num.wrapping_add(i as u32));
+            if expected[i] != actual {
+                if first.is_none() {
+                    first = Some(i);
+                }
+                mismatches.push(json!({
+                    "offset": i,
+                    "address": addr_num.wrapping_add(i as u32),
+                    "expected": expected[i],
+                    "actual": actual,
+                }));
+            }
+        }
+        Ok(json!({
+            "address": addr_num,
+            "len": compare_len,
+            "matched": mismatches.is_empty(),
+            "mismatchCount": mismatches.len(),
+            "firstMismatch": first,
+            "mismatches": mismatches,
+        }))
     })
 }
 
