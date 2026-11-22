@@ -1678,7 +1678,7 @@ fn device_svd_parse_and_filter() {
 #[test]
 fn device_svd_out_writes_file() {
     let dir = tmpdir();
-    let svd = dir.join("testchip.svd");
+    let svd = dir.join("outchip.svd");
     std::fs::write(
         &svd,
         r#"<?xml version="1.0"?>
@@ -7642,7 +7642,7 @@ fn mcp_device_svd_out_writes_file() {
     let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
 
     let dir = tmpdir();
-    let out_path = dir.join("svd.json");
+    let out_path = dir.join("mcp-svd.json");
     let r = client.call_tool(
         "device_svd",
         serde_json::json!({ "device": "stm32f103c8", "out": out_path.to_str().unwrap() }),
@@ -7656,7 +7656,7 @@ fn mcp_device_svd_out_writes_file() {
     assert!(written["peripherals"].as_array().unwrap().len() > 0);
 
     // Register-filtered output also respects `out`.
-    let out_reg = dir.join("svd-reg.json");
+    let out_reg = dir.join("mcp-svd-reg.json");
     let r = client.call_tool(
         "device_svd",
         serde_json::json!({
@@ -9316,6 +9316,40 @@ fn mcp_mem_search_width() {
         "pattern": ["0x10000"], "width": "half",
     }));
     assert!(r["isError"].as_bool().unwrap(), "overflow must fail: {}", r);
+    client.close();
+}
+
+#[test]
+fn mcp_mem_write_file() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-memfile-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let bin = dir.join("payload.bin");
+    std::fs::write(&bin, [0xAAu8, 0xBB, 0xCC, 0xDD]).unwrap();
+    let s = sess.to_str().unwrap();
+
+    // `file` reads bytes from a binary file and writes them to memory.
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "arch": "riscv", "addr": "0x20000000", "file": bin.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_write file: {}", r);
+    assert_eq!(r["structuredContent"]["len"], 4u64);
+    let r = client.call_tool("mem_read", serde_json::json!({
+        "session": s, "addr": "0x20000000", "len": 4,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "mem_read: {}", r);
+    assert_eq!(
+        r["structuredContent"]["bytes"],
+        serde_json::json!([170u8, 187, 204, 221])
+    );
+
+    // A missing file is a tool error.
+    let r = client.call_tool("mem_write", serde_json::json!({
+        "session": s, "arch": "riscv", "addr": "0x20000000", "file": dir.join("nope.bin").to_str().unwrap(),
+    }));
+    assert!(r["isError"].as_bool().unwrap(), "missing file must error: {}", r);
     client.close();
 }
 

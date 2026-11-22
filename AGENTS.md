@@ -211,7 +211,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `mem_read/write/fill/search` 支持 `device`/`region`/`offset` 按设备命名区域寻址（与 `addr` 互斥）、
    `mem_read/write/fill/search` 支持 `symbol` 按 ELF 数据符号起始地址寻址（与 `addr`/`device` 互斥）、
    `mem_read` 支持 `ascii`/`string` 返回 `text`（NUL 结尾字符串或 ASCII 视图）、
-   `mem_write` 支持 `string`/`null`（写字符串 ASCII 字节并可追加 NUL）、
+   `mem_write` 支持 `file`（从二进制文件读取字节写入，缺文件以 `isError:true` 返回）、
+   `string`/`null`（写字符串 ASCII 字节并可追加 NUL）、
    `mem_fill` 支持 `pattern`（重复填充字节模式）、
    `bp_set/modify/clear/list/enable/disable/clear_all`
    （`bp_list` 支持 `symbols` 参数；`bp_hits` 预置断点运行时命中计数；
@@ -817,6 +818,8 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   均可按地址定位）；非法宽度与超宽数值报错误。
 - `mcp_mem_search_width`：MCP `mem_search` 的 `width` 参数返回 `width`/`matches`；缺省按字节解释，
   数值超出所请求宽度时报错。
+- `mcp_mem_write_file`：MCP `mem_write` 的 `file` 参数从二进制文件读取字节写入内存并读回一致，
+  缺文件以 `isError:true` 返回。
 - `mem_search_mask`：`mem search --mask` 按 `--width` 展开逐字节掩码（`0x00` 为通配字节，
   `0xFF` 精确匹配），可匹配低位通配的字（`0xDEADBEEF`/`0xDEADBEFF` 均命中）；掩码长度与展开后
   模式不一致时报错。
