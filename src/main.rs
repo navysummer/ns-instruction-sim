@@ -1536,6 +1536,16 @@ enum PeriphSub {
         #[arg(long)]
         json: bool,
     },
+    /// 复位虚拟外设模型到空闲状态（清空 UART 输出/输入队列、GPIO 状态与事件、全部定时器、
+    /// 看门狗与挂起中断线；保留基址与 SVD 加载的芯片寄存器）。
+    Reset {
+        /// 会话文件路径（JSON）。
+        #[arg(short, long)]
+        session: PathBuf,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -6326,6 +6336,28 @@ fn cmd_periph(sub: PeriphSub) -> Result<()> {
                     "{}.{}.{} = 0x{:x} (reg=0x{:08x})",
                     peripheral, register, field, new_bits, new_reg
                 );
+            }
+            Ok(())
+        }
+        PeriphSub::Reset { session, json } => {
+            let (mut sim, fw, _) = load_or_create(Some(&session), None, None, "0")?;
+            let cleared = sim.peripherals.outputs.len()
+                + sim.peripherals.gpio_events.len()
+                + sim.peripherals.timers.len()
+                + sim.peripherals.uart_rx.borrow().len()
+                + usize::from(sim.peripherals.watchdog.is_some())
+                + sim.peripherals.irq_pending.iter().filter(|b| **b).count();
+            sim.peripherals.reset();
+            save_session_preserving_watchpoints(&session, &sim, fw)?;
+            if json {
+                print_json(&serde_json::json!({
+                    "uartBase": sim.peripherals.uart_base,
+                    "gpioBase": sim.peripherals.gpio_base,
+                    "timerBase": sim.peripherals.timer_base,
+                    "cleared": cleared,
+                }))?;
+            } else {
+                println!("外设已复位（清除 {} 项状态）", cleared);
             }
             Ok(())
         }

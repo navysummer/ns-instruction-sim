@@ -127,7 +127,7 @@ ns-instruction-sim/
 | `disasm` | — | 反汇编 N 条或字节范围（`--size` 与 `--count` 互斥；可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON；`--firmware` 直接加载固件反汇编，无需先建会话，架构从 ELF 推导） | `--firmware --base --arch --addr --symbol --count --size --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要；`--mem` 附带指定起始地址的内存快照，人读模式输出 hex dump；JSON 含 `watchpoints` 完整观察点快照） | `--session --arch --firmware --base --mem --mem-len --json --fields --summary` | 状态/JSON/摘要 |
-| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`config` 可重定位 UART/GPIO/定时器基址（`--timer-base` 同时更新已有定时器并用于后续创建）；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费），`--peek` 查看下一条待读字节而不消费、`--rx-drain` 清空接收 FIFO；`reg-dump --fields` 附带每个寄存器的 SVD 位域解码（位偏移/宽度/当前值/描述）；`timer` 可直接设置/读取运行时计数器（`--counter`）与更新计数（`--update-count`），`--list` 列出已配置的全部定时器（只读，不创建，与配置参数互斥）；`gpio` 可设置引脚方向/输出电平（`--direction`/`--output`）并读取输入/输出/方向（`--read`），`--events` 查询输出变化事件日志（cycle/pin/value/pc）、`--clear-events` 清空该日志（两者均持久化） | `--uart-base --gpio-base --timer-base --pin --value --direction --output --read --events --clear-events --index --enabled --prescaler --auto-reload --counter --update-count --list --addr --name --len --bytes --input --peek --rx-drain --file --device --peripheral --register --field --fields --force --session --json` | 表/JSON |
+| `periph` | `status` / `config` / `uart` / `gpio` / `timer` / `reg-read` / `reg-write` / `reg-list` / `reg-dump` / `field-get` / `field-set` / `svd-load` / `reset` | 外设状态/基址配置/控制/寄存器直读写/列出已加载寄存器/位域读写/SVD 加载；`config` 可重定位 UART/GPIO/定时器基址（`--timer-base` 同时更新已有定时器并用于后续创建）；`uart` 可注入输入字节（`--input`/`--bytes`，固件从 UART 数据寄存器读取，FIFO 消费），`--peek` 查看下一条待读字节而不消费、`--rx-drain` 清空接收 FIFO；`reg-dump --fields` 附带每个寄存器的 SVD 位域解码（位偏移/宽度/当前值/描述）；`timer` 可直接设置/读取运行时计数器（`--counter`）与更新计数（`--update-count`），`--list` 列出已配置的全部定时器（只读，不创建，与配置参数互斥）；`gpio` 可设置引脚方向/输出电平（`--direction`/`--output`）并读取输入/输出/方向（`--read`），`--events` 查询输出变化事件日志（cycle/pin/value/pc）、`--clear-events` 清空该日志（两者均持久化）；`reset` 复位外设模型到空闲状态（清空 UART 输出/输入队列、GPIO 状态/事件、全部定时器、看门狗、挂起中断线；保留 UART/GPIO/TIMER 基址与已加载 SVD 芯片寄存器） | `--uart-base --gpio-base --timer-base --pin --value --direction --output --read --events --clear-events --index --enabled --prescaler --auto-reload --counter --update-count --list --addr --name --len --bytes --input --peek --rx-drain --file --device --peripheral --register --field --fields --force --session --json` | 表/JSON |
 | `symbol` | `list` / `at` / `nearest` / `line` / `addr` | ELF 符号与源行号映射（`nearest` 查询地址不大于给定地址的最近符号，含 `offset`） | `--filter --addr --file --line --session --json` | 表/JSON |
 | `cycle` | `get` / `estimate` / `tick` / `set` | 周期计数/指令周期估算/外设推进/设置周期计数（模拟时间流逝/超时）；`estimate` 可用 `--symbol` 按 ELF 符号或 `--line` 按源码行号解析地址 | `--addr --symbol --line --cycles --count --session --json` | 值/JSON |
 | `interrupt` | `take` / `pending` / `vector` / `set` / `clear` | 中断触发/查询/向量表/置线/清除全部挂起；`vector` 返回 mtvec 基址与模式（`direct`/`vectored`）及每行目标地址；`clear` 清空全部挂起线并持久化（保留使能状态） | `--line --value --session --json` | 值/JSON |
@@ -235,14 +235,15 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    从会话固件符号表解析地址，或 `line` 参数按源码行号解析地址）、
    `interrupt_take/pending/vector/set/clear`（`interrupt_vector`
    返回 `base`/`mode`/`vectors`；`interrupt_clear` 清空全部挂起线并持久化）、
-   `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load`
+   `periph_status/config/uart/gpio/timer/reg_read/reg_write/reg_list/reg_dump/field_get/field_set/svd_load/reset`
    （`periph_config` 支持 `uart_base`/`gpio_base`/`timer_base` 重定位并持久化；
    `periph_reg_dump` 默认返回 `fields` 位域解码，`fields: false` 省略；
    `periph_uart` 支持 `peek` 查看下一条待读字节与 `rx_drain` 清空接收 FIFO；
    `periph_timer` 支持 `counter`/`update_count` 直接设置运行时计数器与更新计数，
    `list` 列出已配置的全部定时器（只读，与配置参数互斥）；
    `periph_gpio` 支持 `direction`/`output`/`read` 设置方向、输出并读取引脚状态，以及
-   `events`/`clear_events` 查询/清空输出变化事件日志（均持久化））、
+   `events`/`clear_events` 查询/清空输出变化事件日志（均持久化）；
+   `periph_reset` 复位外设模型到空闲状态，清空 UART/GPIO/定时器/看门狗/中断挂起并保留基址与 SVD 芯片寄存器）、
    `symbol_list/at/nearest/line/addr`、`watchdog_status/feed/config/reset`、`csr_list/get/set`。
    `trace`、`coverage`、`profile` 与 CLI 同名子命令一一对应（`analyze_schema` 共享参数），
    返回结构化轨迹/覆盖/直方图 JSON，并支持 `top` 参数（trace 按顺序、coverage/profile 按次数降序）
@@ -447,6 +448,11 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
   peek 后 `peek` 为 null；人读模式标注 `待读首字节: 0xNN`。
 - `mcp_periph_uart_peek_drain`：MCP `periph_uart` 的 `peek`/`rx_drain` 参数跨调用持久化，
   peek 不消费、drain 清空后 peek 为 null。
+- `periph_reset_clears_state`：`periph reset` 清空 UART 输出/输入、GPIO 状态/事件、全部定时器、
+  看门狗与挂起中断线（`cleared` 回报清除条目数），保留 UART/GPIO/TIMER 基址与已加载 SVD 芯片
+  寄存器；再次 reset 返回 `cleared=0`。
+- `mcp_periph_reset`：MCP `periph_reset` 同 CLI 清空外设模型，返回 `uartBase`/`gpioBase`/
+  `timerBase`/`cleared`，跨调用持久化。
 - `device_svd_parse_and_filter`：SVD 文件解析、外设/寄存器过滤与错误路径。
 - `device_svd_out_writes_file`：`device svd --out` 把 JSON/文本/寄存器明细结果写入文件并报告
   `file`/`bytes`（与 `linker`/`startup`/`init` 的 `--out` 契约一致）。

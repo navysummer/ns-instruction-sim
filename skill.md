@@ -204,6 +204,7 @@ ns-instruction-sim periph uart --session s.json --rx-drain --json
 ns-instruction-sim periph gpio --session s.json --pin 0 --direction 1 --output 1 --read --json
 ns-instruction-sim periph gpio --session s.json --events --json
 ns-instruction-sim periph gpio --session s.json --clear-events
+ns-instruction-sim periph reset --session s.json
 ns-instruction-sim periph config --session s.json --uart-base 0x50000000 --gpio-base 0x50002000
 ns-instruction-sim periph config --session s.json --timer-base 0x50001000
 

@@ -1151,6 +1151,12 @@ fn tools() -> Vec<Tool> {
             handler: tool_periph_status,
         },
         Tool {
+            name: "periph_reset",
+            description: "复位虚拟外设模型到空闲状态（清空 UART 队列、GPIO 状态与事件、定时器、看门狗、挂起中断线；保留基址与 SVD 芯片寄存器）。",
+            schema: obj(&[("session", session.clone())], &["session"]),
+            handler: tool_periph_reset,
+        },
+        Tool {
             name: "periph_config",
             description: "配置虚拟外设基址（UART/GPIO/定时器重定位并持久化）。",
             schema: obj(
@@ -3427,6 +3433,24 @@ fn tool_periph_status(server: &McpServer, args: &Map<String, Value>) -> Result<V
     with_sim(server, args, false, |sim, fw, path| {
         let state = full_state(sim, fw, path);
         Ok(state.get("peripherals").cloned().unwrap_or(Value::Null))
+    })
+}
+
+fn tool_periph_reset(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    with_sim(server, args, true, |sim, _, _| {
+        let cleared = sim.peripherals.outputs.len()
+            + sim.peripherals.gpio_events.len()
+            + sim.peripherals.timers.len()
+            + sim.peripherals.uart_rx.borrow().len()
+            + usize::from(sim.peripherals.watchdog.is_some())
+            + sim.peripherals.irq_pending.iter().filter(|b| **b).count();
+        sim.peripherals.reset();
+        Ok(json!({
+            "uartBase": sim.peripherals.uart_base,
+            "gpioBase": sim.peripherals.gpio_base,
+            "timerBase": sim.peripherals.timer_base,
+            "cleared": cleared,
+        }))
     })
 }
 

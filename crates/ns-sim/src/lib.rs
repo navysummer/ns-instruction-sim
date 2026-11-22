@@ -341,6 +341,22 @@ impl VirtualPeripherals {
             external_regs: HashMap::new(),
         }
     }
+
+    /// Reset the virtual peripheral model to its idle state: clear UART
+    /// output/input queues, GPIO state and event log, all timers, the watchdog
+    /// and pending interrupt lines. Base addresses and SVD-loaded chip
+    /// registers (`external_regs`) are preserved.
+    pub fn reset(&mut self) {
+        self.outputs.clear();
+        self.uart_rx.borrow_mut().clear();
+        self.gpio_out = 0;
+        self.gpio_dir = 0;
+        self.gpio_in = 0;
+        self.gpio_events.clear();
+        self.timers.clear();
+        self.watchdog = None;
+        self.irq_pending = [false; 16];
+    }
 }
 
 /// Machine-mode control and status registers for the RV32I core. The simulator

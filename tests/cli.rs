@@ -1333,6 +1333,74 @@ fn periph_gpio_events_query_and_clear() {
 }
 
 #[test]
+fn periph_reset_clears_state() {
+    let dir = tmpdir();
+    let sess = dir.join("periph-reset.json");
+    bootstrap(&sess);
+    let s = sess.to_str().unwrap();
+    // Populate every peripheral category.
+    let out = Command::new(bin())
+        .args(["periph", "uart", "--session", s, "--input", "hello"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["periph", "gpio", "--session", s, "--pin", "5", "--direction", "1", "--output", "1"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["periph", "timer", "--session", s, "--index", "0", "--enabled", "true",
+               "--prescaler", "1", "--auto-reload", "100"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["watchdog", "config", "--session", s, "--enabled", "true", "--timeout", "100"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["interrupt", "set", "--session", s, "--line", "2", "--value", "1"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // Reset reports the number of cleared items and persists.
+    let out = Command::new(bin())
+        .args(["periph", "reset", "--session", s, "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["cleared"].as_u64().unwrap() >= 4, "{json}");
+
+    // Status shows the peripherals back at idle (SVD/registers untouched).
+    let out = Command::new(bin())
+        .args(["periph", "status", "--session", s, "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["uart"].as_array().unwrap().len(), 0);
+    assert_eq!(json["uartText"], "");
+    assert_eq!(json["gpioOut"], 0u64);
+    assert_eq!(json["gpioDir"], 0u64);
+    assert_eq!(json["gpioEvents"].as_array().unwrap().len(), 0);
+    assert_eq!(json["timers"].as_array().unwrap().len(), 0);
+    assert!(json["watchdog"].is_null());
+
+    // A second reset on an already-idle session reports 0 cleared.
+    let out = Command::new(bin())
+        .args(["periph", "reset", "--session", s, "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["cleared"], 0u64);
+}
+
+#[test]
 fn mem_write_read_roundtrip_persists() {
     let dir = tmpdir();
     let sess = dir.join("mem.json");
@@ -7699,7 +7767,7 @@ fn mcp_handshake_and_list_tools() {
         "device_init", "session_create", "state", "step", "step_over", "step_out",
         "run", "continue", "reg_list", "reg_get", "reg_set", "mem_read", "mem_write", "mem_fill",
         "mem_search", "mem_load", "mem_dump", "mem_region", "mem_copy", "mem_verify", "bp_set", "bp_clear", "bp_list", "disasm", "reset",
-        "cycle_get", "cycle_set", "interrupt_take", "interrupt_clear", "periph_status", "periph_config", "periph_gpio", "periph_reg_read", "periph_reg_write",
+        "cycle_get", "cycle_set", "interrupt_take", "interrupt_clear", "periph_status", "periph_reset", "periph_config", "periph_gpio", "periph_reg_read", "periph_reg_write",
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "bp_hits", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
         "watch_disable", "watch_clear_all", "watch_hits",
@@ -10169,6 +10237,50 @@ fn mcp_periph_uart_peek_drain() {
 }
 
 #[test]
+fn mcp_periph_reset() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-periph-reset-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    // Populate peripherals.
+    let r = client.call_tool("periph_uart", serde_json::json!({ "session": s, "bytes": ["0x41"] }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_uart: {}", r);
+    let r = client.call_tool("periph_gpio", serde_json::json!({ "session": s, "pin": 5, "direction": 1, "output": 1 }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_gpio: {}", r);
+    let r = client.call_tool("periph_timer", serde_json::json!({
+        "session": s, "index": 0, "enabled": true, "prescaler": 1, "auto_reload": 100,
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_timer: {}", r);
+    let r = client.call_tool("watchdog_config", serde_json::json!({ "session": s, "enabled": true, "timeout": 100 }));
+    assert!(!r["isError"].as_bool().unwrap(), "watchdog_config: {}", r);
+    let r = client.call_tool("interrupt_set", serde_json::json!({ "session": s, "line": 2, "value": 1 }));
+    assert!(!r["isError"].as_bool().unwrap(), "interrupt_set: {}", r);
+
+    // Reset clears the peripheral model and persists.
+    let r = client.call_tool("periph_reset", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_reset: {}", r);
+    assert!(r["structuredContent"]["cleared"].as_u64().unwrap() >= 4, "{}", r);
+    let r = client.call_tool("periph_status", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_status: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["uart"].as_array().unwrap().len(), 0);
+    assert_eq!(sc["uartText"], "");
+    assert_eq!(sc["gpioOut"], 0u64);
+    assert_eq!(sc["gpioDir"], 0u64);
+    assert_eq!(sc["timers"].as_array().unwrap().len(), 0);
+    assert!(sc["watchdog"].is_null());
+
+    // A second reset on idle reports 0.
+    let r = client.call_tool("periph_reset", serde_json::json!({ "session": s }));
+    assert!(!r["isError"].as_bool().unwrap(), "periph_reset2: {}", r);
+    assert_eq!(r["structuredContent"]["cleared"], 0u64);
+    client.close();
+}
+
+#[test]
 fn mcp_periph_timer_counter() {
     let mut client = McpClient::start();
     let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
@@ -11504,6 +11616,7 @@ fn help_every_param() {
         (&["reg", "set"], &["--session", "--name", "--value", "--json"]),
         (&["periph", "reg-write"], &["--session", "--addr", "--name", "--device", "--bytes"]),
         (&["periph", "config"], &["--session", "--uart-base", "--gpio-base", "--timer-base", "--json"]),
+        (&["periph", "reset"], &["--session", "--json"]),
         (&["periph", "reg-dump"], &["--session", "--device", "--peripheral", "--fields", "--json"]),
         (&["periph", "uart"], &["--session", "--clear", "--input", "--bytes", "--peek", "--rx-drain", "--json"]),
         (&["periph", "gpio"], &["--session", "--pin", "--value", "--direction", "--output", "--read", "--events", "--clear-events", "--json"]),
