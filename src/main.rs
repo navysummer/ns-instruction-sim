@@ -1824,6 +1824,9 @@ struct AnalyzeArgs {
     /// 运行到指定符号地址（临时断点，不持久化；与 --until 互斥）。
     #[arg(long, conflicts_with = "until")]
     until_symbol: Option<String>,
+    /// 运行到条件表达式成立（如 `x1 == 1`；每步后求值，`result="condition"`）。
+    #[arg(long, conflicts_with_all = ["until", "until_symbol"])]
+    until_condition: Option<String>,
     /// 仅保留/返回前 N 条结果（trace 按执行顺序；coverage/profile 按次数降序）。
     #[arg(long)]
     top: Option<usize>,
@@ -7100,6 +7103,7 @@ fn cmd_analyze(args: AnalyzeArgs, kind: AnalyzeKind) -> Result<()> {
         collect_trace,
         args.regs,
         args.max_cycles,
+        args.until_condition.as_deref(),
         Some(&mut hook),
     );
     if temp_bp {

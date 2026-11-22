@@ -522,6 +522,7 @@ pub fn analyze_run(
     collect_trace: bool,
     collect_regs: bool,
     max_cycles: Option<u64>,
+    until_condition: Option<&str>,
     mut watch: Option<WatchHook>,
 ) -> RunAnalysis {
     let mut analysis = RunAnalysis {
@@ -533,6 +534,14 @@ pub fn analyze_run(
         cycle_count: 0,
         watch_hit: None,
     };
+    // A condition that already holds at entry stops before any step.
+    if let Some(expr) = until_condition {
+        if ns_sim::eval_condition(expr, &sim.reg_view(), sim.program_counter(), sim.cycle_count) {
+            analysis.result = "condition".to_string();
+            analysis.cycle_count = sim.cycle_count;
+            return analysis;
+        }
+    }
     let mut count = 0u64;
     while count < max_steps {
         if let Some(mc) = max_cycles {
@@ -584,6 +593,12 @@ pub fn analyze_run(
         if result != StepResult::Advanced {
             analysis.result = step_result_label(result).to_string();
             break;
+        }
+        if let Some(expr) = until_condition {
+            if ns_sim::eval_condition(expr, &sim.reg_view(), sim.program_counter(), sim.cycle_count) {
+                analysis.result = "condition".to_string();
+                break;
+            }
         }
         if let Some(mc) = max_cycles {
             if sim.cycle_count >= mc {

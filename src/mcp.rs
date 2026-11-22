@@ -382,6 +382,7 @@ fn analyze_schema() -> Value {
             ("max_cycles", prop_num("运行到周期计数达到该值即停止（含 cycle-accurate 预估；result=\"cycles\"）。")),
             ("until", prop_str("运行到指定地址（临时断点）。")),
             ("until_symbol", prop_str("运行到指定符号地址（临时断点）。")),
+            ("until_condition", prop_str("运行到条件表达式成立（如 x1 == 1；每步后求值，result=\"condition\"）。")),
             ("top", prop_num("仅保留/返回前 N 条结果（trace 按执行顺序；coverage/profile 按次数降序）。")),
             ("regs", prop_bool("trace 时附带每条指令执行后的寄存器快照。")),
             ("out", prop_str("把结果写入文件（JSON）；缺省直接返回结果。")),
@@ -3864,6 +3865,7 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
     let collect_trace = matches!(kind, AnalyzeTool::Trace);
     let collect_regs = b(args, "regs").unwrap_or(false);
     let max_cycles = u64(args, "max_cycles");
+    let until_condition = s(args, "until_condition");
     let top = u(args, "top").map(|n| n as usize);
     with_sim_watch(server, args, |sim, _, watch| {
         let until_arg = s(args, "until");
@@ -3889,6 +3891,7 @@ fn analyze_tool(server: &McpServer, args: &Map<String, Value>, kind: AnalyzeTool
             collect_trace,
             collect_regs,
             max_cycles,
+            until_condition.as_deref(),
             Some(&mut hook),
         );
         if temp_bp {

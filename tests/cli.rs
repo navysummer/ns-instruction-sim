@@ -9332,6 +9332,71 @@ fn run_until_condition_stops() {
 }
 
 #[test]
+fn analyze_until_condition() {
+    let dir = tmpdir();
+    let elf = dir.join("acond.elf");
+    write_riscv_elf(&elf);
+    let run = |sess: &std::path::Path, sub: &str| {
+        let out = Command::new(bin())
+            .args([sub, "--firmware", elf.to_str().unwrap(),
+                   "--session", sess.to_str().unwrap(),
+                   "--until-condition", "x1 == 1", "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{sub}: {}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+
+    // trace stops after the instruction that satisfies the condition.
+    let s = dir.join("acond-trace.json");
+    let json: serde_json::Value = run(&s, "trace");
+    assert_eq!(json["result"], "condition", "{}", json);
+    assert_eq!(json["steps"], 1u64, "{}", json);
+    assert_eq!(json["trace"].as_array().unwrap().len(), 1);
+    assert_eq!(json["trace"][0]["pc"], 0x8000_0000u64, "{}", json);
+
+    // coverage / profile report the same stopping condition.
+    for sub in ["coverage", "profile"] {
+        let s = dir.join(format!("acond-{sub}.json"));
+        let json: serde_json::Value = run(&s, sub);
+        assert_eq!(json["result"], "condition", "{sub}: {}", json);
+        assert_eq!(json["steps"], 1u64, "{sub}: {}", json);
+    }
+
+    // A condition that never holds runs to the `ecall` halt.
+    let s = dir.join("acond-never.json");
+    let out = Command::new(bin())
+        .args(["trace", "--firmware", elf.to_str().unwrap(),
+               "--session", s.to_str().unwrap(),
+               "--until-condition", "x9 == 999", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["result"], "halted", "{}", json);
+
+    // A condition that already holds at entry stops before any step.
+    let s = dir.join("acond-entry.json");
+    let out = Command::new(bin())
+        .args(["state", "--arch", "riscv", "--firmware", elf.to_str().unwrap(),
+               "--session", s.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    // x1 is 0 at entry, so this stops only after the first step; verify via a
+    // condition that is already true (x0 == 0) to exercise the entry short-cut.
+    let out = Command::new(bin())
+        .args(["trace", "--session", s.to_str().unwrap(),
+               "--until-condition", "x0 == 0", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["result"], "condition", "{}", json);
+    assert_eq!(json["steps"], 0u64, "{}", json);
+}
+
+#[test]
 fn mcp_run_until_condition() {
     let mut client = McpClient::start();
     let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
@@ -9351,6 +9416,34 @@ fn mcp_run_until_condition() {
     assert!(!r["isError"].as_bool().unwrap(), "continue: {}", r);
     assert_eq!(r["structuredContent"]["lastResult"], "condition", "{}", r);
     assert_eq!(r["structuredContent"]["pc"], 0x8000_0004u64, "{}", r);
+    client.close();
+}
+
+#[test]
+fn mcp_analyze_until_condition() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-acond-{}.elf", std::process::id()));
+    write_riscv_elf(&elf);
+    for tool in ["trace", "coverage", "profile"] {
+        let sess = dir.join(format!("mcp-acond-{tool}-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&sess);
+        let s = sess.to_str().unwrap();
+        let r = client.call_tool("session_create", serde_json::json!({
+            "session": s, "arch": "riscv", "firmware": elf.to_str().unwrap(),
+        }));
+        assert!(!r["isError"].as_bool().unwrap(), "session_create {tool}: {}", r);
+        let r = client.call_tool(tool, serde_json::json!({
+            "session": s, "until_condition": "x1 == 1", "max_steps": 10,
+        }));
+        assert!(!r["isError"].as_bool().unwrap(), "{tool}: {}", r);
+        assert_eq!(r["structuredContent"]["result"], "condition", "{tool}: {}", r);
+        assert_eq!(r["structuredContent"]["steps"], 1u64, "{tool}: {}", r);
+        if tool == "trace" {
+            assert_eq!(r["structuredContent"]["trace"].as_array().unwrap().len(), 1, "{}", r);
+        }
+    }
     client.close();
 }
 
@@ -10882,7 +10975,7 @@ fn help_every_param() {
         (&["cycle", "set"], &["--session", "--count", "--json"]),
         (&["interrupt", "vector"], &["--session", "--json"]),
         (&["interrupt", "clear"], &["--session", "--json"]),
-        (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--top", "--regs", "--out", "--json"]),
+        (&["trace"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--until-condition", "--top", "--regs", "--out", "--json"]),
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["firmware", "verify"], &["--firmware", "--arch", "--algo", "--expected", "--json"]),
         (&["firmware", "symbols"], &["--firmware", "--arch", "--filter", "--json"]),
@@ -10895,8 +10988,8 @@ fn help_every_param() {
         (&["device", "peripherals"], &["--filter", "--json"]),
         (&["device", "peripheral"], &["--register", "--json"]),
         (&["periph", "timer"], &["--session", "--index", "--enabled", "--prescaler", "--auto-reload", "--counter", "--update-count", "--list", "--json"]),
-        (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--top", "--json"]),
-        (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--top", "--json"]),
+        (&["coverage"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--until-condition", "--top", "--json"]),
+        (&["profile"], &["--session", "--arch", "--firmware", "--base", "--steps", "--max-steps", "--max-cycles", "--until", "--until-symbol", "--until-condition", "--top", "--json"]),
         (&["mcp"], &["--session"]),
         (&["state"], &["--session", "--arch", "--firmware", "--base", "--json", "--fields", "--mem", "--mem-len", "--summary"]),
         (&["symbol", "nearest"], &["--session", "--addr", "--json"]),

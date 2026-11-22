@@ -125,6 +125,7 @@ ns-instruction-sim periph config --session s.json --timer-base 0x50001000
 # 执行轨迹 / 覆盖 / 助记符直方图 / 会话对比
 ns-instruction-sim trace --session s.json --steps 200 --json
 ns-instruction-sim trace --session s.json --steps 200 --regs --json
+ns-instruction-sim trace --session s.json --until-condition "x1 == 1" --json
 ns-instruction-sim firmware info --firmware app.elf --json
 ns-instruction-sim firmware verify --firmware app.elf --algo crc32 --expected 0x12345678 --json
 ns-instruction-sim firmware symbols --firmware app.elf --filter reset --json
