@@ -70,6 +70,7 @@ ns-instruction-sim bp list --session s.json --symbols --json
 # 内存观察点（被写入时暂停，lastResult="watchpoint"、watchHit=<地址>）
 ns-instruction-sim watch set --session s.json --addr 0x20000000 --len 4
 ns-instruction-sim watch set --session s.json --symbol gv --offset 0 --len 4 --json
+ns-instruction-sim watch set --session s.json --line main.c:10 --len 4
 ns-instruction-sim watch set --session s.json --addr 0x20000000 --len 4 --hit-count 2 --once --json
 ns-instruction-sim watch list --session s.json --json
 ns-instruction-sim watch list --session s.json --symbols --json

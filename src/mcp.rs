@@ -925,6 +925,7 @@ fn tools() -> Vec<Tool> {
                     ("session", session.clone()),
                     ("addr", addr.clone()),
                     ("symbol", prop_str("ELF 数据符号名（与 addr 二选一）。")),
+                    ("line", prop_str("按源码行号解析监视地址（file:line，如 main.c:10）。")),
                     ("device", prop_str("内置设备键（配合 region，如 stm32f103c8）。")),
                     ("region", prop_str("设备命名内存区域（FLASH/RAM/PERIPHERALS）。")),
                     ("offset", prop_num("区域内/相对符号地址的字节偏移。")),
@@ -2736,8 +2737,12 @@ where
 
 fn tool_watch_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let addr = if let Some(sym) = s(args, "symbol") {
-        if s(args, "addr").is_some() || s(args, "device").is_some() || s(args, "region").is_some() {
-            bail!("symbol 与 addr/device/region 只能二选一");
+        if s(args, "addr").is_some()
+            || s(args, "device").is_some()
+            || s(args, "region").is_some()
+            || s(args, "line").is_some()
+        {
+            bail!("symbol 与 addr/device/region/line 只能二选一");
         }
         let path = server
             .resolve_session(args)
@@ -2750,9 +2755,41 @@ fn tool_watch_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value
             .find(|x| x.name == sym)
             .ok_or_else(|| anyhow::anyhow!("符号未找到: {sym}"))?;
         found.address.wrapping_add(u(args, "offset").unwrap_or(0))
+    } else if let Some(line_spec) = s(args, "line") {
+        if s(args, "addr").is_some() || s(args, "device").is_some() || s(args, "region").is_some() {
+            bail!("line 与 addr/device/region 只能二选一");
+        }
+        if s(args, "offset").is_some() {
+            bail!("offset 仅支持 symbol 或 device+region");
+        }
+        let (file_part, line_part) = line_spec
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("行号格式应为 file:line，如 main.c:10"))?;
+        let line_num: u32 = line_part
+            .parse()
+            .map_err(|_| anyhow::anyhow!("非法行号: {line_part}"))?;
+        let path = server
+            .resolve_session(args)
+            .ok_or_else(|| anyhow::anyhow!("缺少 session"))?;
+        let session = Session::load(&path)?;
+        let sim = session.apply(None)?;
+        let file_idx = sim
+            .source_files
+            .iter()
+            .position(|f| {
+                f == file_part
+                    || std::path::Path::new(f)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n == file_part)
+                        .unwrap_or(false)
+            })
+            .ok_or_else(|| anyhow::anyhow!("源文件未找到: {file_part}"))?;
+        sim.address_for_line(file_idx, line_num)
+            .ok_or_else(|| anyhow::anyhow!("行 {line_part} 无对应指令地址"))?
     } else if s(args, "device").is_some() || s(args, "region").is_some() {
-        if s(args, "addr").is_some() {
-            bail!("device/region 与 addr 只能二选一");
+        if s(args, "addr").is_some() || s(args, "line").is_some() {
+            bail!("device/region 与 addr/line 只能二选一");
         }
         crate::resolve_mem_address(
             None,

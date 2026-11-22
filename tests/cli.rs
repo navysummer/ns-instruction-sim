@@ -5322,6 +5322,44 @@ fn bp_set_by_line() {
 }
 
 #[test]
+fn watch_set_by_line() {
+    let dir = tmpdir();
+    let sess = dir.join("watchline.json");
+    let elf = dir.join("watchline.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(),
+               "--line", "<elf>:1", "--len", "4"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(bin())
+        .args(["watch", "list", "--session", sess.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json[0]["address"], 0x8000_0000u64);
+    assert_eq!(json[0]["len"], 4u64);
+    // A bad line number must fail.
+    let out = Command::new(bin())
+        .args(["watch", "set", "--session", sess.to_str().unwrap(), "--line", "<elf>:99"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
 fn mem_read_json() {
     let dir = tmpdir();
     let sess = dir.join("mrj.json");
@@ -11112,7 +11150,7 @@ fn help_every_param() {
         (&["mcp"], &["--session"]),
         (&["state"], &["--session", "--arch", "--firmware", "--base", "--json", "--fields", "--mem", "--mem-len", "--summary"]),
         (&["symbol", "nearest"], &["--session", "--addr", "--json"]),
-        (&["watch", "set"], &["--session", "--addr", "--symbol", "--device", "--region", "--offset", "--len", "--hit-count", "--once", "--json"]),
+        (&["watch", "set"], &["--session", "--addr", "--symbol", "--line", "--device", "--region", "--offset", "--len", "--hit-count", "--once", "--json"]),
         (&["watch", "list"], &["--session", "--symbols", "--json"]),
         (&["watch", "clear"], &["--session", "--addr", "--json"]),
         (&["watch", "enable"], &["--session", "--addr", "--json"]),
@@ -11570,6 +11608,44 @@ fn mcp_watch_tools() {
     );
     assert!(r["isError"].as_bool().unwrap(), "len 65 must error");
 
+    client.close();
+}
+
+#[test]
+fn mcp_watch_set_by_line() {
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-watch-line-{}.json", std::process::id()));
+    let elf = dir.join("watch-line.elf");
+    let code: [u8; 16] = [
+        0x93, 0x00, 0x10, 0x00,
+        0x13, 0x81, 0x20, 0x00,
+        0x23, 0x28, 0x10, 0x00,
+        0x73, 0x00, 0x00, 0x00,
+    ];
+    write_riscv_elf_with_symbol(&elf, &code, "main");
+    // Populate source_files/line_table via a CLI run (ELF symbols -> <elf>:N).
+    Command::new(bin())
+        .args(["run", "--firmware", elf.to_str().unwrap(),
+               "--session", sess.to_str().unwrap(), "--steps", "1"])
+        .output()
+        .unwrap();
+
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let r = client.call_tool(
+        "watch_set",
+        serde_json::json!({ "session": sess, "line": "<elf>:1", "len": 4 }),
+    );
+    assert!(!r["isError"].as_bool().unwrap(), "watch_set line failed: {}", r);
+    assert_eq!(r["structuredContent"]["address"], 0x8000_0000u64);
+    assert_eq!(r["structuredContent"]["len"], 4u64);
+
+    // A bad line is a tool error.
+    let r = client.call_tool(
+        "watch_set",
+        serde_json::json!({ "session": sess, "line": "<elf>:99" }),
+    );
+    assert!(r["isError"].as_bool().unwrap());
     client.close();
 }
 

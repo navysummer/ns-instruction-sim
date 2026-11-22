@@ -982,6 +982,9 @@ enum WatchSub {
         /// ELF 符号名（数据符号地址；与 --addr 二选一）。
         #[arg(long = "symbol")]
         symbol: Option<String>,
+        /// 按源码行号解析监视地址（`file:line`，如 `main.c:10`；与地址/符号二选一）。
+        #[arg(long)]
+        line: Option<String>,
         /// 内置设备键（配合 --region，如 stm32f103c8；与 --addr/--symbol 二选一）。
         #[arg(long)]
         device: Option<String>,
@@ -4591,6 +4594,7 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
             addr,
             addr_flag,
             symbol,
+            line,
             device,
             region,
             offset,
@@ -4600,8 +4604,13 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
             json,
         } => {
             let addr_num = if let Some(sym) = symbol.as_deref() {
-                if addr.is_some() || addr_flag.is_some() || device.is_some() || region.is_some() {
-                    bail!("--symbol 与 --addr/--device/--region 只能二选一");
+                if addr.is_some()
+                    || addr_flag.is_some()
+                    || device.is_some()
+                    || region.is_some()
+                    || line.is_some()
+                {
+                    bail!("--symbol 与 --addr/--device/--region/--line 只能二选一");
                 }
                 let sim = Session::load(&session)?.apply(None)?;
                 let s = sim
@@ -4615,9 +4624,41 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
                     .transpose()?
                     .unwrap_or(0);
                 s.address.wrapping_add(off)
+            } else if let Some(line_spec) = line.as_deref() {
+                if addr.is_some()
+                    || addr_flag.is_some()
+                    || device.is_some()
+                    || region.is_some()
+                {
+                    bail!("--line 与 --addr/--device/--region 只能二选一");
+                }
+                if offset.is_some() {
+                    bail!("--offset 仅支持 --symbol/--device+--region");
+                }
+                let (file_part, line_part) = line_spec
+                    .rsplit_once(':')
+                    .ok_or_else(|| anyhow::anyhow!("行号格式应为 file:line，如 main.c:10"))?;
+                let line_num: u32 = line_part
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("非法行号: {line_part}"))?;
+                let sim = Session::load(&session)?.apply(None)?;
+                let file_idx = sim
+                    .source_files
+                    .iter()
+                    .position(|f| {
+                        f == file_part
+                            || std::path::Path::new(f)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| n == file_part)
+                                .unwrap_or(false)
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("源文件未找到: {file_part}"))?;
+                sim.address_for_line(file_idx, line_num)
+                    .ok_or_else(|| anyhow::anyhow!("行 {line_part} 无对应指令地址"))?
             } else if device.is_some() || region.is_some() {
-                if addr.is_some() || addr_flag.is_some() {
-                    bail!("--device/--region 与 --addr 只能二选一");
+                if addr.is_some() || addr_flag.is_some() || line.is_some() {
+                    bail!("--device/--region 与 --addr/--line 只能二选一");
                 }
                 let off = offset
                     .as_deref()
