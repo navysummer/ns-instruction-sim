@@ -7650,7 +7650,7 @@ fn mcp_handshake_and_list_tools() {
         "symbol_list", "watchdog_status", "csr_list", "trace", "coverage", "profile",
         "bp_modify", "bp_hits", "watch_set", "watch_list", "watch_modify", "watch_clear", "watch_enable",
         "watch_disable", "watch_clear_all", "watch_hits",
-        "session_info", "session_diff", "session_merge", "device_memory_map", "device_lookup", "device_peripherals", "device_peripheral", "firmware_info", "firmware_verify", "firmware_symbols",
+        "session_info", "session_diff", "session_merge", "device_memory_map", "device_lookup", "device_peripherals", "device_peripheral", "firmware_info", "firmware_verify", "firmware_symbols", "firmware_sections",
         "periph_reg_dump",
     ] {
         assert!(names.contains(&expected), "missing MCP tool: {expected}");
@@ -8515,6 +8515,46 @@ fn firmware_symbols_command() {
 }
 
 #[test]
+fn firmware_sections_command() {
+    let dir = tmpdir();
+    let elf = dir.join(format!("fw-sections-{}.elf", std::process::id()));
+    write_riscv_elf_with_symbol(&elf, &[0x13, 0x00, 0x10, 0x00], "reset_handler");
+    let elf = elf.to_str().unwrap();
+
+    // JSON lists PT_LOAD segments and section headers.
+    let out = Command::new(bin()).args(["firmware", "sections", "--firmware", elf, "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["format"], "elf");
+    assert_eq!(json["arch"], "riscv");
+    let segments = json["segments"].as_array().unwrap();
+    assert!(!segments.is_empty());
+    assert_eq!(segments[0]["address"], 0x8000_0000u64);
+    let sections = json["sections"].as_array().unwrap();
+    let text = sections.iter().find(|s| s["name"] == ".text").unwrap();
+    assert_eq!(text["address"], 0x8000_0000u64);
+    assert_eq!(text["type"], "PROGBITS");
+
+    // Human output names the segments/sections.
+    let out = Command::new(bin()).args(["firmware", "sections", "--firmware", elf]).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("段[0]") && text.contains(".text"), "{text}");
+
+    // A BIN is a single flat segment; a missing file is an error.
+    let bin_path = dir.join(format!("fw-sections-{}.bin", std::process::id()));
+    std::fs::write(&bin_path, [0x13u8, 0x00, 0x00, 0x00]).unwrap();
+    let out = Command::new(bin()).args(["firmware", "sections", "--firmware", bin_path.to_str().unwrap(), "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["format"], "bin");
+    assert_eq!(json["segments"].as_array().unwrap().len(), 1);
+    assert!(json["sections"].as_array().unwrap().is_empty());
+    let out = Command::new(bin()).args(["firmware", "sections", "--firmware", "/tmp/nsim-no-fw.elf"]).output().unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
 fn mcp_firmware_symbols() {
     let mut client = McpClient::start();
     let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
@@ -8535,6 +8575,30 @@ fn mcp_firmware_symbols() {
     assert!(!r["isError"].as_bool().unwrap());
     assert_eq!(r["structuredContent"]["symbols"].as_array().unwrap().len(), 1);
     let r = client.call_tool("firmware_symbols", serde_json::json!({ "firmware": "/tmp/nsim-no-fw.elf" }));
+    assert!(r["isError"].as_bool().unwrap());
+    client.close();
+}
+
+#[test]
+fn mcp_firmware_sections() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let elf = dir.join(format!("mcp-fw-sections-{}.elf", std::process::id()));
+    write_riscv_elf_with_symbol(&elf, &[0x13, 0x00, 0x10, 0x00], "reset_handler");
+    let elf = elf.to_str().unwrap();
+
+    let r = client.call_tool("firmware_sections", serde_json::json!({ "firmware": elf }));
+    assert!(!r["isError"].as_bool().unwrap(), "firmware_sections: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["format"], "elf");
+    assert_eq!(sc["arch"], "riscv");
+    assert!(sc["segments"].as_array().unwrap()[0]["address"].as_u64().unwrap() == 0x8000_0000u64);
+    let sections = sc["sections"].as_array().unwrap();
+    assert!(sections.iter().any(|s| s["name"] == ".text" && s["type"] == "PROGBITS"));
+
+    // Missing firmware is a tool error.
+    let r = client.call_tool("firmware_sections", serde_json::json!({ "firmware": "/tmp/nsim-no-fw.elf" }));
     assert!(r["isError"].as_bool().unwrap());
     client.close();
 }
@@ -11399,6 +11463,7 @@ fn help_every_param() {
         (&["firmware", "info"], &["--firmware", "--arch", "--json"]),
         (&["firmware", "verify"], &["--firmware", "--arch", "--algo", "--expected", "--json"]),
         (&["firmware", "symbols"], &["--firmware", "--arch", "--filter", "--json"]),
+        (&["firmware", "sections"], &["--firmware", "--arch", "--json"]),
         (&["session", "patch"], &["--file", "--pc", "--cycle", "--halted", "--reg", "--csr", "--arm-state", "--xpsr", "--it", "--json"]),
         (&["session", "merge"], &["--a", "--b", "--out", "--regs-keep", "--json"]),
         (&["disasm"], &["--session", "--firmware", "--base", "--arch", "--addr", "--symbol", "--count", "--arm-state", "--source", "--labels", "--raw", "--out", "--json"]),

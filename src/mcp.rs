@@ -520,6 +520,18 @@ fn tools() -> Vec<Tool> {
             handler: tool_firmware_symbols,
         },
         Tool {
+            name: "firmware_sections",
+            description: "列出 ELF 段/节布局（PT_LOAD 段与节头：名称/地址/大小/标志；非 ELF 报告单一镜像区域）。",
+            schema: obj(
+                &[
+                    ("firmware", prop_str("固件文件（ELF / Intel HEX / BIN）。")),
+                    ("arch", prop_str("目标架构（非 ELF 固件需要；ELF 自动检测）。")),
+                ],
+                &["firmware"],
+            ),
+            handler: tool_firmware_sections,
+        },
+        Tool {
             name: "session_create",
             description: "创建（或重建）一个会话，可加载固件；返回完整状态。",
             schema: obj(
@@ -1596,6 +1608,12 @@ fn tool_firmware_symbols(_: &McpServer, args: &Map<String, Value>) -> Result<Val
         s(args, "arch").as_deref(),
         s(args, "filter").as_deref(),
     )
+}
+
+/// List ELF segments/sections (`firmware sections`).
+fn tool_firmware_sections(_: &McpServer, args: &Map<String, Value>) -> Result<Value> {
+    let firmware = s(args, "firmware").ok_or_else(|| anyhow::anyhow!("缺少 firmware"))?;
+    crate::firmware_sections_value(Path::new(&firmware), s(args, "arch").as_deref())
 }
 
 fn tool_device_list(_: &McpServer, _: &Map<String, Value>) -> Result<Value> {

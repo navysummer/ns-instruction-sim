@@ -257,6 +257,7 @@ ns-instruction-sim trace --session s.json --until-condition "x1 == 1" --json
 ns-instruction-sim firmware info --firmware app.elf --json
 ns-instruction-sim firmware verify --firmware app.elf --algo crc32 --expected 0x12345678 --json
 ns-instruction-sim firmware symbols --firmware app.elf --filter reset --json
+ns-instruction-sim firmware sections --firmware app.elf --json
 ns-instruction-sim trace --session s.json --until 0x8000000c --out trace.json
 ns-instruction-sim coverage --session s.json --steps 5000 --json
 ns-instruction-sim profile --session s.json --steps 5000

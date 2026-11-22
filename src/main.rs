@@ -319,6 +319,18 @@ enum FirmwareSub {
         #[arg(long)]
         json: bool,
     },
+    /// 列出 ELF 段/节布局（程序头 PT_LOAD 段与节头：名称/地址/大小/标志；非 ELF 报告单一镜像区域）。
+    Sections {
+        /// 固件文件（ELF / Intel HEX / BIN）。
+        #[arg(long)]
+        firmware: PathBuf,
+        /// 目标架构（非 ELF 固件需要；缺省 ELF 自动检测、其余默认 riscv）。
+        #[arg(short, long)]
+        arch: Option<String>,
+        /// 以 JSON 格式输出（机器可读）。
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args)]
@@ -2066,6 +2078,9 @@ fn real_main() -> Result<()> {
         }
         Command::Firmware { sub: FirmwareSub::Symbols { firmware, arch, filter, json } } => {
             cmd_firmware_symbols(&firmware, arch.as_deref(), filter.as_deref(), json)
+        }
+        Command::Firmware { sub: FirmwareSub::Sections { firmware, arch, json } } => {
+            cmd_firmware_sections(&firmware, arch.as_deref(), json)
         }
         Command::Trace(args) => cmd_analyze(args, AnalyzeKind::Trace),
         Command::Coverage(args) => cmd_analyze(args, AnalyzeKind::Coverage),
@@ -6864,6 +6879,138 @@ fn elf_machine(bytes: &[u8]) -> Option<u16> {
     Some(u16::from_le_bytes([bytes[off], bytes[off + 1]]))
 }
 
+/// Read a NUL-terminated string from `bytes` starting at `start`.
+fn cstr_at(bytes: &[u8], start: usize) -> Option<String> {
+    if start >= bytes.len() {
+        return None;
+    }
+    let end = bytes[start..].iter().position(|&b| b == 0)?;
+    Some(String::from_utf8_lossy(&bytes[start..start + end]).into_owned())
+}
+
+/// Parse an ELF32 image's PT_LOAD program segments and section headers into a
+/// machine-readable value (used by `firmware sections`). Returns `None` for
+/// non-ELF inputs. Only 32-bit little-endian ELF is supported.
+pub(crate) fn elf_sections_value(bytes: &[u8]) -> Result<Option<serde_json::Value>> {
+    if !bytes.starts_with(b"\x7fELF") {
+        return Ok(None);
+    }
+    if bytes.get(4) != Some(&1) {
+        bail!("仅支持 32 位 ELF");
+    }
+    if bytes.get(5) != Some(&1) {
+        bail!("仅支持小端 ELF");
+    }
+    let read_u16 = |off: usize| -> u16 {
+        u16::from_le_bytes([bytes[off], bytes[off + 1]])
+    };
+    let read_u32 = |off: usize| -> u32 {
+        u32::from_le_bytes([
+            bytes[off],
+            bytes[off + 1],
+            bytes[off + 2],
+            bytes[off + 3],
+        ])
+    };
+    let in_bounds = |off: usize, len: usize| off.checked_add(len).map(|e| e <= bytes.len()).unwrap_or(false);
+    let e_phoff = read_u32(28);
+    let e_shoff = read_u32(32);
+    let e_phentsize = read_u16(42) as usize;
+    let e_phnum = read_u16(44) as usize;
+    let e_shentsize = read_u16(46) as usize;
+    let e_shnum = read_u16(48) as usize;
+    let e_shstrndx = read_u16(50) as usize;
+
+    let mut segments = Vec::new();
+    if e_phoff != 0 && e_phentsize >= 32 {
+        for i in 0..e_phnum {
+            let off = e_phoff as usize + i * e_phentsize;
+            if !in_bounds(off, 32) {
+                break;
+            }
+            if read_u32(off) != 1 {
+                continue; // only PT_LOAD
+            }
+            let p_offset = read_u32(off + 4);
+            let p_vaddr = read_u32(off + 8);
+            let p_filesz = read_u32(off + 16);
+            let p_memsz = read_u32(off + 20);
+            let p_flags = read_u32(off + 24);
+            let flags = format!(
+                "{}{}{}",
+                if p_flags & 4 != 0 { "R" } else { "-" },
+                if p_flags & 2 != 0 { "W" } else { "-" },
+                if p_flags & 1 != 0 { "X" } else { "-" }
+            );
+            segments.push(serde_json::json!({
+                "index": i,
+                "address": p_vaddr,
+                "fileOffset": p_offset,
+                "fileSize": p_filesz,
+                "memSize": p_memsz,
+                "flags": flags,
+            }));
+        }
+    }
+
+    let mut sections = Vec::new();
+    let mut shstr: Option<&[u8]> = None;
+    if e_shoff != 0 && e_shentsize >= 40 && e_shnum > 0 {
+        if e_shstrndx < e_shnum {
+            let sh_off = e_shoff as usize + e_shstrndx * e_shentsize;
+            if in_bounds(sh_off, 24) {
+                let s_off = read_u32(sh_off + 16) as usize;
+                let s_size = read_u32(sh_off + 20) as usize;
+                if in_bounds(s_off, s_size) {
+                    shstr = Some(&bytes[s_off..s_off + s_size]);
+                }
+            }
+        }
+        for i in 0..e_shnum {
+            let off = e_shoff as usize + i * e_shentsize;
+            if !in_bounds(off, 40) {
+                break;
+            }
+            let sh_name = read_u32(off) as usize;
+            let sh_type = read_u32(off + 4);
+            let sh_flags = read_u32(off + 8);
+            let sh_addr = read_u32(off + 12);
+            let sh_size = read_u32(off + 20);
+            let name = shstr
+                .and_then(|s| cstr_at(s, sh_name))
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            let kind = match sh_type {
+                0 => "NULL",
+                1 => "PROGBITS",
+                2 => "SYMTAB",
+                3 => "STRTAB",
+                8 => "NOBITS",
+                9 => "REL",
+                11 => "DYNSYM",
+                _ => "OTHER",
+            };
+            let flags = format!(
+                "{}{}{}",
+                if sh_flags & 4 != 0 { "A" } else { "-" },
+                if sh_flags & 1 != 0 { "W" } else { "-" },
+                if sh_flags & 2 != 0 { "X" } else { "-" }
+            );
+            sections.push(serde_json::json!({
+                "index": i,
+                "name": name,
+                "type": kind,
+                "address": sh_addr,
+                "size": sh_size,
+                "flags": flags,
+            }));
+        }
+    }
+    Ok(Some(serde_json::json!({ "segments": segments, "sections": sections })))
+}
+
 /// `firmware info`: report the format, detected architecture, entry point and
 /// the symbol table of a firmware image without needing a session.
 fn cmd_firmware_info(firmware: &Path, arch_arg: Option<&str>, json: bool) -> Result<()> {
@@ -7131,6 +7278,88 @@ pub(crate) fn firmware_symbols_value(
         "sourceFileList": sim.source_files,
         "symbols": symbols,
     }))
+}
+
+fn cmd_firmware_sections(firmware: &Path, arch_arg: Option<&str>, json: bool) -> Result<()> {
+    let value = firmware_sections_value(firmware, arch_arg)?;
+    if json {
+        print_json(&value)?;
+        return Ok(());
+    }
+    println!(
+        "固件: {}  （格式 {}，架构 {}）",
+        value["path"].as_str().unwrap_or(""),
+        value["format"].as_str().unwrap_or(""),
+        value["arch"].as_str().unwrap_or("")
+    );
+    for seg in value["segments"].as_array().unwrap() {
+        println!(
+            "  段[{}] @ 0x{:08x}  memSize=0x{:x}  fileSize=0x{:x}  {}",
+            seg["index"].as_u64().unwrap_or(0),
+            seg["address"].as_u64().unwrap_or(0),
+            seg["memSize"].as_u64().unwrap_or(0),
+            seg["fileSize"].as_u64().unwrap_or(0),
+            seg["flags"].as_str().unwrap_or("")
+        );
+    }
+    for sec in value["sections"].as_array().unwrap() {
+        println!(
+            "  {:<24} 0x{:08x}  {:>6} 字节  {:<8} {}",
+            sec["name"].as_str().unwrap_or(""),
+            sec["address"].as_u64().unwrap_or(0),
+            sec["size"].as_u64().unwrap_or(0),
+            sec["type"].as_str().unwrap_or(""),
+            sec["flags"].as_str().unwrap_or("")
+        );
+    }
+    Ok(())
+}
+
+/// Machine-readable segment/section listing shared by the CLI and MCP server.
+pub(crate) fn firmware_sections_value(
+    firmware: &Path,
+    arch_arg: Option<&str>,
+) -> Result<serde_json::Value> {
+    let format = detect_format(firmware);
+    let bytes = std::fs::read(firmware)
+        .with_context(|| format!("读取固件 {} 失败", firmware.display()))?;
+    let arch = if let Some(a) = arch_arg {
+        arch_from_arg(Some(a))?
+    } else if format == FirmwareFormat::Elf {
+        let machine = elf_machine(&bytes)
+            .ok_or_else(|| anyhow::anyhow!("无法读取 ELF e_machine"))?;
+        Arch::from_elf_machine(machine)
+            .ok_or_else(|| anyhow::anyhow!("不支持的 ELF 机器码 {machine}（无法确定架构）"))?
+    } else {
+        Arch::RiscV
+    };
+    if format == FirmwareFormat::Elf {
+        let parsed = elf_sections_value(&bytes)?
+            .unwrap_or_else(|| serde_json::json!({ "segments": [], "sections": [] }));
+        Ok(serde_json::json!({
+            "path": firmware.display().to_string(),
+            "format": format.label(),
+            "arch": session::arch_name(arch),
+            "segments": parsed["segments"],
+            "sections": parsed["sections"],
+        }))
+    } else {
+        // Non-ELF images are a single flat load region at base 0.
+        Ok(serde_json::json!({
+            "path": firmware.display().to_string(),
+            "format": format.label(),
+            "arch": session::arch_name(arch),
+            "segments": [serde_json::json!({
+                "index": 0,
+                "address": 0,
+                "fileOffset": 0,
+                "fileSize": bytes.len(),
+                "memSize": bytes.len(),
+                "flags": "R-",
+            })],
+            "sections": [],
+        }))
+    }
 }
 
 /// Normalize a hexadecimal literal (`0x`/`0X` optional) to a lowercase digit string.
