@@ -155,6 +155,7 @@ ns-instruction-sim bp hits --session s.json --addr 0x80000004 --count 2
 ns-instruction-sim bp list --session s.json
 ns-instruction-sim bp list --session s.json --symbols
 ns-instruction-sim bp list --session s.json --symbols --json
+ns-instruction-sim bp list --session s.json --enabled true --out bp.json --json
 ns-instruction-sim bp clear --session s.json --addr 0x80000004
 ns-instruction-sim bp disable --session s.json --addr 0x80000004
 ns-instruction-sim bp enable --session s.json --addr 0x80000004
@@ -167,6 +168,7 @@ ns-instruction-sim watch set --session s.json --addr 0x20000000 --len 4 --hit-co
 ns-instruction-sim watch list --session s.json
 ns-instruction-sim watch list --session s.json --json
 ns-instruction-sim watch list --session s.json --symbols --json
+ns-instruction-sim watch list --session s.json --enabled true --out watch.json --json
 ns-instruction-sim watch modify --session s.json --addr 0x20000000 --len 8 --hit-count 5 --once true --json
 ns-instruction-sim watch hits --session s.json --addr 0x20000000 --count 3
 ns-instruction-sim watch set --session s.json --device stm32f103c8 --region FLASH --offset 0 --len 4 --json

@@ -1102,6 +1102,69 @@ fn bp_once_autoclears() {
 }
 
 #[test]
+fn bp_list_enabled_filter_and_out() {
+    let dir = tmpdir();
+    let sess = dir.join("bp-filter.json");
+    bootstrap(&sess);
+    let s = sess.to_str().unwrap();
+    for addr in ["0x80000000", "0x80000004"] {
+        let out = Command::new(bin())
+            .args(["bp", "set", "--session", s, "--addr", addr])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["bp", "disable", "--session", s, "--addr", "0x80000004"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // `--enabled true` keeps only the enabled breakpoint.
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", s, "--enabled", "true", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 1, "{}", v);
+    assert_eq!(v[0]["address"], 0x8000_0000u64);
+    assert_eq!(v[0]["enabled"], true);
+    // `--enabled false` keeps only the disabled one.
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", s, "--enabled", "false", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 1, "{}", v);
+    assert_eq!(v[0]["address"], 0x8000_0004u64);
+    assert_eq!(v[0]["enabled"], false);
+    // `--out` writes the filtered list to a file and reports file/bytes/count.
+    let outfile = dir.join("bp-out.json");
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", s, "--enabled", "true", "--out", outfile.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["count"], 1u64);
+    assert!(v["bytes"].as_u64().unwrap() > 0);
+    assert_eq!(v["file"].as_str().unwrap(), outfile.to_str().unwrap());
+    let arr: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&outfile).unwrap()).unwrap();
+    assert_eq!(arr[0]["address"], 0x8000_0000u64);
+    // Human `--out` writes the rendered text.
+    let txt = dir.join("bp-out.txt");
+    let out = Command::new(bin())
+        .args(["bp", "list", "--session", s, "--enabled", "true", "--out", txt.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("已写入断点列表"));
+    let text = std::fs::read_to_string(&txt).unwrap();
+    assert!(text.contains("0x80000000"), "{text}");
+}
+
+#[test]
 fn periph_timer_config_and_uart_write() {
     let dir = tmpdir();
     let sess = dir.join("periph.json");
@@ -9093,6 +9156,47 @@ fn mcp_bp_list_symbols() {
 }
 
 #[test]
+fn mcp_bp_list_enabled_filter_out() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let dir = tmpdir();
+    let sess = dir.join(format!("mcp-bpfilter-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    for addr in [0x8000_0000u64, 0x8000_0004u64] {
+        let r = client.call_tool("bp_set", serde_json::json!({ "session": s, "addr": addr }));
+        assert!(!r["isError"].as_bool().unwrap(), "bp_set {addr}: {}", r);
+    }
+    let r = client.call_tool("bp_disable", serde_json::json!({ "session": s, "addr": 0x8000_0004u64 }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_disable: {}", r);
+    // enabled filter keeps only the enabled breakpoint.
+    let r = client.call_tool("bp_list", serde_json::json!({ "session": s, "enabled": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_list enabled: {}", r);
+    let bps = r["structuredContent"]["breakpoints"].as_array().unwrap();
+    assert_eq!(bps.len(), 1, "{}", r);
+    assert_eq!(bps[0]["address"], 0x8000_0000u64);
+    let r = client.call_tool("bp_list", serde_json::json!({ "session": s, "enabled": false }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_list disabled: {}", r);
+    let bps = r["structuredContent"]["breakpoints"].as_array().unwrap();
+    assert_eq!(bps.len(), 1, "{}", r);
+    assert_eq!(bps[0]["address"], 0x8000_0004u64);
+    // out writes the filtered list to a file and reports file/bytes/count.
+    let outfile = dir.join("mcp-bp-out.json");
+    let r = client.call_tool("bp_list", serde_json::json!({
+        "session": s, "enabled": true, "out": outfile.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "bp_list out: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["count"], 1u64, "{}", r);
+    assert_eq!(sc["file"].as_str().unwrap(), outfile.to_str().unwrap(), "{}", r);
+    let arr: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&outfile).unwrap()).unwrap();
+    assert_eq!(arr["breakpoints"][0]["address"], 0x8000_0000u64, "{}", arr);
+    client.close();
+}
+
+#[test]
 fn mem_region_dump() {
     let dir = tmpdir();
     let sess = dir.join("memregion.json");
@@ -11608,7 +11712,7 @@ fn help_every_param() {
         (&["bp", "modify"], &["--session", "--addr", "--symbol", "--condition", "--hit-count", "--json"]),
         (&["bp", "hits"], &["--session", "--addr", "--symbol", "--count", "--json"]),
         (&["watch", "hits"], &["--session", "--addr", "--symbol", "--count", "--json"]),
-        (&["bp", "list"], &["--session", "--symbols", "--json"]),
+        (&["bp", "list"], &["--session", "--symbols", "--enabled", "--out", "--json"]),
         (&["mem", "read"], &["--session", "--arch", "--addr", "--device", "--region", "--offset", "--symbol", "--len", "--width", "--ascii", "--string", "--out", "--json"]),
         (&["mem", "region"], &["--session", "--arch", "--device", "--region", "--offset", "--len", "--json"]),
         (&["mem", "copy"], &["--session", "--arch", "--src", "--dst", "--len", "--json"]),
@@ -11647,7 +11751,7 @@ fn help_every_param() {
         (&["state"], &["--session", "--arch", "--firmware", "--base", "--json", "--fields", "--mem", "--mem-len", "--summary"]),
         (&["symbol", "nearest"], &["--session", "--addr", "--json"]),
         (&["watch", "set"], &["--session", "--addr", "--symbol", "--line", "--device", "--region", "--offset", "--len", "--hit-count", "--once", "--json"]),
-        (&["watch", "list"], &["--session", "--symbols", "--json"]),
+        (&["watch", "list"], &["--session", "--symbols", "--enabled", "--out", "--json"]),
         (&["watch", "clear"], &["--session", "--addr", "--json"]),
         (&["watch", "enable"], &["--session", "--addr", "--json"]),
         (&["watch", "disable"], &["--session", "--addr", "--json"]),
@@ -12486,6 +12590,58 @@ fn watch_list_symbols() {
 }
 
 #[test]
+fn watch_list_enabled_filter_and_out() {
+    let dir = tmpdir();
+    let sess = dir.join("watch-filter.json");
+    bootstrap(&sess);
+    let s = sess.to_str().unwrap();
+    for addr in ["0x10", "0x20"] {
+        let out = Command::new(bin())
+            .args(["watch", "set", "--session", s, "--addr", addr, "--len", "4"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new(bin())
+        .args(["watch", "disable", "--session", s, "--addr", "0x20"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // `--enabled true` keeps only the enabled watchpoint.
+    let out = Command::new(bin())
+        .args(["watch", "list", "--session", s, "--enabled", "true", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 1, "{}", v);
+    assert_eq!(v[0]["address"], 0x10u64);
+    assert_eq!(v[0]["enabled"], true);
+    // `--enabled false` keeps only the disabled one.
+    let out = Command::new(bin())
+        .args(["watch", "list", "--session", s, "--enabled", "false", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 1, "{}", v);
+    assert_eq!(v[0]["address"], 0x20u64);
+    assert_eq!(v[0]["enabled"], false);
+    // `--out` writes the filtered list to a file.
+    let outfile = dir.join("watch-out.json");
+    let out = Command::new(bin())
+        .args(["watch", "list", "--session", s, "--enabled", "true", "--out", outfile.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["count"], 1u64);
+    assert!(v["bytes"].as_u64().unwrap() > 0);
+    let arr: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&outfile).unwrap()).unwrap();
+    assert_eq!(arr[0]["address"], 0x10u64);
+}
+
+#[test]
 fn watch_set_by_region() {
     let dir = tmpdir();
     let sess = dir.join("watch-region.json");
@@ -12598,6 +12754,46 @@ fn mcp_watch_set_by_region() {
         "session": s, "device": "stm32f103c8", "len": 4,
     }));
     assert!(r["isError"].as_bool().unwrap(), "{}", r);
+    client.close();
+}
+
+#[test]
+fn mcp_watch_list_enabled_filter_out() {
+    let mut client = McpClient::start();
+    let _ = client.request("initialize", serde_json::json!({ "protocolVersion": "2024-11-05" }));
+    let sess = tmpdir().join(format!("mcp-watchfilter-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&sess);
+    let s = sess.to_str().unwrap();
+    let r = client.call_tool("session_create", serde_json::json!({ "session": s, "arch": "riscv" }));
+    assert!(!r["isError"].as_bool().unwrap(), "session_create: {}", r);
+    for addr in [0x10u64, 0x20u64] {
+        let r = client.call_tool("watch_set", serde_json::json!({ "session": s, "addr": addr, "len": 4 }));
+        assert!(!r["isError"].as_bool().unwrap(), "watch_set {addr}: {}", r);
+    }
+    let r = client.call_tool("watch_disable", serde_json::json!({ "session": s, "addr": 0x20u64 }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_disable: {}", r);
+    // enabled filter keeps only the enabled watchpoint.
+    let r = client.call_tool("watch_list", serde_json::json!({ "session": s, "enabled": true }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_list enabled: {}", r);
+    let wps = r["structuredContent"]["watchpoints"].as_array().unwrap();
+    assert_eq!(wps.len(), 1, "{}", r);
+    assert_eq!(wps[0]["address"], 0x10u64);
+    let r = client.call_tool("watch_list", serde_json::json!({ "session": s, "enabled": false }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_list disabled: {}", r);
+    let wps = r["structuredContent"]["watchpoints"].as_array().unwrap();
+    assert_eq!(wps.len(), 1, "{}", r);
+    assert_eq!(wps[0]["address"], 0x20u64);
+    // out writes the filtered list to a file and reports file/bytes/count.
+    let outfile = tmpdir().join(format!("mcp-watch-out-{}.json", std::process::id()));
+    let r = client.call_tool("watch_list", serde_json::json!({
+        "session": s, "enabled": true, "out": outfile.to_str().unwrap(),
+    }));
+    assert!(!r["isError"].as_bool().unwrap(), "watch_list out: {}", r);
+    let sc = &r["structuredContent"];
+    assert_eq!(sc["count"], 1u64, "{}", r);
+    assert_eq!(sc["file"].as_str().unwrap(), outfile.to_str().unwrap(), "{}", r);
+    let arr: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&outfile).unwrap()).unwrap();
+    assert_eq!(arr["watchpoints"][0]["address"], 0x10u64, "{}", arr);
     client.close();
 }
 

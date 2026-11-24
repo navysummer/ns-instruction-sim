@@ -924,11 +924,13 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "bp_list",
-            description: "列出全部断点（地址/条件/命中次数/一次性/启用/实际命中，可选符号注释）。",
+            description: "列出断点（地址/条件/命中次数/一次性/启用/实际命中，可选按启用状态过滤、符号注释与写出文件）。",
             schema: obj(
                 &[
                     ("session", session.clone()),
                     ("symbols", prop_bool("用 ELF 符号表注释断点地址。")),
+                    ("enabled", prop_bool("按启用状态过滤（true=仅启用，false=仅禁用；缺省全部）。")),
+                    ("out", prop_str("把 JSON 结果写入文件（缺省返回内联）。")),
                 ],
                 &["session"],
             ),
@@ -974,11 +976,13 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "watch_list",
-            description: "列出全部内存观察点（地址/长度/命中次数/一次性/启用/实际命中；可选 ELF 符号注释）。",
+            description: "列出内存观察点（地址/长度/命中次数/一次性/启用/实际命中；可选按启用状态过滤、ELF 符号注释与写出文件）。",
             schema: obj(
                 &[
                     ("session", session.clone()),
                     ("symbols", prop_bool("用 ELF 符号注释观察点地址。")),
+                    ("enabled", prop_bool("按启用状态过滤（true=仅启用，false=仅禁用；缺省全部）。")),
+                    ("out", prop_str("把 JSON 结果写入文件（缺省返回内联）。")),
                 ],
                 &["session"],
             ),
@@ -2811,9 +2815,11 @@ fn tool_bp_clear(server: &McpServer, args: &Map<String, Value>) -> Result<Value>
 fn tool_bp_list(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     with_sim(server, args, false, |sim, _, _| {
         let annotate = b(args, "symbols").unwrap_or(false);
+        let enabled = b(args, "enabled");
         let items: Vec<_> = sim
             .breakpoints
             .iter()
+            .filter(|bp| enabled.map_or(true, |e| bp.enabled == e))
             .map(|bp| {
                 let symbol = if annotate {
                     sim.symbols
@@ -2834,6 +2840,17 @@ fn tool_bp_list(server: &McpServer, args: &Map<String, Value>) -> Result<Value> 
                 })
             })
             .collect();
+        if let Some(out) = s(args, "out") {
+            let text = serde_json::to_string_pretty(&json!({ "breakpoints": items }))?;
+            std::fs::write(&out, &text)
+                .with_context(|| format!("写入 {out} 失败"))?;
+            return Ok(json!({
+                "file": out,
+                "bytes": text.len(),
+                "count": items.len(),
+                "breakpoints": items,
+            }));
+        }
         Ok(json!({ "breakpoints": items }))
     })
 }
@@ -2995,6 +3012,8 @@ fn tool_watch_set(server: &McpServer, args: &Map<String, Value>) -> Result<Value
 
 fn tool_watch_list(server: &McpServer, args: &Map<String, Value>) -> Result<Value> {
     let symbols = b(args, "symbols").unwrap_or(false);
+    let enabled = b(args, "enabled");
+    let out = s(args, "out");
     with_watch_session(server, args, |session| {
         let sim = if symbols {
             session.apply(None).ok()
@@ -3014,6 +3033,7 @@ fn tool_watch_list(server: &McpServer, args: &Map<String, Value>) -> Result<Valu
         let watchpoints: Vec<Value> = session
             .watchpoints
             .iter()
+            .filter(|wp| enabled.map_or(true, |e| wp.enabled == e))
             .map(|wp| {
                 let mut v = crate::watch_json(wp);
                 v["symbol"] = sym_for(wp.address)
@@ -3022,6 +3042,17 @@ fn tool_watch_list(server: &McpServer, args: &Map<String, Value>) -> Result<Valu
                 v
             })
             .collect();
+        if let Some(out) = out {
+            let text = serde_json::to_string_pretty(&json!({ "watchpoints": watchpoints }))?;
+            std::fs::write(&out, &text)
+                .with_context(|| format!("写入 {out} 失败"))?;
+            return Ok(json!({
+                "file": out,
+                "bytes": text.len(),
+                "count": watchpoints.len(),
+                "watchpoints": watchpoints,
+            }));
+        }
         Ok(json!({ "watchpoints": watchpoints }))
     })
 }

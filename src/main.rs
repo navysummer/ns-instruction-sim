@@ -871,6 +871,12 @@ enum BpSub {
         /// 用 ELF 符号表注释断点地址（找到时追加符号名）。
         #[arg(long)]
         symbols: bool,
+        /// 按启用状态过滤（true=仅启用，false=仅禁用；缺省全部）。
+        #[arg(long)]
+        enabled: Option<bool>,
+        /// 写出文件路径（缺省打印到 stdout；文本或 JSON 均可）。
+        #[arg(short, long)]
+        out: Option<PathBuf>,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -1075,6 +1081,12 @@ enum WatchSub {
         /// 用 ELF 符号注释观察点地址（需会话固件含符号表）。
         #[arg(long)]
         symbols: bool,
+        /// 按启用状态过滤（true=仅启用，false=仅禁用；缺省全部）。
+        #[arg(long)]
+        enabled: Option<bool>,
+        /// 写出文件路径（缺省打印到 stdout；文本或 JSON 均可）。
+        #[arg(short, long)]
+        out: Option<PathBuf>,
         /// 以 JSON 格式输出（机器可读）。
         #[arg(long)]
         json: bool,
@@ -4456,7 +4468,7 @@ fn cmd_mem(sub: MemSub) -> Result<()> {
 
 fn cmd_bp(sub: BpSub) -> Result<()> {
     match sub {
-        BpSub::List { session, symbols, json } => {
+        BpSub::List { session, symbols, enabled, out, json } => {
             let s = Session::load(&session)?;
             let sim = s.apply(None).ok();
             let sym_for = |addr: u32| -> Option<String> {
@@ -4469,54 +4481,82 @@ fn cmd_bp(sub: BpSub) -> Result<()> {
                     .find(|x| x.address == addr)
                     .map(|x| x.name.clone())
             };
-            if json {
-                let items: Vec<_> = s
-                    .breakpoints
-                    .iter()
-                    .map(|bp| {
-                        serde_json::json!({
-                            "address": bp.address,
-                            "condition": bp.condition,
-                            "hitCount": bp.hit_count,
-                            "once": bp.once,
-                            "enabled": bp.enabled,
-                            "hits": sim.as_ref().map(|sim| sim.breakpoint_hits(bp.address)).unwrap_or(0),
-                            "symbol": sym_for(bp.address),
-                        })
+            let selected: Vec<_> = s
+                .breakpoints
+                .iter()
+                .filter(|bp| enabled.map_or(true, |e| bp.enabled == e))
+                .collect();
+            let items: Vec<_> = selected
+                .iter()
+                .map(|bp| {
+                    serde_json::json!({
+                        "address": bp.address,
+                        "condition": bp.condition,
+                        "hitCount": bp.hit_count,
+                        "once": bp.once,
+                        "enabled": bp.enabled,
+                        "hits": sim.as_ref().map(|sim| sim.breakpoint_hits(bp.address)).unwrap_or(0),
+                        "symbol": sym_for(bp.address),
                     })
-                    .collect();
-                print_json(&items)?;
-            } else {
-                if s.breakpoints.is_empty() {
-                    println!("(无断点)");
+                })
+                .collect();
+            let mut text = String::new();
+            if selected.is_empty() {
+                text.push_str("(无断点)\n");
+            }
+            for bp in &selected {
+                let mut parts = Vec::new();
+                if bp.once {
+                    parts.push("once".to_string());
                 }
-                for bp in &s.breakpoints {
-                    let mut parts = Vec::new();
-                    if bp.once {
-                        parts.push("once".to_string());
-                    }
-                    if !bp.condition.is_empty() {
-                        parts.push(format!("cond='{}'", bp.condition));
-                    }
-                    if bp.hit_count > 0 {
-                        parts.push(format!("hit={}", bp.hit_count));
-                    }
-                    if !bp.enabled {
-                        parts.push("disabled".to_string());
-                    }
-                    let extra = if parts.is_empty() {
-                        String::new()
+                if !bp.condition.is_empty() {
+                    parts.push(format!("cond='{}'", bp.condition));
+                }
+                if bp.hit_count > 0 {
+                    parts.push(format!("hit={}", bp.hit_count));
+                }
+                if !bp.enabled {
+                    parts.push("disabled".to_string());
+                }
+                let extra = if parts.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", parts.join(" "))
+                };
+                let hits = sim
+                    .as_ref()
+                    .map(|sim| sim.breakpoint_hits(bp.address))
+                    .unwrap_or(0);
+                let sym = sym_for(bp.address)
+                    .map(|n| format!("  {n}"))
+                    .unwrap_or_default();
+                text.push_str(&format!("0x{:08x}{extra}  hits={hits}{sym}\n", bp.address));
+            }
+            match out {
+                Some(path) => {
+                    let content = if json {
+                        serde_json::to_string_pretty(&items)?
                     } else {
-                        format!("  {}", parts.join(" "))
+                        text
                     };
-                    let hits = sim
-                        .as_ref()
-                        .map(|sim| sim.breakpoint_hits(bp.address))
-                        .unwrap_or(0);
-                    let sym = sym_for(bp.address)
-                        .map(|n| format!("  {n}"))
-                        .unwrap_or_default();
-                    println!("0x{:08x}{extra}  hits={hits}{sym}", bp.address);
+                    std::fs::write(&path, &content)
+                        .with_context(|| format!("写入 {} 失败", path.display()))?;
+                    if json {
+                        print_json(&serde_json::json!({
+                            "file": path.to_string_lossy(),
+                            "bytes": content.len(),
+                            "count": items.len(),
+                        }))?;
+                    } else {
+                        println!("已写入断点列表 -> {}", path.display());
+                    }
+                }
+                None => {
+                    if json {
+                        print_json(&items)?;
+                    } else {
+                        print!("{text}");
+                    }
                 }
             }
             Ok(())
@@ -4919,7 +4959,7 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
             }
             Ok(())
         }
-        WatchSub::List { session, symbols, json } => {
+        WatchSub::List { session, symbols, enabled, out, json } => {
             let wps = if session.exists() {
                 Session::load(&session)?.watchpoints
             } else {
@@ -4940,31 +4980,60 @@ fn cmd_watch(sub: WatchSub) -> Result<()> {
                     .find(|x| x.address == addr)
                     .map(|x| x.name.clone())
             };
-            if json {
-                let items: Vec<_> = wps
-                    .iter()
-                    .map(|w| {
-                        let mut v = watch_json(w);
-                        v["symbol"] = sym_for(w.address).map(serde_json::Value::String).unwrap_or(serde_json::Value::Null);
-                        v
-                    })
-                    .collect();
-                print_json(&items)?;
-            } else if wps.is_empty() {
-                println!("(无观察点)");
-            } else {
-                for w in &wps {
-                    let state = if w.enabled { "enabled" } else { "disabled" };
-                    let sym = sym_for(w.address)
-                        .map(|n| format!("  {n}"))
-                        .unwrap_or_default();
-                    println!(
-                        "0x{a:08x}（{len} 字节）  {state}  hits={hits}{}{sym}",
-                        if w.once { "  once" } else { "" },
-                        a = w.address,
-                        len = w.len,
-                        hits = w.hits,
-                    );
+            let selected: Vec<_> = wps
+                .iter()
+                .filter(|w| enabled.map_or(true, |e| w.enabled == e))
+                .collect();
+            let items: Vec<_> = selected
+                .iter()
+                .map(|w| {
+                    let mut v = watch_json(w);
+                    v["symbol"] = sym_for(w.address).map(serde_json::Value::String).unwrap_or(serde_json::Value::Null);
+                    v
+                })
+                .collect();
+            let mut text = String::new();
+            if selected.is_empty() {
+                text.push_str("(无观察点)\n");
+            }
+            for w in &selected {
+                let state = if w.enabled { "enabled" } else { "disabled" };
+                let sym = sym_for(w.address)
+                    .map(|n| format!("  {n}"))
+                    .unwrap_or_default();
+                text.push_str(&format!(
+                    "0x{a:08x}（{len} 字节）  {state}  hits={hits}{}{sym}\n",
+                    if w.once { "  once" } else { "" },
+                    a = w.address,
+                    len = w.len,
+                    hits = w.hits,
+                ));
+            }
+            match out {
+                Some(path) => {
+                    let content = if json {
+                        serde_json::to_string_pretty(&items)?
+                    } else {
+                        text
+                    };
+                    std::fs::write(&path, &content)
+                        .with_context(|| format!("写入 {} 失败", path.display()))?;
+                    if json {
+                        print_json(&serde_json::json!({
+                            "file": path.to_string_lossy(),
+                            "bytes": content.len(),
+                            "count": items.len(),
+                        }))?;
+                    } else {
+                        println!("已写入观察点列表 -> {}", path.display());
+                    }
+                }
+                None => {
+                    if json {
+                        print_json(&items)?;
+                    } else {
+                        print!("{text}");
+                    }
                 }
             }
             Ok(())

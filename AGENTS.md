@@ -122,8 +122,8 @@ ns-instruction-sim/
 | `continue` | — | 连续运行至断点/停止/上限/指定地址/指定符号/条件成立/周期上限（临时断点/条件每步后求值；`--trace-regs` 打印每条指令后变化的寄存器；`--max-cycles` 到达即停并报 `lastResult="cycles"`） | `--session --until --until-symbol --until-condition --max-steps --max-cycles --save --json --trace --trace-regs --source` | 状态 |
 | `reg` | `list` / `get` / `set` | 寄存器列出/读/写 | `--name --value --arch --filter --session --json` | 表/值/JSON |
 | `mem` | `read` / `write` / `fill` / `search` / `verify` / `load` / `dump` / `region` / `copy` | 内存读/写/填充（含确定性伪随机；`fill` 的 `--pattern` 重复填充字节模式）/搜索模式（`search` 的 `--pattern` 按 `--width` `byte`/`half`/`word`/`dword` 解释为小端整数值，可直接按字/双字常量搜索；`--mask` 按相同宽度展开为逐字节掩码，某字节掩码为 0 表示通配）/校验内存与期望数据是否一致（`verify` 的期望源为 `--bytes`/`--values`/`--file` 精确比较，或 `--pattern` 重复填充 `--len` 字节比较；返回 `matched`/`mismatchCount`/`firstMismatch`/`mismatches`，不匹配不报错）/加载固件/导出（C 数组 / Intel HEX 可回载 / hex+ASCII 视图）/按设备命名区域转储（FLASH/RAM/PERIPHERALS，起始地址从目录解析，偏移/长度校验）/复制内存区域（源→目标，重叠范围按 memmove 语义）；`read`/`write`/`fill`/`search`/`verify` 均可用 `--device`+`--region`+`--offset` 按设备命名区域寻址（与 `--addr` 互斥）或 `--symbol` 按 ELF 数据符号起始地址寻址（与 `--addr`/`--device` 互斥）；`read` 可用 `--ascii`（按 ASCII 文本解读，非可打印显示为 `.`）或 `--string`（读取 NUL 结尾字符串，最多 `--len` 字节），`write` 可用 `--string`（写入字符串 ASCII 字节，`--null` 追加 NUL 终止符） | `--addr --len --bytes --values --file --value --random --seed --pattern --firmware --base --arch --device --region --offset --symbol --src --dst --name --format --width --ascii --string --null --mask --out --json` | hex/C/JSON |
-| `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` / `hits` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`set` 可用 `--symbol`+`--offset`（符号地址 + 偏移）或 `--device`+`--region`+`--offset` 按设备命名内存区域解析地址；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数；`hits` 预置断点运行时命中计数，使命中次数断点按新计数继续；`list --symbols` 用 ELF 符号注释断点地址） | `--addr --symbol --line --device --region --offset --condition --hit-count --once --count --symbols --session --json` | 表/JSON |
-| `watch` | `set` / `list` / `modify` / `clear` / `clear-all` / `enable` / `disable` / `hits` | 内存观察点管理（`step`/`run`/`continue`/`trace`/`coverage`/`profile` 在每条指令前后比较被监视字节范围，被写入时暂停并报 `lastResult`/`result="watchpoint"`、`watchHit=<地址>`；支持长度/命中次数/一次性/启用禁用；命中计数持久化；`modify` 更新既有观察点的长度/命中次数/一次性而不重建，保留运行时命中计数；`hits` 预置观察点运行时命中计数，使命中次数观察点按新计数继续；`set` 检测与既有观察点的地址范围重叠并返回 `overlaps`/`overlapCount`；`set` 可用 `--symbol`+`--offset` 按 ELF 符号解析监视地址、`--line`（`file:line`）按源码行号解析监视地址或 `--device`+`--region`+`--offset` 按设备命名区域解析监视地址；`list --symbols` 用 ELF 符号注释观察点地址） | `--addr --symbol --line --device --region --offset --len --hit-count --once --count --symbols --session --json` | 表/JSON |
+| `bp` | `list` / `set` / `modify` / `clear` / `clear-all` / `enable` / `disable` / `hits` | 断点管理（条件/命中次数/一次性/启用禁用/按符号或行号设置；`set` 可用 `--symbol`+`--offset`（符号地址 + 偏移）或 `--device`+`--region`+`--offset` 按设备命名内存区域解析地址；`modify` 更新既有断点的条件与命中次数而不重建，保留运行时命中计数；`hits` 预置断点运行时命中计数，使命中次数断点按新计数继续；`list` 可按 `--enabled` 过滤启用/禁用状态，`--symbols` 用 ELF 符号注释断点地址，`--out` 把列表文本/JSON 写入文件） | `--addr --symbol --line --device --region --offset --condition --hit-count --once --count --enabled --symbols --out --session --json` | 表/JSON |
+| `watch` | `set` / `list` / `modify` / `clear` / `clear-all` / `enable` / `disable` / `hits` | 内存观察点管理（`step`/`run`/`continue`/`trace`/`coverage`/`profile` 在每条指令前后比较被监视字节范围，被写入时暂停并报 `lastResult`/`result="watchpoint"`、`watchHit=<地址>`；支持长度/命中次数/一次性/启用禁用；命中计数持久化；`modify` 更新既有观察点的长度/命中次数/一次性而不重建，保留运行时命中计数；`hits` 预置观察点运行时命中计数，使命中次数观察点按新计数继续；`set` 检测与既有观察点的地址范围重叠并返回 `overlaps`/`overlapCount`；`set` 可用 `--symbol`+`--offset` 按 ELF 符号解析监视地址、`--line`（`file:line`）按源码行号解析监视地址或 `--device`+`--region`+`--offset` 按设备命名区域解析监视地址；`list` 可按 `--enabled` 过滤启用/禁用状态，`--symbols` 用 ELF 符号注释观察点地址，`--out` 把列表文本/JSON 写入文件） | `--addr --symbol --line --device --region --offset --len --hit-count --once --count --enabled --symbols --out --session --json` | 表/JSON |
 | `disasm` | — | 反汇编 N 条或字节范围（`--size` 与 `--count` 互斥；可指定 ARM 状态/来源标注/符号标签/符号起始/原始字节/JSON；`--firmware` 直接加载固件反汇编，无需先建会话，架构从 ELF 推导） | `--firmware --base --arch --addr --symbol --count --size --arm-state --source --labels --raw --out --json --session` | 文本/JSON |
 | `reset` | — | 复位仿真器（PC 回入口） | `--session --entry --json` | 文本/JSON |
 | `state` | — | 完整状态（JSON/文本/字段子集/单行摘要；`--mem` 附带指定起始地址的内存快照，人读模式输出 hex dump；JSON 含 `watchpoints` 完整观察点快照） | `--session --arch --firmware --base --mem --mem-len --json --fields --summary` | 状态/JSON/摘要 |
@@ -218,7 +218,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `string`/`null`（写字符串 ASCII 字节并可追加 NUL）、
    `mem_fill` 支持 `pattern`（重复填充字节模式）、
    `bp_set/modify/clear/list/enable/disable/clear_all`
-   （`bp_list` 支持 `symbols` 参数；`bp_hits` 预置断点运行时命中计数；
+   （`bp_list` 支持 `symbols`/`enabled`（按启用状态过滤）/`out`（写出 JSON 文件）参数；
+   `bp_hits` 预置断点运行时命中计数；
    `bp_set` 支持 `device`/`region`/`offset` 按设备命名区域寻址，以及 `symbol`+`offset`
    （符号地址 + 偏移；`offset` 无 `symbol`/`device`+`region` 时报错））、
    `watch_set/list/modify/clear/enable/disable/clear_all`（内存观察点；`watch_set` 支持
@@ -227,7 +228,8 @@ MCP **stdio** 传输（`Content-Length` 帧），使大模型（或任何 MCP �
    `device`/`region`/`offset`（按设备命名区域解析监视地址），
    `watch_set` 返回 `overlaps`/`overlapCount` 报告既有范围重叠，
    `watch_modify` 更新长度/命中次数/一次性并保留运行时命中计数，
-   `watch_list` 支持 `symbols` 参数用 ELF 符号注释观察点地址，
+   `watch_list` 支持 `symbols`（ELF 符号注释）、`enabled`（按启用状态过滤）与
+   `out`（写出 JSON 文件）参数，
    `watch_hits` 预置观察点运行时命中计数，
    `state` 返回 `watchpoints` 数组），
    `disasm`（支持 `count` 或 `size` 字节范围，二者互斥）、`reset`、
@@ -373,6 +375,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `bp_list_symbols`：`bp list --symbols` 用 ELF 符号注释断点地址（JSON `symbol` 字段 + 人读后缀），
   未加 `--symbols` 时 `symbol` 为 null。
 - `mcp_bp_list_symbols`：MCP `bp_list {"symbols":true}` 返回符号注释，缺省为 null。
+- `bp_list_enabled_filter_and_out`：`bp list --enabled true/false` 按启用状态过滤，
+  `--out` 把过滤后的文本/JSON 列表写入文件（`file`/`bytes`/`count` 确认）。
+- `mcp_bp_list_enabled_filter_out`：MCP `bp_list` 的 `enabled` 过滤与 `out` 写出 JSON 文件，
+  文件内容与内联 `breakpoints` 一致。
 - `bp_set_out_of_range_rejected`：16 位 PC 架构（mcs51/c166/avr）越界断点地址被拒绝，不静默回绕；`--until` 同校验。
 - `watch_set_step_and_continue`：`watch set` 后 `step` 在写入被监视范围时暂停
   （`lastResult="watchpoint"`、`watchHit=<地址>`），命中计数持久化，`state --json` 含
@@ -412,6 +418,10 @@ MCP 服务器的协议层另有 13 个单元测试（`src/mcp.rs` `#[cfg(test)]`
 - `watch_list_symbols`：`watch list --symbols` 用 ELF 符号注释观察点地址（JSON `symbol`，
   未命中符号为 null；人读模式追加符号名），不带 `--symbols` 时 `symbol` 为 null。
 - `mcp_watch_list_symbols`：MCP `watch_list {"symbols":true}` 返回符号注释，缺省为 null。
+- `watch_list_enabled_filter_and_out`：`watch list --enabled true/false` 按启用状态过滤，
+  `--out` 把过滤后的文本/JSON 列表写入文件（`file`/`bytes`/`count` 确认）。
+- `mcp_watch_list_enabled_filter_out`：MCP `watch_list` 的 `enabled` 过滤与 `out` 写出 JSON 文件，
+  文件内容与内联 `watchpoints` 一致。
 - `watch_set_by_region`：`watch set --device/--region`（可配 `--offset`）按设备命名区域解析
   监视地址（FLASH@0 → 0x08000000、RAM@8 → 0x20000008）；未知区域、`--device` 缺 `--region`
   与 `--offset` 无 `--symbol`/区域均报错。
